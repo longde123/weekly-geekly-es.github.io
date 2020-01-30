@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-143967986-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-143967986-1');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐅 🌖 👏🏻 PostgreSQL Antipatterns: CTE x CTE 🔶 📡 🧜🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="By type of activity, one has to deal with situations when a developer writes a request and thinks "the base is smart, it can handle everything! " 
+
+ I...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: CTE x CTE</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/479298/">  By type of activity, one has to deal with situations when a developer writes a request and thinks "the <i>base is smart, it can handle everything!</i> " <br><br>  In some cases (partly from ignorance of the database capabilities, partly from premature optimizations), this approach leads to the appearance of “Frankenstein”. <br><a name="habracut"></a><br>  First I’ll give an example of such a query: <br><br><pre><code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--         WITH RECURSIVE cte_bind AS ( SELECT DISTINCT ON (key_a, key_b) key_a a , key_b b , fld1 bind_fld1 , fld2 bind_fld2 FROM tbl ) --  min/max      , cte_max AS ( SELECT a , max(bind_fld1) bind_fld1 , min(bind_fld2) bind_fld2 FROM cte_bind GROUP BY a ) --        min/max- , cte_a_bind AS ( SELECT cte_bind.a , cte_bind.b , cte_max.bind_fld1 , cte_max.bind_fld2 FROM cte_bind INNER JOIN cte_max ON cte_max.a = cte_bind.a ) SELECT * FROM cte_a_bind;</span></span></code> </pre> <br>  In order to objectively evaluate the quality of the request, let's create some arbitrary data set: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> key_a , (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> key_b , (random() * <span class="hljs-number"><span class="hljs-number">10000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> fld1 , (random() * <span class="hljs-number"><span class="hljs-number">10000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> fld2 <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">10000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> tbl(key_a, key_b);</code> </pre><br>  It turns out that <b>reading the data</b> itself <b>took less than a quarter of the total</b> query execution <b>time</b> : <br><br><img src="https://habrastorage.org/webt/-f/sp/pt/-fsppt8uz0nwbjtslz3zcfxlxrm.png">  <a href="https://explain.tensor.ru/archive/explain/38efaab7b87a152d9675536048dd6045:0:2019-12-09" rel="nofollow">[look at explain.tensor.ru]</a> <br><br><h3>  Disassemble by bones </h3><br>  We will look closely at the request, and we will be puzzled: <br><br><ol><li>  Why is WITH RECURSIVE here, if there are no recursive CTEs? </li><li>  Why group min / max values ​​in a separate CTE if then they are still attached to the original sample anyway? <br>  <i>+ 25% of the time</i> </li><li>  Why at the end use re-readings from the previous CTE through the unconditional 'SELECT * FROM'? <br>  <i>+ 14% of the time</i> </li></ol><br>  In this case, we were very lucky that Hash Join was chosen for the connection, and not Nested Loop, because then we would not get a single CTE Scan pass, but 10K! <br><br><div class="spoiler">  <b class="spoiler_title">a bit about CTE Scan</b> <div class="spoiler_text">  Here we must recall that <b>CTE Scan is an analogue of Seq Scan</b> - that is, no indexing, but only exhaustive search, which would require <i>10K x 0.3ms = <b>3000ms</b> for <b>cte_max</b> cycles</i> or <i>1K x 1.5ms = <b>1500ms</b> for <b>cte_bind</b> cycles</i> ! </div></div><br>  Actually, what did you want to get as a result?  <i>Yeah, it’s usually this kind of question that he visits somewhere in the 5th minute of the analysis of “three-story” requests.</i> <br><br>  We wanted for each unique key pair to remove <b>min / max from the group by key_a</b> . <br>  So we will use the <a href="https://postgrespro.ru/docs/postgresql/12/tutorial-window" rel="nofollow">window functions</a> for this: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DISTINCT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span>(key_a, key_b) key_a a , key_b b , <span class="hljs-keyword"><span class="hljs-keyword">max</span></span>(fld1) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(w) bind_fld1 , <span class="hljs-keyword"><span class="hljs-keyword">min</span></span>(fld2) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(w) bind_fld2 <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl WINDOW w <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> key_a);</code> </pre> <br><img src="https://habrastorage.org/webt/e-/ml/iz/e-mlizvnowqwfholjb2uvvsibqo.png"><br>  <a href="https://explain.tensor.ru/archive/explain/41d3896a5d331565dd9a2e6e926719be:0:2019-12-09" rel="nofollow">[look at explain.tensor.ru]</a> <br><br>  Since reading data in both versions takes about 4-5ms equally, our entire time gain of <b>-32%</b> is pure <b>load removed from the base CPU</b> , if such a request is performed quite often. <br><br>  In general, you should not force the base to "round - wear, square - roll." </div></div><p>Source: <a href="https://habr.com/ru/post/479298/">https://habr.com/ru/post/479298/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../479288/index.html">Why implement Service Desk and how to choose a solution for your company</a></li>
+<li><a href="../479290/index.html">Algorithms for searching the volume and center of mass of a polyhedron</a></li>
+<li><a href="../479292/index.html">How to teach a neural network to reproduce game physics</a></li>
+<li><a href="../479294/index.html">GitLab 12.5 released with the creation of EKS clusters and the environment panel</a></li>
+<li><a href="../479296/index.html">How I stopped hating and fell in love with development</a></li>
+<li><a href="../479300/index.html">Ecology and data centers. As in Russia and abroad, "green data"</a></li>
+<li><a href="../479302/index.html">Unity Shader Graph Basics</a></li>
+<li><a href="../479304/index.html">Ephemeral Containers Kubernetes First Steps</a></li>
+<li><a href="../479306/index.html">PHP Digest No. 169 (November 26 - December 9, 2019)</a></li>
+<li><a href="../479308/index.html">Pro Demand Planning, Holt-Winters and XGboost</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter54458986 = new Ya.Metrika({
+                  id:54458986,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/54458986" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-143967986-1', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=IU0EG0jaqnehka2lu5TyzAcchrZXI4Yb1QXKQvJxpqE&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,1 +1,0 @@
-# weekly-geekly-es.github.io
