@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏾‍🤝‍👩🏻 🔇 🤘 Antipatterns PostgreSQL: un registro raro llegará a la mitad de JOIN 🎉 👏🏼 💠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Si escribe consultas SQL sin analizar el algoritmo que deben implementar, esto generalmente no conduce a nada bueno en términos de rendimiento. 
+
+ A t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Antipatterns PostgreSQL: un registro raro llegará a la mitad de JOIN</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/484670/">  Si escribe <b>consultas SQL sin analizar el algoritmo</b> que deben implementar, esto generalmente no conduce a nada bueno en términos de rendimiento. <br><br>  A tales solicitudes les <b>gusta "comer" el tiempo del procesador y leer activamente los datos</b> casi de la nada.  Además, esto no es necesariamente un tipo de consultas complejas, por el contrario: cuanto más simple esté escrito, mayores serán las posibilidades de tener problemas.  Y si el operador JOIN entra en juego ... <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/oc/dt/ga/ocdtgatrtkdzckf0zqxd_03pd4i.png"></div><br>  Por sí solo, unir tablas no es dañino ni útil: es solo una herramienta, pero debe poder usarlo. <br><a name="habracut"></a><br><h2>  Agrupación de supervisión </h2><br>  Primero, tome un ejemplo muy simple. <br><br>  Hay un "diccionario" de 100 entradas (por ejemplo, estas son regiones de la Federación de Rusia): <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_dict <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">100</span></span>) k; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_dict <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span>(k);</code> </pre> <br>  ... y adjunto hay una tabla de "hechos" relacionados por cada 100K entradas: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_fact <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> (random() * <span class="hljs-number"><span class="hljs-number">100</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> k , (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">100000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> tbl_fact(k);</code> </pre><br>  Ahora intentemos calcular la suma de los valores para cada "región". <br><br><h4>  Como se escucha, está escrito </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> dk , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(fv) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl_fact f <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> tbl_dict d <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre><br>  Leer los datos en sí solo tomó el 18% del tiempo, el resto fue procesar: <br><br><img src="https://habrastorage.org/webt/ly/wz/0c/lywz0cbrud70qpf5hxjwoswjtnm.png"><br>  <a href="https://explain.tensor.ru/archive/explain/f2dbfa8818913c7ca6a8a2e6c5137be4:0:2020-01-20" rel="nofollow">[mira explicar.tensor.ru]</a> <br><br>  Y todo porque Hash Join y Hash Aggregate tuvieron que procesar 100K registros cada uno debido a nuestro deseo de <b>agrupar por el campo de la tabla vinculada</b> . <br><br><h4>  Usamos ingenio </h4><br>  ¡Pero el valor de este campo es igual al valor del campo en la tabla agregada!  Es decir, nadie nos molesta en <b>agrupar primero los "hechos", y solo luego hacer una conexión</b> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> dk , f.sum <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> k , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(v) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl_fact <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span> ) f <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> tbl_dict d;</code> </pre><br><img src="https://habrastorage.org/webt/je/i9/aj/jei9aj5rv4alb6ycdy77tfumuek.png"><br>  <a href="https://explain.tensor.ru/archive/explain/211c2a9e9bb2425fda450f90f1aa5d08:0:2020-01-20" rel="nofollow">[mira explicar.tensor.ru]</a> <br><br>  Por supuesto, el método no es universal, pero para nuestro caso de la "UNIÓN habitual" <b>, la ganancia de tiempo es 2 veces</b> con una modificación mínima de la solicitud, simplemente debido a la Hash Join "anulada", que recibió solo 100 entradas en lugar de 100K entradas. <br><br><h2>  Condiciones desiguales </h2><br>  Ahora vamos a complicar la tarea: tenemos 3 tablas conectadas por un identificador: la tabla principal y las dos tablas auxiliares con algunos datos de aplicación, por los cuales filtraremos. <br><br>  Una observación pequeña pero muy importante: aunque sobre la base del conocimiento "aplicado" de la tarea objetivo, ya sabemos que las condiciones se cumplirán <b>en la primera tabla, casi siempre</b> (por definición, 3: 4), y <b>en la segunda, muy raramente</b> (1: 8 ) <br><br>  Queremos seleccionar de las tablas auxiliares principal y primera los <b>100 primeros registros por id</b> con valores de identificador pares para los que se <b>cumplen</b> las <b>condiciones en todas las tablas</b> .  Todos los registros en las tablas, volvamos a estar a 100K. <br><br><div class="spoiler">  <b class="spoiler_title">Generador de guiones</b> <div class="spoiler_text"><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> base( <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> , val <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> base <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> , (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">100000</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> ext1( <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> , conda <span class="hljs-built_in"><span class="hljs-built_in">boolean</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> ext1 <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> , (random() * <span class="hljs-number"><span class="hljs-number">4</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> &lt;&gt; <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-comment"><span class="hljs-comment">-- 3:4 FROM generate_series(1, 100000) id; CREATE TABLE ext2( id integer PRIMARY KEY , condb boolean ); INSERT INTO ext2 SELECT id , (random() * 8)::integer = 0 -- 1:8 FROM generate_series(1, 100000) id;</span></span></code> </pre></div></div><br><h4>  Como se escucha, está escrito </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> base.* , ext1.* <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> base <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> ext1 <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> ext2 <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> % <span class="hljs-number"><span class="hljs-number">2</span></span> = <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> conda <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> condb <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> base.id <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">100</span></span>;</code> </pre><br><img src="https://habrastorage.org/webt/bx/mi/-t/bxmi-tyvohis60rn4eujozcty8i.png"><br>  <a href="https://explain.tensor.ru/archive/explain/11aff76b79f671a307edb86e3608ca98:0:2020-01-20" rel="nofollow">[mira explicar.tensor.ru]</a> <br><br><div class="spoiler">  <b class="spoiler_title">Tiempos negativos en términos</b> <div class="spoiler_text">  Tantos ciclos han pasado por algunos nodos que los errores de redondeo de algunos incluso se han convertido en menos.  Solo sobre artefactos similares en los planes hablaré en <a href="https://pgconf.ru/2020/262963" rel="nofollow">PGConf.Russia</a> . <br></div></div><br>  200ms y más 2GB de datos bombeados - ¡no es muy bueno para 100 registros! <br><br><h4>  Usamos ingenio </h4><br>  Utilizamos los siguientes enfoques para lograr la aceleración: <br><br><ol><li>  Para empezar, entendemos que tiene sentido que verifiquemos todas las condiciones de las tablas vinculadas <b>solo cuando se cumplen las condiciones de la tabla principal</b> (incluso para la identificación). </li><li>  La salida se debe ordenar por base.id, y para esto, ¡la <b>clave principal de</b> esta tabla es <b>perfecta</b> para nosotros! </li><li>  No necesitamos datos de ext2, y solo se utilizan para verificar la condición.  Esto significa que todo el trabajo con esta tabla se puede <b>eliminar de forma segura de la parte JOIN a WHERE</b> .  Y use EXISTS para verificar, de lo contrario, ¿qué pasa si no existe tal registro? </li><li>  Necesitamos recuperar al menos algunos datos de ext1 <b>solo si las comprobaciones restantes</b> en base y ext2 se <b>pasan con éxito</b> .  Es decir, la conexión con ext1 debe ir después de todas las acciones con base / ext2, lo que se puede lograr usando LATERAL. </li><li>  Para que el planificador de consultas no intente convertir la verificación anidada en ext2 en JOIN, la subconsulta <b>"ocultar bajo CASO"</b> . </li></ol><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> base.* , ext1.* <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> base , LATERAL( <span class="hljs-comment"><span class="hljs-comment">--       base SELECT * FROM ext1 WHERE id = base.id AND conda --   LIMIT 1 ) ext1 WHERE CASE WHEN base.id % 2 = 0 THEN EXISTS( --        SELECT NULL FROM ext2 WHERE id = base.id AND condb --   LIMIT 1 ) END ORDER BY base.id --     PK,       LIMIT 100;</span></span></code> </pre><br><img src="https://habrastorage.org/webt/wm/6i/y_/wm6iy_yamiw3cgby9ls6ui7f0pk.png"><br>  <a href="https://explain.tensor.ru/archive/explain/4a201a1ccbc44b066cb4a60c6a9f8b15:0:2020-01-20" rel="nofollow">[mira explicar.tensor.ru]</a> <br><br>  La solicitud, por supuesto, se ha vuelto más complicada, ¡pero <b>ganar 13 veces a tiempo y 350 en "glotonería"</b> vale la pena! <br><br>  <i>Permítame recordarle nuevamente que no todos los métodos se usan y no siempre, pero saber no será superfluo.</i> <br><br>  También será interesante: <br><br><ul><li>  <a href="https://habr.com/post/485398/">golpear el diccionario en unión pesada</a> </li><li>  <a href="https://habr.com/post/479920/">sísifo unirse a matrices</a> </li><li>  <a href="https://habr.com/post/479508/">UNIÓN dañina y OR</a> </li><li>  <a href="https://habr.com/post/479298/">CTE ÚNETE A CTE</a> </li></ul></div></div><p>Source: <a href="https://habr.com/ru/post/484670/">https://habr.com/ru/post/484670/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../484660/index.html">Karma es alienación de la autoría</a></li>
+<li><a href="../484662/index.html">Proyecto piloto para procesar datos sísmicos de alta densidad utilizando el servicio MCS</a></li>
+<li><a href="../484664/index.html">Otro troyano [casi] indeleble para Android</a></li>
+<li><a href="../484666/index.html">Nuevos Dell y Alienware en CES 2020: un resumen de los principales anuncios</a></li>
+<li><a href="../484668/index.html">Visión general del programa de mentalidad de producto</a></li>
+<li><a href="../484672/index.html">Cómo Hanipotans Deanonymize hackers y estafadores en línea</a></li>
+<li><a href="../484676/index.html">IB fakapy 2019: típico y no muy</a></li>
+<li><a href="../484678/index.html">Conferencias abiertas en JetBrains Research Labs</a></li>
+<li><a href="../484680/index.html">Traducción del libro de Andrew Un, Pasión por el aprendizaje automático, Capítulo 33</a></li>
+<li><a href="../484686/index.html">¿Por qué las resistencias se indican por color?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

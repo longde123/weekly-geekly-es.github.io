@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍅 👩🏾‍🏭 👲🏻 Divide y vencerás 🙅🏼 👌🏿 🧜</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Cuando trabajaba con una base de datos (en particular con PostgreSQL), tuve la idea de seleccionar datos de una tabla en paralelo (usando Go GoP). Y m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Divide y vencerás</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/485056/"><img src="https://habrastorage.org/webt/ad/6e/t3/ad6et3oklrzvpn7ha_iomzmftgw.png"><br>  Cuando trabajaba con una base de datos (en particular con PostgreSQL), tuve la idea de seleccionar datos de una tabla en paralelo (usando Go GoP).  Y me preguntaba: "¿es posible escanear líneas de muestra en goroutines individuales?" <br><br>  Al final resultó que, <b>func (* Filas) Scan</b> no se puede llamar simultáneamente en gourutins.  En base a esta limitación, decidí llevar a cabo otros procesos en paralelo con el escaneo de filas, en particular, la preparación de los datos resultantes. <br><a name="habracut"></a><br>  Porque  Scan apila los datos de acuerdo con los punteros, decidí hacer dos cortes (explicaré por qué dos más tarde), entre los cuales cambiaré Scan, mientras que el resto de las gourutinas se ocuparán de los datos ya seleccionados. <br><br>  Inicialmente, necesito saber el número de columnas de muestra: <br><br><pre><code class="go hljs">columns, err = rows.Columns() count := <span class="hljs-built_in"><span class="hljs-built_in">len</span></span>(columns)</code> </pre> <br>  A continuación, creo dos sectores con valores y punteros a estos valores (donde agregaré datos durante el escaneo de filas): <br><br><pre> <code class="go hljs">values := <span class="hljs-built_in"><span class="hljs-built_in">make</span></span>([]<span class="hljs-keyword"><span class="hljs-keyword">interface</span></span>{}, count) valuesPtrs := <span class="hljs-built_in"><span class="hljs-built_in">make</span></span>([]<span class="hljs-keyword"><span class="hljs-keyword">interface</span></span>{}, count) values_ := <span class="hljs-built_in"><span class="hljs-built_in">make</span></span>([]<span class="hljs-keyword"><span class="hljs-keyword">interface</span></span>{}, count) valuesPtrs_ := <span class="hljs-built_in"><span class="hljs-built_in">make</span></span>([]<span class="hljs-keyword"><span class="hljs-keyword">interface</span></span>{}, count) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i := <span class="hljs-keyword"><span class="hljs-keyword">range</span></span> columns { valuesPtrs[i] = &amp;values;[i] valuesPtrs_[i] = &amp;values;_[i] }</code> </pre> <br>  En este ejemplo, agregaré el resultado de la selección para asignar la cadena [string], donde los nombres de las columnas serán las claves.  Puede usar una estructura específica que indique los tipos, pero dado que  El propósito de esta publicación es descubrir en la sociedad habana cuán viable es el enfoque propuesto, detengámonos en la selección en el mapa. <br><br>  A continuación, separo dos gorutinas, una de las cuales formará el mapa resultante: <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">getData</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(deleteNullValues </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">bool</span></span></span></span><span class="hljs-function"><span class="hljs-params">, check, finish </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">chan</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">bool</span></span></span></span><span class="hljs-function"><span class="hljs-params">, dbData </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">chan</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">interface</span></span></span></span><span class="hljs-function"><span class="hljs-params">{}, columns []</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">, data *[]</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">map</span></span></span></span><span class="hljs-function"><span class="hljs-params">[</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">]</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span> { lnc := <span class="hljs-built_in"><span class="hljs-built_in">len</span></span>(columns) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> &lt;-check { row := <span class="hljs-built_in"><span class="hljs-built_in">make</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">map</span></span>[<span class="hljs-keyword"><span class="hljs-keyword">string</span></span>]<span class="hljs-keyword"><span class="hljs-keyword">string</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i := <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; lnc; i++ { el := &lt;-dbData b, ok := el.([]<span class="hljs-keyword"><span class="hljs-keyword">byte</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> ok { row[columns[i]] = <span class="hljs-keyword"><span class="hljs-keyword">string</span></span>(b) } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> el == <span class="hljs-literal"><span class="hljs-literal">nil</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> deleteNullValues == <span class="hljs-literal"><span class="hljs-literal">false</span></span> { row[columns[i]] = <span class="hljs-string"><span class="hljs-string">""</span></span> } } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { row[columns[i]] = fmt.Sprint(el) } } } *data = <span class="hljs-built_in"><span class="hljs-built_in">append</span></span>(*data, row) } finish &lt;- <span class="hljs-literal"><span class="hljs-literal">true</span></span> }</code> </pre> <br>  Y el segundo cambiará entre dos sectores con los valores generados por Scan y los enviará al canal para la gourutina anterior (que forma el resultado): <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">transferData</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(values, values_ []</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">interface</span></span></span></span><span class="hljs-function"><span class="hljs-params">{}, dbData </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">chan</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">interface</span></span></span></span><span class="hljs-function"><span class="hljs-params">{}, swtch, working, check </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">chan</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">bool</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span> { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> &lt;-working { check &lt;- <span class="hljs-literal"><span class="hljs-literal">true</span></span> <span class="hljs-keyword"><span class="hljs-keyword">switch</span></span> &lt;-swtch { <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> _, v := <span class="hljs-keyword"><span class="hljs-keyword">range</span></span> values { dbData &lt;- v } <span class="hljs-keyword"><span class="hljs-keyword">default</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> _, v := <span class="hljs-keyword"><span class="hljs-keyword">range</span></span> values_ { dbData &lt;- v } } } }</code> </pre> <br>  El proceso principal cambiará entre sectores de punteros y seleccionará datos: <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> rows.Next() { <span class="hljs-keyword"><span class="hljs-keyword">switch</span></span> chnl { <span class="hljs-keyword"><span class="hljs-keyword">case</span></span> <span class="hljs-literal"><span class="hljs-literal">false</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err = rows.Scan(valuesPtrs...); err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> { fmt.Printf(<span class="hljs-string"><span class="hljs-string">"rows.Scan: %s\n%s\n%#v\n"</span></span>, err, query, args) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">nil</span></span>, <span class="hljs-literal"><span class="hljs-literal">nil</span></span>, err } <span class="hljs-keyword"><span class="hljs-keyword">default</span></span>: <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err = rows.Scan(valuesPtrs_...); err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> { fmt.Printf(<span class="hljs-string"><span class="hljs-string">"rows.Scan: %s\n%s\n%#v\n"</span></span>, err, query, args) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">nil</span></span>, <span class="hljs-literal"><span class="hljs-literal">nil</span></span>, err } } working &lt;- <span class="hljs-literal"><span class="hljs-literal">true</span></span> swtch &lt;- chnl chnl = !chnl }</code> </pre> <br>  En la base de datos, formé una tabla con 32 columnas y le agregué 100k filas. <br>  Como resultado de la prueba (al muestrear datos 50 veces), obtuve los siguientes datos: <br>  Tiempo invertido: 1m8.022277124s - muestreando el resultado usando una sola porción <br>  Tiempo empleado: 1m7.806109441s - muestreando el resultado usando dos rebanadas <br><br>  Con un aumento en el número de iteraciones a 100: <br>  Tiempo empleado: 2m15.973344023s - selección del resultado usando una sola porción <br>  Tiempo invertido: 2m15.057413845s - muestreando el resultado usando dos rebanadas <br><br>  La diferencia aumenta al aumentar el volumen de datos y aumentar las columnas en la tabla. <br>  Sin embargo, el resultado opuesto se observó con una disminución en la cantidad de datos o con una disminución en el número de columnas de la tabla, lo que, en principio, es comprensible, porque  la sobrecarga de los pasos preparatorios y el departamento de gourutin "comen" el tiempo precioso y el resultado se nivela. <br><br>  En cuanto a dos rebanadas y dos gorutinas: realicé pruebas con una gran cantidad de rebanadas, pero el tiempo de muestreo aumentó, porque, obviamente, las funciones getData y transferData procesan los datos más rápido que los valores de escaneo de la base de datos.  Por lo tanto, incluso con un mayor número de núcleos, no tiene sentido agregar nuevos segmentos para Scan y goroutines adicionales (excepto para volúmenes de datos muy salvajes). <br><br>  En el código github, doy un <a href="https://github.com/helginet/gopostgres">ejemplo funcional de</a> este enfoque.  Mis tareas también usan otros paquetes, que eliminé de los anteriores cuando, pero la idea principal no debería sufrir de esto. <br><br>  En general, espero críticas constructivas de la comunidad interesada.  Gracias </div></div><p>Source: <a href="https://habr.com/ru/post/485056/">https://habr.com/ru/post/485056/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../485042/index.html">Debido al soporte obligatorio 5G, los teléfonos inteligentes con Snapdragon 865 serán peores en 2020</a></li>
+<li><a href="../485044/index.html">Desmontamos el reloj digital de la nave espacial Soyuz</a></li>
+<li><a href="../485046/index.html">Cómo planificar una estrategia de producto ganadora</a></li>
+<li><a href="../485050/index.html">Hipercubo Cómo proporcionamos a los desarrolladores dispositivos de prueba y no los perdimos</a></li>
+<li><a href="../485052/index.html">¿Quién es un buen control de calidad?</a></li>
+<li><a href="../485058/index.html">"Verificar el reloj": lo que se sabe sobre el nuevo protocolo de sincronización de hora del servidor</a></li>
+<li><a href="../485068/index.html">Código limpio para TypeScript - Parte 2</a></li>
+<li><a href="../485070/index.html">Andrew Eun "Pasión por el aprendizaje automático". Traducción de los capítulos 36-46</a></li>
+<li><a href="../485074/index.html">Cómo no morir en un proyecto o 5 hacks de vida</a></li>
+<li><a href="../485078/index.html">Difícil, vulnerable, subconfigurado: ciberamenazas 2020</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
