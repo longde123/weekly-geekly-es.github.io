@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📲 📃 💰 Apache Spark, evaluación diferida y consultas SQL de varias páginas 🧜 🈹 👶🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="El famoso: spark funciona con marcos de datos, que son algoritmos de transformación. El algoritmo se lanza en el último momento para "dar más espacio"...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Apache Spark, evaluación diferida y consultas SQL de varias páginas</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/alfastrah/blog/481924/"><p>  El famoso: spark funciona con marcos de datos, que son algoritmos de transformación.  El algoritmo se lanza en el último momento para "dar más espacio" a la optimización y debido a la optimización para ejecutarlo de la manera más eficiente posible. </p><br><p>  Debajo del corte, analizaremos cómo descomponer una consulta SQL de varias páginas en átomos (sin pérdida de eficiencia) y cómo reducir significativamente el tiempo de ejecución de la tubería ETL debido a esto. </p><a name="habracut"></a><br><h1 id="lazy-evaluation">  Evaluación perezosa </h1><br><p>  Una característica funcional interesante de la chispa es la evaluación perezosa: las transformaciones solo se ejecutan cuando se completan las acciones.  Cómo funciona (aproximadamente): los algoritmos para construir los marcos de datos que preceden a la acción están "pegados", el optimizador crea el algoritmo final más eficiente desde su punto de vista, que comienza y da el resultado (el que fue solicitado por la acción). </p><br><p>  Lo interesante aquí en el contexto de nuestra presentación: cualquier consulta compleja puede descomponerse en "átomos" sin pérdida de eficiencia.  Analicemos un poco más. </p><br><h1 id="mnogostranichnyy-sql">  SQL multipágina </h1><br><p>  Hay muchas razones por las que escribimos consultas SQL de "páginas múltiples", una de las principales, probablemente, renuencia a crear objetos intermedios (reticencia respaldada por requisitos de eficiencia).  El siguiente es un ejemplo de una consulta relativamente compleja (por supuesto, incluso es muy simple, pero para fines de presentación adicional, tendremos suficiente). </p><br><pre><code class="python hljs">qSel = <span class="hljs-string"><span class="hljs-string">""" select con.contract_id as con_contract_id, con.begin_date as con_begin_date, con.product_id as con_product_id, cst.contract_status_type_id as cst_status_type_id, sbj.subject_id as sbj_subject_id, sbj.subject_name as sbj_subject_name, pp.birth_date as pp_birth_date from kasko.contract con join kasko.contract_status cst on cst.contract_status_id = con.contract_status_id join kasko.subject sbj on sbj.subject_id = con.owner_subject_id left join kasko.physical_person pp on pp.subject_id = con.owner_subject_id """</span></span> dfSel = sp.sql(qSel)</code> </pre> <br><p>  Que vemos </p><br><ul><li>  los datos se seleccionan de varias tablas </li><li>  se utilizan diferentes tipos de unión </li><li>  las columnas seleccionables se distribuyen por parte de selección, parte de unión (y donde parte, pero aquí no está aquí; lo eliminé por simplicidad) </li></ul><br><p>  Esta consulta podría descomponerse en simples (por ejemplo, primero combine las tablas contract y contract_status, guarde el resultado en una tabla temporal, luego combínelo con el asunto, también guarde el resultado en una tabla temporal, etc.).  Seguramente, cuando creamos consultas realmente complejas, hacemos esto, justo entonces, después de la depuración, recopilamos todo esto en un bloque de varias páginas. </p><br><p>  ¿Qué hay de malo aquí?  Nada, de hecho, todo el mundo trabaja así y está acostumbrado. </p><br><p>  Pero hay inconvenientes, o mejor dicho, qué mejorar, siga leyendo. </p><br><h1 id="tot-zhe-zapros-v-spark">  La misma consulta en chispa </h1><br><p>  Cuando use la chispa para la transformación, por supuesto, puede simplemente tomar y ejecutar esta solicitud (y será bueno, de hecho, también la ejecutaremos), pero puede ir hacia otro lado, intentemoslo. </p><br><p>  Descompongamos esta consulta "compleja" en "átomos" - marcos de datos elementales.  Obtendremos tantos como el número de tablas involucradas en la consulta (en este caso, 4). </p><br><p>  Aquí están - "átomos": </p><br><pre> <code class="python hljs">dfCon = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select contract_id as con_contract_id, begin_date as con_begin_date, product_id as con_product_id, owner_subject_id as con_owner_subject_id, contract_status_id as con_contract_status_id from kasko.contract"""</span></span>) dfCStat = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select contract_status_id as cst_status_id, contract_status_type_id as cst_status_type_id from kasko.contract_status"""</span></span>) dfSubj = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select subject_id as sbj_subject_id, subject_type_id as sbj_subject_type_id, subject_name as sbj_subject_name from kasko.subject"""</span></span>) dfPPers = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select subject_id as pp_subject_id, birth_date as pp_birth_date from kasko.physical_person"""</span></span>)</code> </pre> <br><p>  Spark te permite unirlos usando expresiones separadas de los "átomos" reales, hagamos esto: </p><br><pre> <code class="python hljs">con_stat = f.col(<span class="hljs-string"><span class="hljs-string">"cst_status_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"con_contract_status_id"</span></span>) con_subj_own = f.col(<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"sbj_subject_id"</span></span>) con_ppers_own = f.col(<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"pp_subject_id"</span></span>)</code> </pre> <br><p>  Entonces nuestra "consulta compleja" se verá así: </p><br><pre> <code class="python hljs">dfAtom = dfCon.join(dfCStat,con_stat, <span class="hljs-string"><span class="hljs-string">"inner"</span></span>)\ .join(dfSubj,con_subj_own,<span class="hljs-string"><span class="hljs-string">"inner"</span></span>) \ .join(dfPPers,con_ppers_own, <span class="hljs-string"><span class="hljs-string">"left"</span></span>) \ .drop(<span class="hljs-string"><span class="hljs-string">"con_contract_status_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"sbj_subject_type_id"</span></span>, <span class="hljs-string"><span class="hljs-string">"pp_subject_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"cst_status_id"</span></span>)</code> </pre> <br><p>  ¿Qué hay de bueno aquí?  A primera vista, no es nada, todo lo contrario: mediante el uso de SQL "complejo" puede comprender lo que está sucediendo, por nuestra consulta "atómica" es más difícil de entender, necesita mirar "átomos" y expresiones. </p><br><p>  Primero, asegurémonos de que estas consultas sean equivalentes: en el libro de Jupyter, por <a href="https://github.com/korolmi/dataeng/tree/master/data_doc">referencia</a> , di planes para cumplir ambas consultas (los curiosos pueden encontrar 10 diferencias, pero la esencia, la equivalencia, es obvia).  Esto, por supuesto, no es un milagro, debería serlo (ver arriba para una evaluación y optimización perezosa). </p><br><p>  Lo que tenemos al final: la solicitud de "páginas múltiples" y la solicitud "atómica" funcionan con la misma eficiencia (esto es importante, sin que estas consideraciones adicionales pierdan parcialmente su significado). </p><br><p>  Bueno, ahora encontremos lo bueno en la forma "atómica" de generar consultas. </p><br><p>  Lo que es un "átomo" (marco de datos elemental) es nuestro conocimiento de un subconjunto del área temática (parte de la tabla relacional).  Al aislar tales "átomos" seleccionamos automáticamente (y, lo que es más importante, algorítmica y reproduciblemente) una parte significativa de lo ilimitado para nosotros llamado "modelo de datos físicos". </p><br><p>  ¿Cuál es la expresión que usamos cuando nos unimos?  Esto también es conocimiento sobre el área temática: así es como (como se indica en la expresión) las entidades del área temática (tablas en la base de datos) están interconectadas. </p><br><p>  Repito, esto es importante, este "conocimiento" (átomos y expresiones) se materializa en el código ejecutable (no en el diagrama o la descripción verbal), este es el código que se ejecuta cada vez que se ejecuta la tubería ETL (el ejemplo se toma, por cierto, de la vida real). </p><br><p>  El código ejecutable, como sabemos por el codificador limpio, es uno de los dos artefactos objetivamente existentes que afirman ser el "título" de la documentación.  Es decir, el uso de "átomos" nos permite dar un paso adelante en un proceso tan importante como la documentación de datos. </p><br><p>  ¿Qué más se puede encontrar en la "atomicidad"? </p><br><h1 id="optimizaciya-konveyerov">  Optimización de transportadores </h1><br><p>  En la vida real, un ingeniero de datos, por cierto, no me presenté, una tubería ETL consiste en docenas de transformaciones similares a las anteriores.  Las tablas se repiten muy a menudo en ellas (de alguna manera calculé en Excel; algunas tablas se usan en el 40% de las consultas). </p><br><p>  ¿Qué pasa en términos de eficiencia?  Desorden: la misma tabla se lee varias veces desde la fuente ... </p><br><p>  ¿Cómo mejorarlo?  Spark tiene un mecanismo para almacenar en caché los marcos de datos: podemos especificar explícitamente qué marcos de datos y cuánto queremos mantener en el caché. </p><br><p>  Lo que tenemos que hacer para esto es seleccionar tablas duplicadas y crear consultas de manera que se minimice el tamaño total de la memoria caché (porque todas las tablas, por definición, no encajan en él, entonces hay grandes datos). </p><br><p>  ¿Se puede hacer esto con consultas SSQ de varias páginas?  Sí, pero ... un poco complicado (realmente no tenemos marcos de datos allí, solo tablas, también se pueden almacenar en caché; la comunidad de spark está trabajando en esto). </p><br><p>  ¿Se puede hacer esto usando consultas atómicas?  Si!  Y no es difícil, solo necesitamos generalizar los "átomos": agregarles las columnas utilizadas en todas las consultas de nuestra tubería.  Si lo piensa, esto es "correcto" desde el punto de vista de la documentación: si se utiliza una columna en alguna consulta (incluso en la parte where), es parte de los datos del área temática que nos interesa. </p><br><p>  Y luego todo es simple: almacenamos en caché átomos repetitivos (marcos de datos), construimos una cadena de transformaciones para que la intersección de los marcos de datos en caché sea mínima (por cierto, esto no es trivial, pero puede ser algoritmoizable). </p><br><p>  Y obtenemos el transportador más eficiente completamente "gratis".  Y además de esto, un artefacto útil e importante es la "preparación" para la documentación de datos sobre el área temática. </p><br><h1 id="robotizaciya-i-avtomatizaciya">  Robotización y Automatización </h1><br><p>  Los átomos son más susceptibles al procesamiento automático que el "gran y poderoso SQL": su estructura es simple y clara, la chispa nos analiza (por lo que le agradecemos especialmente), también crea planes de consulta, analizando los cuales puede reordenar automáticamente la secuencia del procesamiento de la consulta. </p><br><p>  Entonces aquí puedes jugar algo. </p><br><h1 id="v-zaklyuchenie">  En conclusión </h1><br><p>  Tal vez soy demasiado optimista: me parece que esta ruta (atomización de consulta) funciona más que tratar de describir una fuente de datos después del hecho.  Además, por cierto, para qué sirven los "aditivos", obtenemos un aumento en la eficiencia.  ¿Por qué considero que el enfoque atómico "funciona"?  Es parte del proceso regular, lo que significa que los artefactos descritos tienen una posibilidad real de ser relevantes a largo plazo. </p><br><p>  Probablemente me perdí algo, ¿ayudar a encontrar (en los comentarios)? </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/481924/">https://habr.com/ru/post/481924/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../481910/index.html">Escribir comportamiento de deslizamiento vertical flexible</a></li>
+<li><a href="../481912/index.html">Como una semana fui pasante en SRE-ingeniero. Mira a través de los ojos de un ingeniero de software</a></li>
+<li><a href="../481914/index.html">Spring Boot vs Spring MVC vs Spring - ¿Cómo se comparan?</a></li>
+<li><a href="../481916/index.html">¿Para qué fue recordado el año 2019 en desarrollo?</a></li>
+<li><a href="../481922/index.html">Año nuevo IMaskjs 6 - React Native, Pipes, ESM</a></li>
+<li><a href="../481926/index.html">Conozca la nueva solución Veeam Backup para AWS</a></li>
+<li><a href="../481930/index.html">Cultura de desarrollo: cómo se evalúan el rendimiento y la eficiencia</a></li>
+<li><a href="../481932/index.html">Implementación de bases de datos y tiempo de inactividad cero</a></li>
+<li><a href="../481934/index.html">Análisis: por qué las acciones de Tesla están creciendo en precio</a></li>
+<li><a href="../481936/index.html">Pros y contras de las pruebas A / B: experiencia de grandes empresas</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

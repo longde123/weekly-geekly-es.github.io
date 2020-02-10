@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏻‍⚕️ 👐🏽 🐗 Disyuntor Istio: desconecte los contenedores rotos 👦 🗑️ 🚛</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Las vacaciones terminaron y volvemos con nuestro segundo post en la serie Istio Service Mesh. 
+
+
+
+ El tema de hoy es el disyuntor, que, traducido al r...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Disyuntor Istio: desconecte los contenedores rotos</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/redhatrussia/blog/483262/">  Las vacaciones terminaron y volvemos con nuestro segundo post en la serie Istio Service Mesh. <br><br><img src="https://habrastorage.org/webt/vb/9o/rl/vb9orlnb9lwiilx0aknfy1ikqs0.png" width="100%"><br><br>  El tema de hoy es el disyuntor, que, traducido al ruso como electrotécnico, significa "disyuntor", coloquialmente - "disyuntor".  Solo en Istio se desconecta esta máquina no de circuitos en cortocircuito o sobrecargados, sino de contenedores defectuosos. <br><a name="habracut"></a><br><h3>  Cómo debería funcionar idealmente </h3><br>  Cuando Kubernetes gestiona los microservicios, por ejemplo, como parte de la plataforma OpenShift, aumentan y disminuyen automáticamente según la carga.  Dado que los microservicios funcionan en pods, puede haber varias instancias de microservicio en contenedores en un punto final, y Kubernetes enrutará las solicitudes y equilibrará la carga entre ellas.  Y, idealmente, todo esto debería funcionar perfectamente. <br><br>  Recordamos que los microservicios son pequeños y efímeros.  La efímera, que aquí significa la simplicidad del origen y la desaparición, a menudo se subestima.  El nacimiento y la muerte de la próxima instancia de microservicio en pod es bastante esperado, OpenShift y Kubernetes lo hacen bien, y todo funciona muy bien, pero nuevamente en teoría. <br><br><h3>  ¿Cómo funciona realmente? </h3><br>  Ahora imagine que una instancia particular del microservicio, es decir, el contenedor, se ha vuelto inutilizable: o no responde (error 503) o, lo que es más desagradable, reacciona, pero demasiado lento.  En otras palabras, silencia o no responde a las solicitudes, pero no lo elimina automáticamente del grupo.  ¿Qué se debe hacer en este caso?  Intenta de nuevo?  ¿Eliminarlo del esquema de enrutamiento?  ¿Y qué significa "demasiado lento": cuántos son estos números y quién los define?  ¿Quizás solo darle un descanso e intentarlo más tarde?  Si es así, ¿cuánto más tarde? <br><br><h3>  ¿Qué es la eyección de la piscina en Istio? </h3><br>  Y aquí Istio viene al rescate con sus interruptores automáticos, que eliminan temporalmente los contenedores defectuosos del conjunto de recursos de enrutamiento y equilibrio de carga, implementando el procedimiento de expulsión del conjunto. <br><br>  Utilizando una estrategia de detección de valores atípicos, Istio detecta las curvas de pod que se eliminan de la fila general y las elimina del grupo de recursos durante un tiempo determinado, llamado "ventana de suspensión". <br><br>  Para mostrar cómo funciona esto en Kubernetes en la plataforma OpenShift, comenzamos con una captura de pantalla de los microservicios que normalmente funcionan del ejemplo en el repositorio de <a href="https://github.com/redhat-developer-demos/istio-tutorial">Demos de desarrolladores de Red Hat</a> .  Aquí tenemos dos pods, v1 y v2, en cada uno de los cuales funciona un contenedor.  Cuando no se utilizan las reglas de enrutamiento de Istio, Kubernetes aplica de forma predeterminada un enrutamiento de ida y vuelta equilibrado uniformemente: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/bh/b0/dr/bhb0drqlbvo9j0ataogejcgpwue.png"></div><br><h3>  Preparándose para un choque </h3><br>  Antes de realizar la expulsión de la agrupación, debe crear una regla de enrutamiento Istio.  Supongamos que queremos distribuir solicitudes entre pods con respecto a 50/50.  Además, aumentaremos el número de contenedores v2 de uno a dos, de esta manera: <br><br><pre><code class="plaintext hljs">oc scale deployment recommendation-v2 --replicas=2 -n tutorial</code> </pre> <br>  Ahora definimos una regla de enrutamiento para que el tráfico se distribuya entre los pods en una proporción de 50/50. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/w2/51/pz/w251pzvoaokm49bpul5ehfwsewm.png"></div><br>  Y aquí está el resultado de esta regla: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/wy/22/ww/wy22wwbkg2vync-id4jbhv22ftk.png"></div><br>  Es posible quejarse de que en esta pantalla no es 50/50, sino 14: 9, pero con el tiempo la situación mejorará. <br><br><h3>  Arreglamos un fracaso </h3><br>  Y ahora deshabilitaremos uno de los dos contenedores v2 para que tengamos un contenedor saludable v1, un contenedor saludable v2 y un contenedor fallido v2: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/or/0x/w1/or0xw1jvinlrjkmz3lnttvdh0zo.png"></div><br><h3>  Arreglar el accidente </h3><br>  Entonces, tenemos un contenedor defectuoso, y es hora de expulsar la piscina.  Usando una configuración muy simple, excluiremos este contenedor fallido de cualquier esquema de enrutamiento durante 15 segundos con la expectativa de que volverá a un estado saludable (se reiniciará o restaurará el rendimiento).  Así es como se ve esta configuración y los resultados de su trabajo: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/xz/6u/7e/xz6u7emeucpeqn6ozq7rnsibtxy.png"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/yk/m6/3t/ykm63tdppq-qphkyhikilfcwkai.png"></div><br>  Como puede ver, el contenedor v2 fallido ya no se usa al enrutar solicitudes, ya que se eliminó del grupo.  Pero después de 15 segundos, volverá automáticamente a la piscina.  En realidad, acabamos de mostrar cómo funciona la eyección de piscina. <br><br><h3>  Comienza a construir arquitectura </h3><br>  La expulsión de la piscina, combinada con las capacidades de monitoreo de Istio, le permite comenzar a construir un marco para reemplazar automáticamente los contenedores fallidos para reducir o incluso eliminar el tiempo de inactividad y los bloqueos. <br><br>  La NASA tiene un lema de alto perfil: el fracaso no es una opción, escrito por el director de vuelo <a href="https://ru.wikipedia.org/wiki/%25D0%259A%25D1%2580%25D0%25B0%25D0%25BD%25D1%2586,_%25D0%2594%25D0%25B6%25D0%25B8%25D0%25BD">Gene Krantz</a> .  Se puede traducir al ruso como "La derrota no es una opción", y el punto aquí es que todo puede funcionar con suficiente voluntad.  Sin embargo, en la vida real, las fallas no solo ocurren, son inevitables, en todas partes y en todo.  ¿Y cómo afrontarlos en el caso de los microservicios?  En nuestra opinión, es mejor confiar no en la fuerza de voluntad, sino en las capacidades de los contenedores, <a href="https://developers.redhat.com/topics/kubernetes/">Kubernetes</a> , <a href="https://developers.redhat.com/products/openshift/overview/">Red Hat OpenShift</a> e <a href="https://developers.redhat.com/topics/service-mesh/">Istio</a> . <br><br>  Istio, como escribimos anteriormente, implementa el concepto de disyuntores, que se ha demostrado en el mundo físico.  Y así como una máquina automática desconecta una parte problemática de un circuito, el disyuntor de software en Istio desconecta la conexión entre el flujo de solicitud y el contenedor del problema cuando algo está mal con el punto final, por ejemplo, cuando el servidor falla o comienza a disminuir la velocidad. <br><br>  Además, en el segundo caso solo hay más problemas, ya que los frenos de un contenedor no solo causan una cascada de demoras en los servicios que acceden a él y, como resultado, reducen el rendimiento del sistema en su conjunto, sino que también provocan repetidas solicitudes al servicio que ya se está ejecutando lentamente, lo que solo exacerba la situación . <br><br><h3>  Disyuntor en teoría </h3><br>  Circuit Breaker es un proxy que controla el flujo de solicitudes al punto final.  Cuando este punto deja de funcionar o, según la configuración, comienza a ralentizarse, el proxy se desconecta del contenedor.  El tráfico se redirige a otros contenedores, bueno, solo por el equilibrio de carga.  La conexión permanece abierta (abierta) para una ventana de suspensión dada, digamos, dos minutos, y luego se considera medio abierta (medio abierta).  Intentar enviar la siguiente solicitud determina el estado posterior de la comunicación.  Si todo está bien con el servicio, la conexión vuelve al estado operativo y nuevamente se cierra.  Si todavía hay algo mal con el servicio, la conexión se abre y la ventana de suspensión se vuelve a habilitar.  Así es como se ve el diagrama de estado del disyuntor simplificado: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/qg/0g/z4/qg0gz47wjymiayq4bgshfsrceyy.png"></div><br>  Es importante señalar aquí que todo esto sucede a nivel de, por así decirlo, la arquitectura del sistema.  Por lo tanto, en algún momento tendrá que enseñar a sus aplicaciones a trabajar con el disyuntor, por ejemplo, proporcionar un valor predeterminado en respuesta o, si es posible, ignorar la existencia del servicio.  Para esto se usa un patrón de mamparo, pero está más allá del alcance de este artículo. <br><br><h3>  Disyuntor en la práctica </h3><br>  Por ejemplo, lanzaremos en OpenShift dos versiones de nuestro microservicio de recomendaciones.  La versión 1 funcionará bien, pero en v2 construiremos un retraso para simular los frenos en el servidor.  Para ver los resultados, use la herramienta de <a href="https://github.com/JoeDog/siege">asedio</a> : <br><br><pre> <code class="plaintext hljs">siege -r 2 -c 20 -v customer-tutorial.$(minishift ip).nip.io</code> </pre><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/kn/qa/e_/knqae_n13cpibc7tc9lk7fc5lqq.png"></div><br>  Todo parece funcionar, pero ¿a qué costo?  A primera vista, tenemos una disponibilidad del 100%, pero eche un vistazo más de cerca: la duración máxima de la transacción es de hasta 12 segundos.  Esto es claramente un cuello de botella y necesita ser bordado. <br><br>  Para hacer esto, usaremos Istio para eliminar el acceso a contenedores lentos.  Así es como se ve la configuración correspondiente usando el disyuntor: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/eh/ld/f4/ehldf4gh5qxkwqckn3naufhfs2a.png"></div><br>  La última línea con el parámetro httpMaxRequestsPerConnection indica que la conexión debería abrirse cuando se intenta crear una conexión más, la segunda, además de la existente.  Dado que nuestro contenedor imita un servicio de frenado, tales situaciones ocurrirán periódicamente, y luego Istio devolverá un error 503, y esto es lo que mostrará el sitio: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/vv/9h/g5/vv9hg56bzoliqjb6tay19as6mn0.png"></div><br><h3>  OK, tenemos Circuit Breaker, ¿qué sigue? </h3><br>  Entonces, implementamos un apagado automático, sin tocar el código fuente de los propios servicios.  Usando el interruptor de circuito y el procedimiento de expulsión del grupo descrito anteriormente, podemos quitar los contenedores de freno del grupo de recursos hasta que vuelvan a la normalidad y verificar su estado con la frecuencia especificada; en nuestro ejemplo, esto es dos minutos (parámetro sleepWindow). <br><br>  Tenga en cuenta que la capacidad de la aplicación para responder al error 503 todavía se establece en el nivel de su código fuente.  Existen muchas estrategias para trabajar con Circuit Breaker, que se aplican según la situación. <br><br>  <b>En la próxima publicación:</b> hablaremos sobre el seguimiento y la supervisión, que ya están incorporados o se agregan fácilmente a Istio, así como sobre cómo introducir errores en el sistema intencionalmente. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/483262/">https://habr.com/ru/post/483262/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../483252/index.html">El maximalismo juvenil y el espíritu de contradicción en los adolescentes desde el punto de vista de la neurología.</a></li>
+<li><a href="../483254/index.html">Detrás de las escenas de la vida de un moderador de desbordamiento de pila</a></li>
+<li><a href="../483256/index.html">Una compilación de datos estadísticos entretenidos # 3</a></li>
+<li><a href="../483258/index.html">Plataformas de código bajo: ¿una panacea o una apuesta arriesgada?</a></li>
+<li><a href="../483260/index.html">Cómo tomar decisiones y priorizar tareas al crear un producto</a></li>
+<li><a href="../483264/index.html">Dijkstra: La mayor victoria de Occidente en la Guerra Fría sobre la URSS fue la transición a IBM - mito reventado</a></li>
+<li><a href="../483266/index.html">Independencia financiera Lo que ha cambiado a lo largo del año.</a></li>
+<li><a href="../483268/index.html">El libro "Moda, fe, fantasía y la nueva física del universo"</a></li>
+<li><a href="../483270/index.html">La evolución de las aplicaciones HighLoad en el ejemplo de un portal regional de servicios públicos</a></li>
+<li><a href="../483272/index.html">El camino desde el negocio de los restaurantes hasta la empresa de TI.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
