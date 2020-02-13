@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍽️ 👰🏽 ☘️ Migración de la base de datos de GitLab a PostgreSQL externo 🖖🏼 👩🏼‍🤝‍👨🏻 👨‍⚕️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hola a todos! 
+
+ En este artículo, migraremos la base de datos de GitLab del PostgreSQL interno, que está instalado con GitLab, al PostgreSQL externo,...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Migración de la base de datos de GitLab a PostgreSQL externo</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/476258/"> Hola a todos! <br><br>  En este artículo, migraremos la base de datos de GitLab del PostgreSQL interno, que está instalado con GitLab, al PostgreSQL externo, que ya está instalado en otro servidor. <br><br><img src="https://habrastorage.org/webt/xc/2l/gc/xc2lgcwnx8zb3ksut8bridiklou.png"><a name="habracut"></a><br><blockquote>  <b>NOTA</b> <br>  Se garantiza que todas las acciones funcionarán en CentOS 7.7.1908, PostgreSQL 12 y GitLab 12.4.2-ee.0. <br></blockquote><h2>  Preparación preliminar </h2><br>  <b>Haremos tres cosas por adelantado:</b> <br><br>  1. En el servidor PostgreSQL, agregue una regla al firewall que permita conexiones entrantes al puerto PostgreSQL 5432 / TCP. <br><br>  <b>En mi caso:</b> <br><br><pre><code class="bash hljs">firewall-cmd --add-service=postgresql --zone=internal --permanent success firewall-cmd --reload success</code> </pre> <br>  2. En el mismo lugar, pero en el archivo postgresql.conf, permita que la interfaz de red acepte conexiones entrantes desde el exterior.  Abra el archivo postgresql.conf, busque la línea comentada " <i>#listen_addresses = 'localhost'</i> " y agregue la línea debajo de ella.  Donde es 10.0.0.2, la dirección de su interfaz. <br><br>  <b>En mi caso:</b> <br><br><pre> <code class="bash hljs">vi /var/lib/pgsql/12/data/postgresql.conf <span class="hljs-comment"><span class="hljs-comment"># - Connection Settings - #listen_addresses = 'localhost' # what IP address(es) to listen on; listen_addresses = 'localhost, 10.0.0.2' # comma-separated list of addresses;</span></span></code> </pre> <br><br>  3. Dado que el servidor GitLab se conectará a una base de datos externa, esto debe habilitarse en el servidor PostgreSQL en el archivo pg_hba.conf.  La dirección de mi servidor GitLab es 10.0.0.4. <br><br>  <b>Abra el archivo pg_hba.conf y agregue la línea allí:</b> <br><br><pre> <code class="bash hljs">host all gitlab 10.0.0.4/24 md5</code> </pre> <br>  <b>Se verá así:</b> <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># TYPE DATABASE USER ADDRESS METHOD # "local" is for Unix domain socket connections only local all postgres md5 # IPv4 local connections: host all postgres 127.0.0.1/32 md5 host all gitlab 10.0.0.4/24 md5</span></span></code> </pre> <br>  <b>Finalmente, reinicie el servicio postgresql:</b> <br><br><pre> <code class="bash hljs">systemctl restart postgresql-12.service</code> </pre> <br><h2>  Exportar base de datos de GitLab </h2><br>  <b>Ejecutemos, en el servidor GitLab, una copia de seguridad de la base de datos:</b> <br><pre> <code class="bash hljs">sudo -u gitlab-psql /opt/gitlab/embedded/bin/pg_dumpall -U gitlab-psql --host=/var/opt/gitlab/postgresql &gt; /tmp/internal-gitlab.sql</code> </pre> <br><br>  <b>La copia de seguridad apareció en / tmp:</b> <br><br><pre> <code class="bash hljs">ls -lh total 836K -rw-r--r--. 1 root root 836K Nov 18 12:59 internal-gitlab.sql</code> </pre> <br>  <b>Copie esta copia en el servidor PostgreSQL:</b> <br><br><pre> <code class="bash hljs">scp /tmp/internal-gitlab.sql 10.0.0.2:/tmp/ internal-gitlab.sql 100% 835KB 50.0MB/s 00:00</code> </pre> <br><h2>  Importar "internal-gitlab.sql" en PostgreSQL </h2><br>  <b>Importe la base de datos a PostgreSQL:</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -f /tmp/internal-gitlab.sql</code> </pre> <br>  <b>Verifique que la base de datos esté ahora en PostgreSQL:</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -l</code> </pre> <br>  <b>La siguiente línea debería aparecer:</b> <br><br><pre> <code class="bash hljs">gitlabhq_production | gitlab | UTF8 | en_US.UTF-8 | en_US.UTF-8 |</code> </pre> <br><h2>  Configurando GitLab </h2><br>  Después de importar la base de datos a PostgreSQL, se creó el usuario de gitlab.  Necesita cambiar la contraseña de este usuario. <br><br>  <b>Cambiar contraseña</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -c <span class="hljs-string"><span class="hljs-string">"ALTER USER gitlab ENCRYPTED PASSWORD '' VALID UNTIL 'infinity';"</span></span> Password <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> user postgres: ALTER ROLE</code> </pre> <br>  Luego, en el servidor GitLab en el archivo de configuración /etc/gitlab/gitlab.rb, especificaremos todos los datos del PostgreSQL externo. <br><br>  <b>Haga una copia de seguridad del archivo gitlab.rb:</b> <br><br><pre> <code class="bash hljs">cp /etc/gitlab/gitlab.rb /etc/gitlab/gitlab.rb.orig</code> </pre> <br>  <b>Ahora al final del archivo gitlab.rb, agregue estas líneas:</b> <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   PostgreSQL. postgresql['enable'] = false #      .  . gitlab_rails['db_adapter'] = 'postgresql' gitlab_rails['db_encoding'] = 'utf8' gitlab_rails['db_host'] = '10.0.0.2' gitlab_rails['db_port'] = 5432 gitlab_rails['db_database'] = "gitlabhq_production" gitlab_rails['db_username'] = 'gitlab' gitlab_rails['db_password'] = '******'</span></span></code> </pre> <br>  <b>Guarde el archivo /etc/gitlab/gitlab.rb y reconfigure GitLab:</b> <br><br><pre> <code class="bash hljs">gitlab-ctl reconfigure &amp;&amp; gitlab-ctl restart</code> </pre> <br>  Eso es todo :) <br><br><blockquote>  Una gran solicitud  Si pone un signo menos, escriba el motivo en el comentario. </blockquote></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/476258/">https://habr.com/ru/post/476258/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../476248/index.html">Eventos digitales en Moscú del 18 al 24 de noviembre.</a></li>
+<li><a href="../476250/index.html">Eventos digitales en San Petersburgo del 18 al 24 de noviembre.</a></li>
+<li><a href="../476252/index.html">Migración de correo: cómo moverse fácilmente de un servidor e ir a otro</a></li>
+<li><a href="../476254/index.html">Desde estudiantes hasta incidentes o cómo ingresar a una empresa de TI sin conocimiento y experiencia</a></li>
+<li><a href="../476256/index.html">Siguiendo los pasos del movimiento ruso Scala. Parte 3</a></li>
+<li><a href="../476260/index.html">Recopilamos en rpm WireMock, una utilidad para crear stubs sobre servicios web en Fedora COPR, análogo de PPA en Ubuntu</a></li>
+<li><a href="../476262/index.html">Acerca de los espejos de repositorio de Centos y elegir el mejor</a></li>
+<li><a href="../476264/index.html">Telegram bot para aprender idiomas extranjeros: desde apiñar palabras hasta hablar</a></li>
+<li><a href="../476266/index.html">Prácticas en Mars Digital Technologies. Cómo aplicamos el aprendizaje profundo en M&M</a></li>
+<li><a href="../476268/index.html">Soluciones para los desafíos de búsqueda de errores ofrecidos por el equipo de PVS-Studio en las conferencias en 2018-2019</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
