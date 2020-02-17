@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍹 👩🏿 👢 Cómo recopilar métricas no distorsionadas por referencia de tiempo con Prometheus 🛀🏾 💅🏿 👨🏽‍🚒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Muchas aplicaciones de red consisten en un servidor web que procesa el tráfico en tiempo real y un controlador adicional que se ejecuta en segundo pla...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cómo recopilar métricas no distorsionadas por referencia de tiempo con Prometheus</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/470133/"><p><img src="https://habrastorage.org/webt/-6/xs/ee/-6xseehi1ojmkxmb_phq6tr3h_a.jpeg"></p><br><p>  Muchas aplicaciones de red consisten en un servidor web que procesa el tráfico en tiempo real y un controlador adicional que se ejecuta en segundo plano de forma asincrónica.  Hay muchos consejos excelentes para verificar el estado del tráfico, y la comunidad no deja de desarrollar herramientas como Prometheus que ayudan con la evaluación.  Pero los manejadores a veces no son menos, e incluso más, importantes.  También necesitan atención y evaluación, pero hay poca orientación sobre cómo hacer esto mientras se evitan las trampas comunes. </p><br><p>  Este artículo está dedicado a las trampas que son más comunes en el proceso de evaluación de manejadores asincrónicos, utilizando un ejemplo de un incidente en un entorno de producción donde, incluso con métricas, era imposible determinar exactamente qué estaban haciendo los manejadores.  El uso de las métricas ha cambiado tanto el enfoque que las métricas mismas mintieron abiertamente, dicen, sus manejadores al infierno. </p><br><p> Veremos cómo usar las métricas de tal manera que proporcionemos una estimación precisa y, en conclusión, mostraremos la implementación de referencia de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">prometheus-client-tracer de</a> código abierto, que puede usar en sus aplicaciones. </p><a name="habracut"></a><br><h3 id="incident">  Incidente </h3><br><p>  Las alertas llegaron a una velocidad de ametralladora: la cantidad de errores HTTP aumentó considerablemente, y los paneles de control confirmaron que las colas de solicitudes estaban creciendo y que el tiempo de respuesta se estaba agotando.  Aproximadamente 2 minutos después, las colas se borraron y todo volvió a la normalidad. </p><br><p>  Tras una inspección más cercana, resultó que nuestros servidores API se pusieron de pie, esperando una respuesta de DB, lo que provocó que se detuviera y de repente levantara toda la actividad.  Y cuando considera que la carga más pesada cae con mayor frecuencia en el nivel de los procesadores asíncronos, se han convertido en los principales sospechosos.  La pregunta lógica era: ¿qué están haciendo allí? </p><br><p>  La métrica de Prometheus muestra lo que lleva tiempo el proceso, aquí está: </p><br><pre><code class="plaintext hljs"># HELP job_worked_seconds_total Sum of the time spent processing each job class # TYPE job_worked_seconds_total counter job_worked_seconds_total{job}</code> </pre> <br><p>  Al rastrear el tiempo de ejecución total de cada tarea y la frecuencia con la que cambia la métrica, descubriremos cuánto tiempo de trabajo se ha dedicado.  Si por un período de 15 segundos.  el número aumentó en 15, esto implica 1 manejador ocupado (un segundo por cada segundo pasado), mientras que un aumento de 30 significa 2 manejadores, etc. </p><br><p>  Un horario de trabajo durante el incidente mostrará lo que estamos enfrentando.  Los resultados son decepcionantes;  la hora del incidente (16: 02-16: 04) está marcada por la alarmante línea roja: </p><br><p><img src="https://habrastorage.org/webt/33/1u/bc/331ubcimex4xb4hm_zdondnxcnw.png"><br>  <em>Actividad del manejador durante el incidente: se observa una brecha notable.</em> </p><br><p>  Fue doloroso para mí, como persona que estaba depurando después de esta pesadilla, ver que la curva de actividad estaba en el fondo justo durante el incidente.  Este es el momento de trabajar con enlaces web, en el que tenemos 20 controladores dedicados.  Según los registros, sé que todos estaban en el negocio, y esperaba que la curva fuera de unos 20 segundos, y vi una línea casi recta.  Además, ¿ves este gran pico azul a las 16:05?  A juzgar por el calendario, 20 procesadores de un solo subproceso pasaron 45 segundos.  por cada segundo de actividad, pero ¿es esto posible? </p><br><h3 id="gde-i-chto-poshlo-ne-tak">  ¿Dónde y qué salió mal? </h3><br><p>  El cronograma del incidente es mentiroso: oculta la actividad laboral y al mismo tiempo muestra lo superfluo, dependiendo de dónde medir.  Para saber por qué sucede esto, debe tener en cuenta la implementación del seguimiento de métricas y cómo interactúa con las métricas de recopilación de Prometheus. </p><br><p>  Comenzando con la forma en que los manejadores recopilan las métricas, puede esbozar un esquema aproximado de implementación del flujo de trabajo (ver a continuación).  Nota: los controladores <em>solo</em> actualizan las métricas <em>al completar una tarea</em> . </p><br><pre> <code class="plaintext hljs">class Worker JobWorkedSecondsTotal = Prometheus::Client::Counter.new(...) def work job = acquire_job start = Time.monotonic_now job.run ensure # run after our main method block duration = Time.monotonic_now - start JobWorkedSecondsTotal.increment(by: duration, labels: { job: job.class }) end end</code> </pre> <br><p>  Prometheus (con su filosofía de extracción de métricas) envía una solicitud GET a cada controlador cada 15 segundos, registrando los valores de las métricas en el momento de la solicitud.  Los controladores actualizan constantemente las métricas de las tareas completadas, y con el tiempo podemos mostrar gráficamente la dinámica de los cambios en los valores. </p><br><p>  El problema con la subvaloración y revaluación comienza a aparecer cada vez que el tiempo que lleva completar una tarea excede el tiempo de espera para una solicitud que llega cada 15 segundos.  Por ejemplo, una tarea comienza 5 segundos antes de la solicitud y termina 1 segundo después.  Total y generalmente, dura 6 segundos, pero este tiempo es visible solo al estimar los costos de tiempo realizados después de la solicitud, mientras que 5 de estos 6 segundos se gastaron antes de la solicitud. </p><br><p>  Los indicadores son aún más impíos si las tareas tardan más que el período de informe (15 segundos). Durante la ejecución de la tarea durante 1 minuto, Prometheus tendrá tiempo para enviar 4 solicitudes a los procesadores, pero la métrica se actualizará solo después del cuarto. </p><br><p>  Una vez dibujada una línea de tiempo de la actividad laboral, veremos cómo el momento en que se actualiza la métrica afecta lo que ve Prometeo.  En el siguiente diagrama, dividimos la línea de tiempo de dos controladores en varios segmentos que muestran tareas de diferentes duraciones.  Las etiquetas rojas (15 segundos) y azules (30 segundos) indican 2 muestras de datos Prometheus;  Las tareas que sirvieron como fuente de datos para la evaluación se resaltan en consecuencia. </p><br><p><img src="https://habrastorage.org/webt/ph/lc/z6/phlcz67lq7o3tpar3vgibp71h9o.png"></p><br><p>  Independientemente de lo que estén haciendo los manejadores a plena carga, harán 30 segundos de trabajo cada intervalo de 15 segundos.  Dado que Prometeo no ve el trabajo hasta que se completa, a juzgar por las métricas, se completaron 14 segundos de trabajo en el primer intervalo de tiempo y 42 segundos en el segundo.  Si cada controlador realiza una tarea voluminosa, incluso después de unas pocas horas, hasta el final, no veremos informes de que el trabajo está en curso. </p><br><p>  Para demostrar este efecto, realicé un experimento con diez manejadores dedicados a tareas cuya longitud es diferente y semi-normal distribuida entre 0.1 segundos y un valor ligeramente mayor (ver <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">tareas aleatorias</a> ).  A continuación hay 3 gráficos que representan la actividad laboral;  la longitud en el tiempo se muestra en orden creciente. </p><br><p><img src="https://habrastorage.org/webt/6o/bx/jh/6obxjhklfq8sxwhdbjrzpnsgcmm.png"><br>  <em>Tareas que duran hasta 1 segundo.</em> </p><br><p>  El primer gráfico muestra que cada controlador realiza aproximadamente 1 segundo de trabajo en cada segundo de tiempo, esto es visible en líneas planas, y la cantidad total de trabajo es igual a nuestras capacidades (10 controladores dan un segundo de trabajo por segundo de tiempo).  En realidad, esto, independientemente de la duración de la tarea, esperamos: tanto en tareas cortas como largas, los procesadores con carga constante deberían ceder. </p><br><p><img src="https://habrastorage.org/webt/x-/lj/zp/x-ljzpfv-jdybqpk-osmcfd3rui.png"><br>  <em>Tareas que duran hasta 15 segundos.</em> </p><br><p>  La duración de las tareas aumenta y aparece un desorden en el cronograma: todavía tenemos 10 procesadores, todos ellos están totalmente ocupados, pero la cantidad total de trabajo se salta, ya sea menor o mayor que el límite de capacidad útil (10 segundos). </p><br><p><img src="https://habrastorage.org/webt/uo/cc/mh/uoccmht2erjrgjywbvlo7sn6-tk.png"><br>  <em>Tareas que duran hasta 30 segundos.</em> </p><br><p>  La evaluación de trabajos que duran hasta 30 segundos es simplemente ridícula.  Una métrica con límite de tiempo muestra actividad cero para las tareas más largas y, solo cuando se completan las tareas, nos dibuja picos de actividad. </p><br><h3 id="vosstanovim-doverie">  Restaurar la confianza </h3><br><p>  Esto no fue suficiente para nosotros, por lo que hay otro problema mucho más insidioso con estas tareas a largo plazo que estropean nuestras métricas.  Cada vez que se completa una tarea a largo plazo, por ejemplo, si Kubernetes arroja una cápsula de un grupo o cuando un nodo muere, ¿qué sucede con las métricas?  Vale la pena actualizarlos inmediatamente después de completar la tarea, ya que muestran que <strong>no hicieron el</strong> trabajo <strong>en absoluto</strong> . </p><br><p>  Las métricas no deben mentir.  La computadora portátil aúlla incrédulamente, causando horror existencial, y las herramientas de vigilancia que distorsionan la imagen del mundo son una trampa y no son adecuadas para el trabajo. </p><br><p>  Afortunadamente, el asunto es reparable.  La distorsión de datos se produce porque Prometheus toma medidas independientemente de cuándo los procesadores actualizan las métricas.  Si pedimos a los controladores que actualicen las métricas cuando Prometheus envía solicitudes, veremos que Prometheus ya no es peculiar y muestra la actividad actual. </p><br><h3 id="predstavlyaem-tracer">  Introducing ... Tracer </h3><br><p>  Una solución al problema de métricas distorsionadas es el <code>Tracer</code> , un diseño abstracto que evalúa la actividad en tareas de larga duración mediante la actualización gradual de las métricas relacionadas con Prometheus. </p><br><pre> <code class="plaintext hljs">class Tracer def trace(metric, labels, &amp;block) ... end def collect(traces = @traces) ... end end</code> </pre> <br><p>  Los trazadores proporcionan un método de rastreo que toma las métricas de Prometheus y la tarea a seguir.  El comando <code>trace</code> ejecutará el bloque dado (funciones Ruby anónimas) y asegurará que las solicitudes a <code>tracer.collect</code> durante la ejecución actualizarán de manera incremental las métricas relacionadas sin importar cuánto tiempo haya pasado desde la última solicitud de <code>collect</code> . </p><br><p>  Necesitamos conectar el <code>tracer</code> a los manejadores para rastrear la duración de la tarea y el punto final que atiende las solicitudes de métricas de Prometheus.  Comenzamos con los manejadores, inicializamos un nuevo trazador y le pedimos que <code>acquire_job.run</code> la ejecución de <code>acquire_job.run</code> . </p><br><pre> <code class="plaintext hljs">class Worker def initialize @tracer = Tracer.new(self) end def work @tracer.trace(JobWorkedSecondsTotal, labels) { acquire_job.run } end # Tell the tracer to flush (incremental) trace progress to metrics def collect @tracer.collect end end</code> </pre> <br><p>  En esta etapa, el trazador solo actualizará las métricas en segundos dedicados a la tarea completada, como lo hicimos en la implementación inicial de las métricas.  Debemos solicitar al rastreador que actualice nuestras métricas antes de ejecutar una solicitud de Prometheus.  Esto se puede hacer configurando el rack de middleware. </p><br><pre> <code class="plaintext hljs"># config.ru # https://rack.github.io/ class WorkerCollector def initialize(@app, workers: @workers); end def call(env) workers.each(&amp;:collect) @app.call(env) # call Prometheus::Exporter end end # Rack middleware DSL workers = start_workers # Array[Worker] # Run the collector before serving metrics use WorkerCollector, workers: workers use Prometheus::Middleware::Exporter</code> </pre> <br><p>  Rack es una interfaz para servidores web Ruby que le permite combinar múltiples manejadores de Rack en un único punto final.  El comando <code>config.ru</code> determina que la aplicación Rack, cada vez que recibe la solicitud, envía el comando de <code>collect</code> a los controladores primero, y solo luego le dice al cliente Prometheus que dibuje los resultados de la recopilación. </p><br><p>  En cuanto a nuestro gráfico, actualizamos las métricas cada vez que se completa la tarea o cuando recibimos una solicitud de métricas.  Las tareas que tienen varias consultas envían igualmente datos en todos los segmentos: como lo muestran las tareas cuya duración se dividió en intervalos de 15 segundos. </p><br><p><img src="https://habrastorage.org/webt/v3/p-/ve/v3p-vekym_g0w_cnamhqxfsaaya.png"></p><br><h3 id="luchshe-li-eto">  ¿Es mejor? </h3><br><p>  El uso del rastreador las 24 horas afecta la forma en que se registra la actividad.  A diferencia de las mediciones iniciales, que mostraron una "sierra", cuando el número de picos excedía el número de procesadores en ejecución y períodos de silencio sordo, el experimento con diez procesadores proporciona un gráfico que muestra claramente que cada procesador está integrado en el trabajo que se monitorea de manera uniforme. </p><br><p><img src="https://habrastorage.org/webt/a5/ng/lj/a5ngljwtmc1ppqxlpwjqdx98_eu.png"><br>  <em>Métricas basadas en la comparación (izquierda) y controladas por el trazador (derecha), tomadas de un experimento de trabajo.</em> </p><br><p>  En comparación con el calendario francamente inexacto y caótico de las mediciones iniciales, las métricas recopiladas por el marcador son suaves y consistentes.  Ahora no solo vinculamos con precisión el trabajo a cada solicitud de métrica, sino que tampoco nos preocupamos por la muerte repentina de ninguno de los manejadores: Prometheus registra las métricas hasta que el manejador desaparece, evaluando todo su trabajo. </p><br><h3 id="mozhno-li-eto-ispolzovat">  ¿Se puede usar esto? </h3><br><p>  Si!  La interfaz de <code>Tracer</code> ha resultado útil en muchos proyectos, por lo que esta es una gema de Ruby separada, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">prometheus-client-tracer</a> .  Si usa el cliente Prometheus en sus aplicaciones Ruby, simplemente agregue el <code>prometheus-client-tracer</code> a su Gemfile: </p><br><pre> <code class="plaintext hljs">require "prometheus/client" require "prometheus/client/tracer" JobWorkedSecondsTotal = Prometheus::Client::Counter.new(...) Prometheus::Client.trace(JobWorkedSecondsTotal) do sleep(long_time) end</code> </pre> <br><p>  Si esto le resulta útil y desea que el cliente oficial de Prometheus Ruby aparezca en <code>Tracer</code> , deje un comentario en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">client_ruby # 135</a> . </p><br><h3 id="nu-i-naposledok-koe-kakie-mysli">  Y finalmente, algunos pensamientos. </h3><br><p>  Espero que esto ayude a otros a recolectar métricas de manera más consciente para tareas de larga duración y resolver uno de los problemas comunes.  No se equivoque, está asociado no solo con el procesamiento asincrónico: si sus solicitudes HTTP se ralentizan, también se beneficiarán del uso del rastreador al evaluar el tiempo dedicado al procesamiento. </p><br><p>  Como de costumbre, cualquier comentario y corrección son bienvenidos: escriba a Twitter o <a href="">abra PR</a> .  Si desea contribuir a la gema del trazador, el código fuente está en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">prometheus-client-tracer-ruby</a> . </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/470133/">https://habr.com/ru/post/470133/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../470121/index.html">Escuelas de programación de la empresa o cómo ingresar a TI</a></li>
+<li><a href="../470123/index.html">Yandex.Money trampa financiera</a></li>
+<li><a href="../470125/index.html">No juzgues estrictamente el código de otra persona</a></li>
+<li><a href="../470127/index.html">Compositor con una larga memoria a corto plazo.</a></li>
+<li><a href="../470129/index.html">Gestión declarativa de memoria</a></li>
+<li><a href="../470135/index.html">¿Una aplicación web interactiva sin programación? Fácil! Mavo en tus brazos</a></li>
+<li><a href="../470139/index.html">2 hacks de vida: alternativas a la búsqueda clásica en Microsoft SQL Server</a></li>
+<li><a href="../470145/index.html">“¡Cuidado, FAS!”: ¿Por qué es peligroso el boleto militar en la publicidad, por qué es importante saber matemáticas y si siempre se necesita la verdad?</a></li>
+<li><a href="../470149/index.html">No habrá colecciones inmutables en Java, ni ahora ni nunca</a></li>
+<li><a href="../470153/index.html">Diccionario del modelo de datos</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

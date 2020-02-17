@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✌🏽 📵 🧑🏽‍🤝‍🧑🏽 Archivos locales al portar una aplicación a Kubernetes 🏒 👨🏾‍⚖️ 🤳🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Cuando se crea un proceso de CI / CD con Kubernetes, a veces hay un problema de incompatibilidad de los requisitos de la nueva infraestructura y la ap...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Archivos locales al portar una aplicación a Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/471582/"><img src="https://habrastorage.org/webt/bx/1x/lp/bx1xlp1iax5bfqfwuggugmedkkq.png"><br><br>  Cuando se crea un proceso de CI / CD con Kubernetes, a veces hay un problema de incompatibilidad de los requisitos de la nueva infraestructura y la aplicación que se le transfiere.  En particular, en la etapa de ensamblaje de la aplicación, es importante obtener <i>una</i> imagen que se utilizará en <i>todos los</i> entornos y clústeres del proyecto.  Este principio subyace a la correcta gestión de contenedores en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">la opinión de Google</a> (nuestro techdir ha <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">hablado</a> repetidamente de esto). <br><br>  Sin embargo, no sorprenderá a nadie con situaciones en las que se utiliza un marco listo para usar en el código del sitio, cuyo uso impone restricciones en su funcionamiento posterior.  Y si es fácil de manejar en un "entorno normal", en Kubernetes, este tipo de comportamiento puede ser un problema, especialmente cuando lo encuentras por primera vez.  Aunque una mente ingeniosa puede ofrecer soluciones de infraestructura que parecen obvias e incluso bastante buenas a primera vista ... es importante recordar que la mayoría de las situaciones pueden y deben <b>resolverse arquitectónicamente</b> . <br><br>  Analicemos las soluciones alternativas populares para almacenar archivos, que pueden tener consecuencias desagradables durante el funcionamiento del clúster, y también señalar una ruta más correcta. <a name="habracut"></a><br><br><h2>  Almacenamiento estático </h2><br>  Para ilustrar, considere una aplicación web que utiliza un generador estático para obtener un conjunto de imágenes, estilos y más.  Por ejemplo, el framework Yii PHP tiene un administrador de activos incorporado que genera nombres de directorio únicos.  En consecuencia, la salida es un conjunto de rutas obviamente no intersectadas para las estadísticas del sitio (esto se hizo por varias razones, por ejemplo, para excluir duplicados cuando se usa el mismo recurso con muchos componentes).  Entonces, fuera de la caja, cuando accede por primera vez al módulo de recursos web, se forman y presentan estadísticas (de hecho, a menudo enlaces simbólicos, pero más sobre eso más adelante) con un directorio raíz común que es único para esta implementación: <br><br><ul><li> <code>webroot/assets/2072c2df/css/…</code> </li> <li> <code>webroot/assets/2072c2df/images/…</code> </li> <li> <code>webroot/assets/2072c2df/js/…</code> </li> </ul><br>  ¿Qué es esto cargado en términos de un clúster? <br><br><h3>  Ejemplo más simple </h3><br>  Tomemos un caso bastante común cuando PHP se enfrenta a nginx para distribuir estadísticas y manejar consultas simples.  La forma más fácil es la <i>implementación</i> con dos contenedores: <br><br><pre> <code class="plaintext hljs">apiVersion: apps/v1 kind: Deployment metadata: name: site spec: selector: matchLabels: component: backend template: metadata: labels: component: backend spec: volumes: - name: nginx-config configMap: name: nginx-configmap containers: - name: php image: own-image-with-php-backend:v1.0 command: ["/usr/local/sbin/php-fpm","-F"] workingDir: /var/www - name: nginx image: nginx:1.16.0 command: ["/usr/sbin/nginx", "-g", "daemon off;"] volumeMounts: - name: nginx-config mountPath: /etc/nginx/conf.d/default.conf subPath: nginx.conf</code> </pre> <br>  En una forma simplificada, la configuración de nginx se reduce a lo siguiente: <br><br><pre> <code class="plaintext hljs">apiVersion: v1 kind: ConfigMap metadata: name: "nginx-configmap" data: nginx.conf: | server { listen 80; server_name _; charset utf-8; root /var/www; access_log /dev/stdout; error_log /dev/stderr; location / { index index.php; try_files $uri $uri/ /index.php?$args; } location ~ \.php$ { fastcgi_pass 127.0.0.1:9000; fastcgi_index index.php; include fastcgi_params; } }</code> </pre> <br>  Cuando accede por primera vez al sitio en un contenedor con PHP, aparecen los activos.  Pero en el caso de dos contenedores dentro del mismo pod, nginx no sabe nada acerca de estos archivos estáticos, que (de acuerdo con la configuración) se les debe dar.  Como resultado, el cliente verá el error 404 para todas las solicitudes de archivos CSS y JS. La solución más simple aquí es organizar un directorio común para contenedores.  Una opción primitiva es el genérico <code>emptyDir</code> : <br><br><pre> <code class="plaintext hljs">apiVersion: apps/v1 kind: Deployment metadata: name: site spec: selector: matchLabels: component: backend template: metadata: labels: component: backend spec: volumes: - name: assets emptyDir: {} - name: nginx-config configMap: name: nginx-configmap containers: - name: php image: own-image-with-php-backend:v1.0 command: ["/usr/local/sbin/php-fpm","-F"] workingDir: /var/www volumeMounts: - name: assets mountPath: /var/www/assets - name: nginx image: nginx:1.16.0 command: ["/usr/sbin/nginx", "-g", "daemon off;"] volumeMounts: - name: assets mountPath: /var/www/assets - name: nginx-config mountPath: /etc/nginx/conf.d/default.conf subPath: nginx.conf</code> </pre> <br>  Ahora los archivos estáticos generados en el contenedor son dados por nginx correctamente.  Pero permítame recordarle que esta es una solución primitiva, lo que significa que está lejos de ser ideal y tiene sus propios matices y deficiencias, que se analizan a continuación. <br><br><h3>  Almacenamiento más avanzado </h3><br>  Ahora imagine una situación en la que un usuario visitó un sitio, cargó una página con los estilos disponibles en el contenedor y, mientras estaba leyendo esta página, volvimos a implementar el contenedor.  El directorio de activos se ha quedado vacío y requiere una solicitud a PHP para comenzar a generar nuevos.  Sin embargo, incluso después de esto, los enlaces a las estadísticas antiguas estarán desactualizadas, lo que provocará errores al mostrar las estadísticas. <br><br>  Además, lo más probable es que tengamos un proyecto más o menos cargado, lo que significa que una copia de la aplicación no será suficiente: <br><br><ul><li>  Escale la <i>implementación</i> a dos réplicas. </li><li>  Cuando accede por primera vez al sitio en una réplica, se crearon activos. </li><li>  En algún momento, la entrada decidió (para equilibrar la carga) enviar una solicitud de una segunda réplica, y estos activos aún no están allí.  O tal vez ya no están allí, porque usamos <code>RollingUpdate</code> y actualmente estamos haciendo un despliegue. </li></ul><br>  En general, el resultado son errores nuevamente. <br><br>  Para no perder los activos antiguos, puede cambiar <code>emptyDir</code> a <code>hostPath</code> , agregando físicamente las estadísticas al nodo del clúster.  Este enfoque es malo porque debemos <b>vincularnos a un nodo de clúster específico</b> con nuestra aplicación, porque, en caso de pasar a otros nodos, el directorio no contendrá los archivos necesarios.  O bien, se requiere una sincronización en segundo plano del directorio entre nodos. <br><br>  ¿Cuales son las soluciones? <br><br><ol><li>  Si el hardware y los recursos lo permiten, puede usar <a href="">cephfs</a> para organizar un directorio <a href="">igualmente</a> accesible para las necesidades de las estadísticas.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">La documentación oficial</a> recomienda SSD, al menos una triple replicación y una conexión robusta y "gruesa" entre nodos del clúster. </li><li>  Una opción menos exigente sería organizar un servidor NFS.  Sin embargo, debe considerar el posible aumento en el tiempo de respuesta a las solicitudes de procesamiento por parte del servidor web, y la tolerancia a fallas dejará mucho que desear.  Las consecuencias de la falla son catastróficas: la pérdida de montura destruye el grupo hasta la muerte bajo el ataque de la carga de Los Ángeles que se precipita hacia el cielo. </li></ol><br>  Entre otras cosas, para todas las opciones para crear almacenamiento persistente, se requerirá la <b>limpieza en segundo plano de</b> los conjuntos de archivos obsoletos acumulados durante un cierto período de tiempo.  Antes de los contenedores con PHP, puede poner <i>DaemonSet</i> en el almacenamiento en caché de nginx, que almacenará copias de activos por un tiempo limitado.  Este comportamiento se puede configurar fácilmente usando <code>proxy_cache</code> con profundidad de almacenamiento en días o gigabytes de espacio en disco. <br><br>  La combinación de este método con los sistemas de archivos distribuidos mencionados anteriormente proporciona un campo enorme para la imaginación, una limitación solo en el presupuesto y el potencial técnico de quienes lo implementarán y respaldarán.  Por experiencia, decimos que cuanto más simple es el sistema, más estable funciona.  Con la adición de tales capas, se hace mucho más difícil mantener la infraestructura y, al mismo tiempo, aumenta el tiempo dedicado al diagnóstico y la recuperación en caso de fallas. <br><br><h3>  Recomendación </h3><br>  Si la implementación de las opciones de almacenamiento propuestas también le parece injustificada (complicada, costosa ...), entonces debe mirar la situación desde el otro lado.  Es decir, profundizar en la arquitectura del proyecto y <b>erradicar el problema en el código</b> mediante el enlace a alguna estructura de datos estática en la imagen, proporciona una definición inequívoca de los contenidos o el procedimiento de "calentamiento" y / o precompilación de activos en la etapa de ensamblaje de la imagen.  Por lo tanto, obtenemos un comportamiento absolutamente predecible y el mismo conjunto de archivos para todos los entornos y réplicas de la aplicación en ejecución. <br><br>  Si volvemos a un ejemplo específico con el marco Yii y no profundizamos en su estructura (que no es el propósito del artículo), es suficiente señalar dos enfoques populares: <br><br><ol><li>  Modifique el proceso de ensamblar la imagen para que los activos se coloquen en un lugar predecible.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Ofrezca</a> / implemente en extensiones como <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">yii2-static-assets</a> . </li><li>  Defina hashes específicos para directorios de activos, como se describe, por ejemplo, en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">esta presentación</a> (comenzando con la diapositiva 35).  Por cierto, el autor del informe en última instancia (¡y no sin razón!) Aconseja después de ensamblar los activos en el servidor de compilación para cargarlos en un repositorio central (como S3), frente al cual colocar el CDN. </li></ol><br><h2>  Archivos descargables </h2><br>  Otro caso que seguramente se disparará al transferir una aplicación a un clúster de Kubernetes es almacenar archivos de usuario en el sistema de archivos.  Por ejemplo, nuevamente tenemos una aplicación PHP que acepta archivos a través del formulario de carga, hace algo con ellos en el proceso y lo devuelve. <br><br>  El lugar donde deberían ubicarse estos archivos en las realidades de Kubernetes debería ser común a todas las réplicas de aplicaciones.  Dependiendo de la complejidad de la aplicación y la necesidad de organizar la persistencia de estos archivos, tal lugar puede ser las opciones para dispositivos compartidos mencionados anteriormente, pero, como vemos, tienen sus inconvenientes. <br><br><h3>  Recomendación </h3><br>  Una solución es <b>usar un almacenamiento compatible con S3</b> (incluso si algún tipo de categoría autohospedada como minio).  La transición para trabajar con S3 requerirá cambios <i>a nivel de código</i> , y ya <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">escribimos</a> cómo se devolverá el contenido en la interfaz. <br><br><h2>  Sesiones personalizadas </h2><br>  Por separado, vale la pena señalar la organización del almacenamiento de las sesiones de los usuarios.  A menudo, estos también son archivos en el disco que, en el contexto de Kubernetes, generarán solicitudes de autorización constantes del usuario si su solicitud cae en otro contenedor. <br><br>  Parte del problema se resuelve mediante la inclusión de <code>stickySessions</code> en el ingreso <i>(la función es compatible con todos los controladores de ingreso populares; consulte <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">nuestra revisión</a> para más detalles)</i> para vincular al usuario a un pod específico con la aplicación: <br><br><pre> <code class="plaintext hljs">apiVersion: networking.k8s.io/v1beta1 kind: Ingress metadata: name: nginx-test annotations: nginx.ingress.kubernetes.io/affinity: "cookie" nginx.ingress.kubernetes.io/session-cookie-name: "route" nginx.ingress.kubernetes.io/session-cookie-expires: "172800" nginx.ingress.kubernetes.io/session-cookie-max-age: "172800" spec: rules: - host: stickyingress.example.com http: paths: - backend: serviceName: http-svc servicePort: 80 path: /</code> </pre> <br>  Pero esto no lo salvará de implementaciones repetidas. <br><br><h3>  Recomendación </h3><br>  Una forma más correcta sería transferir la aplicación para <b>almacenar sesiones en Memcached, Redis y soluciones similares</b> , en general, abandonar completamente las opciones de archivo. <br><br><h2>  Conclusión </h2><br>  Las soluciones de infraestructura consideradas en el texto son dignas de aplicación solo en el formato de "muletas" temporales (que suena más hermoso en inglés como una solución alternativa).  Pueden ser relevantes en las primeras etapas de la migración de aplicaciones a Kubernetes, pero no deben "enraizarse". <br><br>  La forma general recomendada es deshacerse de ellos en favor del refinamiento arquitectónico de la aplicación de acuerdo con la ya conocida aplicación de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">12 factores</a> .  Sin embargo, esto, llevar la aplicación a una forma sin estado, significa inevitablemente que se requerirán cambios en el código, y es importante encontrar un equilibrio entre las capacidades / requisitos del negocio y las perspectivas para implementar y mantener la ruta elegida. <br><br><h2>  PS </h2><br>  Lea también en nuestro blog: <br><br><ul><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Proxing archivos de AWS S3 utilizando herramientas nginx</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">7 mejores prácticas para la operación de contenedores según Google</a> "; </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">7 principios para diseñar aplicaciones basadas en contenedores</a> ” <i>(de Red Hat)</i> ; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">7 factores faltantes en el enfoque de la aplicación de 12 factores</a> ". </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/471582/">https://habr.com/ru/post/471582/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../471570/index.html">Smartphones restaurados: ¿ganancia o engaño?</a></li>
+<li><a href="../471572/index.html">Múltiples solicitudes de API utilizando mergeMap y forkJoin en lugar de suscribirse</a></li>
+<li><a href="../471574/index.html">Oracle Database 19c: diferencias fundamentales con respecto a versiones anteriores</a></li>
+<li><a href="../471576/index.html">Cómo el control de calidad genera una interacción efectiva con los desarrolladores. Una manera posible</a></li>
+<li><a href="../471580/index.html">Conferencia para desarrolladores de plataformas de Stripe, Intercom, JetBrains, Miro, ManyChat, Wrike, Targetprocess, etc.</a></li>
+<li><a href="../471588/index.html">Internet industrial de las cosas: hablando de casos exitosos</a></li>
+<li><a href="../471590/index.html">Los primeros seis meses como líder de equipo: cómo no volverse loco si todo parece estar mal</a></li>
+<li><a href="../471592/index.html">MacOS 10.15 ya no admite aplicaciones de 32 bits. Que puedes hacer</a></li>
+<li><a href="../471594/index.html">Beeline Kazakhstan y Slerm celebran el Día Beeline DevOps en Almaty del 6 al 7 de noviembre</a></li>
+<li><a href="../471596/index.html">MacOS 10.15 ya no admite aplicaciones de 32 bits. Que puedes hacer</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
