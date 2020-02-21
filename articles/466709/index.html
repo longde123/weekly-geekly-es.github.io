@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍵 🤘🏽 👐🏾 Desarrollo de un sistema operativo monolítico tipo Unix - Biblioteca C (2) 👼 🕸️ 👬</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="En un artículo anterior, aprendimos cómo ejecutar el núcleo Hello World y escribimos un par de funciones para trabajar con cadenas. Ahora es el moment...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Desarrollo de un sistema operativo monolítico tipo Unix - Biblioteca C (2)</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/466709/">  En un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">artículo anterior,</a> aprendimos cómo ejecutar el núcleo Hello World y escribimos un par de funciones para trabajar con cadenas.  Ahora es el momento de expandir la biblioteca C para que pueda implementar kprintf y otras funciones necesarias.  Vamos! <br><a name="habracut"></a><br><h4>  Tabla de contenidos </h4><br><ol><li>  Sistema de construcción (marca, gcc, gas).  Arranque inicial (arranque múltiple).  Lanzamiento (qemu).  Biblioteca C (strcpy, memcpy, strext). </li><li>  Biblioteca C (sprintf, strcpy, strcmp, strtok, va_list ...).  Creación de la biblioteca en modo kernel y modo de aplicación de usuario. </li><li>  El registro del sistema del núcleo.  Memoria de video  Salida a la terminal (kprintf, kpanic, kassert). </li><li>  Memoria dinámica, montón (kmalloc, kfree). </li><li>  Organización de memoria y manejo de interrupciones (GDT, IDT, PIC, syscall).  Excepciones </li><li>  Memoria virtual (directorio de páginas y tabla de páginas). </li><li>  Proceso.  Planificador  Multitarea  Sistema de llamadas (kill, exit, ps). </li><li>  El sistema de archivos del kernel (initrd), elf y sus componentes internos.  Sistema de llamadas (exec). </li><li>  Controladores de dispositivos de caracteres.  Llamadas del sistema (ioctl, fopen, fread, fwrite).  Biblioteca C (fopen, fclose, fprintf, fscanf). </li><li>  Shell como un programa completo para el kernel. </li><li>  Modo de protección del usuario (anillo3).  Segmento de estado de la tarea (tss). </li></ol><br><h4>  Biblioteca C </h4><br>  Primero necesita implementar tipos con dimensiones explícitas. <br><br>  Dado que recopilaremos en una sola plataforma, hasta que nuestras definiciones e implementaciones sean correctas.  No es universal, pero es por eso que es legible y simple.  Considero que a veces es mejor hacer algo que no sea universal, pero que cumpla con los requisitos actuales, porque apoyar soluciones universales es extremadamente difícil. <br><br><pre><code class="plaintext hljs">typedef unsigned char u8; typedef unsigned short u16; typedef unsigned int u32; typedef unsigned char u_char; typedef unsigned short u_short; typedef unsigned int u_int; typedef unsigned int u_long;</code> </pre> <br>  No está de más introducir el tipo booleano. <br><br><pre> <code class="plaintext hljs">#pragma once /* types */ typedef int bool; #define true 1 #define false 0 #define null 0</code> </pre><br>  Además, un par de macros para trabajar con bytes no nos harán daño. <br><br><pre> <code class="plaintext hljs">typedef unsigned long size_t; #define HIGH_WORD(addr) ((addr &amp; 0xffff0000) &gt;&gt; 16) #define LOW_WORD(addr) ((addr &amp; 0xffff)) #define LOW_BYTE(addr) ((addr &amp; 0x00ff)) #define HIGH_BYTE(addr) ((addr &amp; 0xff00) &gt;&gt; 8)</code> </pre><br>  Las siguientes macros son necesarias para trabajar con un número variable de argumentos.  Este enfoque solo funciona si la función sigue la convención de llamada del lenguaje C, en la que los argumentos de la función se pasan a través de la pila a partir de la última. <br><br><pre> <code class="plaintext hljs">typedef size_t* va_list; #define va_start(l, a) (l = (void*)((size_t)&amp;a) + sizeof(a)) #define va_end(l) (l = (void*)0) #define va_arg(l, s) (*(s*)(l++))</code> </pre><br>  Por supuesto, uno podría ir para otro lado.  En lugar de definir sus propias funciones, intente usar la biblioteca incorporada y reemplace las funciones que accederán al núcleo a través de LD_PRELOAD.  Pero me gusta controlar el proceso por completo, así que dejemos esta opción como una idea para aquellos que comienzan a escribir su sistema operativo en este tutorial. <br><br>  Además, en el <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">video tutorial,</a> consideraremos la implementación de las siguientes funciones de biblioteca.  La implementación no pretende ser óptima y completa, pero creo que afirma ser simple y legible.  Solo noto que estamos utilizando una implementación segura para subprocesos de la función strtok, que se llama strtok_r.  Y encontramos las funciones strinv y strext en la última lección.  Si está familiarizado con el lenguaje C, creo que estará familiarizado con casi todas las funciones enumeradas a continuación. <br><br><pre> <code class="plaintext hljs">extern int strlen(const char* s); extern char* strcpy(char* s1, const char* s2); extern char* strncpy(char* s1, const char* s2, u_int n); extern void* memcpy(void* buf1, const void* buf2, u_int bytes); extern void* memset(void* buf1, u8 value, u_int bytes); extern int strcmp(const char* s1, const char* s2); extern int strncmp(const char* s1, const char* s2, u_int n); extern char* strcat(char* s1, const char* s2); extern char* strext(char* buf, const char* str, char sym); extern int strspn(char* str, const char* accept); extern int strcspn(char* str, const char* rejected); char* strchr(const char* str, char ch); extern char* strtok_r(char* str, const char* delims, char** save_ptr); extern char* memext(void* buff_dst, u_int n, const void* buff_src, char sym); extern char* itoa(unsigned int value, char* str, unsigned int base); extern unsigned int atou(char* str); extern char* strinv(char* str); extern unsigned int sprintf(char* s1, const char* s2, ...); extern unsigned int snprintf(char* s1, u_int n, const char* s2, ...); extern unsigned int vsprintf(char* s1, const char* s2, va_list list); extern unsigned int vsnprintf(char* s1, unsigned int n, const char* s2, va_list list);</code> </pre><br>  La rutina queda eliminada.  El final del código repetitivo.  La próxima lección será mucho más complicada e interesante.  Si desea patrocinar un proyecto, puede ofrecer una implementación óptima de las funciones de la biblioteca. <br><br><h4>  Referencias </h4><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Desarrollo de un sistema operativo monolítico similar a Unix: cómo comenzar</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Video tutorial para este artículo</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Código fuente (necesita una rama de la lección 2)</a> <br><br><h4>  Referencias </h4><br><ol><li>  James Molloy  Haga rodar su propio sistema operativo de clones UNIX de juguete. </li><li>  Zubkov  Ensamblador para DOS, Windows, Unix </li><li>  Kalashnikov.  ¡Ensamblador es fácil! </li><li>  Tanenbaum  Sistemas operativos  Implementación y desarrollo. </li><li>  Robert Love  Kernel de Linux  Descripción del proceso de desarrollo. </li></ol></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/466709/">https://habr.com/ru/post/466709/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../466693/index.html">Si ingresas no en TI</a></li>
+<li><a href="../466697/index.html">Mónadas en Erlang</a></li>
+<li><a href="../466699/index.html">Domar protocolos de confianza: autenticación OAuth con InterSystems IRIS</a></li>
+<li><a href="../466701/index.html">Let's Encrypt sirve casi el 30% de los dominios</a></li>
+<li><a href="../466705/index.html">Vivaldi Beta para Android - Navegador real</a></li>
+<li><a href="../466711/index.html">Vulnerabilidad DaOffice permitió eliminar a cualquier usuario de la red social</a></li>
+<li><a href="../466713/index.html">¿Es posible en 1C no observar la tecnología de los componentes externos? O ¿Cómo felicitar a los colegas que usan 1C?</a></li>
+<li><a href="../466719/index.html">Perfiles de velocidad superligera: teoría y práctica. Parte 1</a></li>
+<li><a href="../466721/index.html">[Ekaterimburgo, anuncio] java.ural.Meetup @ 3 - anuncio de los terceros informes de video Java mitap + de java.ural.Meetup @ 2</a></li>
+<li><a href="../466723/index.html">Apple Text Broadcast - 10 de septiembre de 2019</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

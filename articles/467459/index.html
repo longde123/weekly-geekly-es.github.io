@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐚 😦 👵🏽 Cómo un microcontrolador puede leer datos a 1.6 Gbps 🛌🏿 📶 👨🏿‍🏫</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Buen dia a todos! nunca sucedió y aquí de nuevo . Ha pasado suficiente tiempo desde mi último artículo , y plantea nuevos desafíos. Y si solía transfe...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cómo un microcontrolador puede leer datos a 1.6 Gbps</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/467459/"> Buen dia a todos!  <s>nunca sucedió y aquí de nuevo</s> .  Ha pasado suficiente tiempo desde mi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">último artículo</a> , y plantea nuevos desafíos.  Y si solía transferir datos a una velocidad de 100 Mbps, ahora tenía que girar a 1600 Mbps ... <br><br>  En KDPV, el héroe de nuestra novela, ¡podía leer datos a esa velocidad! <br><br><img src="https://habrastorage.org/webt/co/3e/2u/co3e2ux7rlrgtqmkwhe9ussiali.jpeg"><br><a name="habracut"></a><br>  Por lo tanto, mi próximo proyecto exigió leer un flujo de datos de 32 bits a una velocidad de 50 MHz (esto, por cierto, será el mismo 1.6 Gbps) en una cantidad conocida de antemano, deje que sea 10000. Sería bueno leerlo inmediatamente usando DMA desde un puerto - pero, desafortunadamente, no había procesadores adecuados (espero que alguien corrija este asunto en los comentarios), por alguna razón, todos los puertos que son adecuados para la velocidad son, por alguna razón, de 16 bits. <br><br>  Pero tal bagatela no nos detendrá: ¡leeremos desde dos puertos a la vez!  Es cierto que esto en el caso general no siempre será posible con el grado necesario de control y sincronismo, pero en nuestro caso, no todo es tan triste: hay una señal después de la cual se mantendrán datos de 20 ns en el puerto. <br><br>  Y dado que el procesador que tenemos es stm32h750 a 400 MHz, y el bus y los temporizadores a 200 MHz, entonces todo debería funcionar. <br><br>  Parecería un caso simple: activar un solo reenvío de DMA en una señal.  Pero solo DMA no tiene esa oportunidad: el puerto puede emitir una interrupción, pero no puede controlar DMA.  Pero nuestro procesador tiene algo bueno: DMAMUX, en el que hay un generador de eventos para el canal DMA, pero este generador tiene dos opciones adecuadas: usar la interrupción EXTIT0 o la señal del temporizador TIM12 (los desarrolladores de chips tuvieron una fantasía tan extraña). <br><br>  No tenemos tiempo para la interrupción: incluso necesitamos alrededor de 47 ciclos de reloj para que funcionen vacíos, y nuestro ciclo de reloj es 2.5 ns ... <br><br>  Pero a tiempo para un temporizador.  Solo resta tomar el temporizador desde una señal externa de 100 MHz, y establecer la longitud del temporizador en 1 y la salida TRGO activará el generador DMAMUX, y luego solicitará el comando de reenvío DMA y leerá el puerto y enviará los datos a la memoria. <br><br>  Pero para!  El puerto es de 16 bits, pero tenemos 32 ... Bueno, puedes intentar leer otro segundo puerto ... Solo para esto necesitamos un segundo canal DMA, y tomará el mismo bus, es decir, tendremos tiempo para leer, pero podemos No tengo tiempo para escribir datos en la memoria.  Bueno, teóricamente, este procesador tiene diferentes tipos de memoria, y en una imagen grande de la estructura del procesador se puede ver que tanto la memoria DMA como RAM_D1 están ubicadas en el mismo bus con una frecuencia de 200 MHz.  Queda por verificar en la práctica. <br><br><pre><code class="plaintext hljs">DMA1-&gt;LIFCR |= ~0; DMA1_Stream0-&gt;CR = (0b11 &lt;&lt; DMA_SxCR_PL_Pos) | (0b01 &lt;&lt; DMA_SxCR_MSIZE_Pos) | (0b01 &lt;&lt; DMA_SxCR_PSIZE_Pos) | DMA_SxCR_MINC; DMA1_Stream0-&gt;M0AR = (uint32_t) data; DMA1_Stream0-&gt;PAR = (uint32_t) &amp;(GPIOE-&gt;IDR); DMA1_Stream0-&gt;NDTR = 10000; DMA1_Stream1-&gt;CR = (0b11 &lt;&lt; DMA_SxCR_PL_Pos) | (0b01 &lt;&lt; DMA_SxCR_MSIZE_Pos) | (0b01 &lt;&lt; DMA_SxCR_PSIZE_Pos) | DMA_SxCR_MINC; DMA1_Stream1-&gt;M0AR = (uint32_t) data2; DMA1_Stream1-&gt;PAR = (uint32_t) &amp;(GPIOD-&gt;IDR); DMA1_Stream1-&gt;NDTR = 10000; DMAMUX1_Channel0-&gt;CCR = DMAMUX_CxCR_EGE | (1); DMAMUX1_Channel1-&gt;CCR = DMAMUX_CxCR_EGE | (2); DMAMUX1_RequestGenerator0-&gt;RGCR = DMAMUX_RGxCR_GE | (0b01 &lt;&lt; DMAMUX_RGxCR_GPOL_Pos) | (7); DMAMUX1_RequestGenerator1-&gt;RGCR = DMAMUX_RGxCR_GE | (0b01 &lt;&lt; DMAMUX_RGxCR_GPOL_Pos) | (7); DMA1_Stream0-&gt;CR |= DMA_SxCR_EN; DMA1_Stream1-&gt;CR |= DMA_SxCR_EN; TIM12-&gt;CNT = 0; TIM12-&gt;CCMR1 |= TIM_CCMR1_CC2S_0; TIM12-&gt;CR2 = (0b010 &lt;&lt; TIM_CR2_MMS_Pos); TIM12-&gt;CR1 |= TIM_CR1_CEN; while (DMA1_Stream0-&gt;NDTR) i++; TIM12-&gt;CR1 &amp;= ~TIM_CR1_CEN;</code> </pre> <br>  Y, por supuesto, debe colocar las matrices de datos y data2 en el segmento de memoria deseado, esto se hace así: <br><br><pre> <code class="plaintext hljs">__attribute__((section(".dma_buffer"))) uint16_t data[10240],data2[10240];</code> </pre><br>  y en el archivo para el enlazador indicar: <br><br><pre> <code class="plaintext hljs">.dma_buffer : { *(.dma_buffer) } &gt;RAM_D1</code> </pre><br>  Para verificar, bueno, y como primera opción, solo se implementó una copia estúpida usando <br>  CPU (todavía 400 MHz): <br><br><pre> <code class="plaintext hljs"> uint16_t * ptr = cpudata; volatile uint16_t * src = &amp;(GPIOE-&gt;IDR); volatile uint16_t * src2 = &amp;(GPIOD-&gt;IDR); for (register int i = 0; i &lt; 10000; i++) { *ptr++ = *src; *ptr++ = *src2; }</code> </pre><br>  Para la verificación, los datos de la cpudata se ubicaron en diferentes memorias, la más rápida (bueno, es cierto, solo 64K) fue la memoria más rápida (también 400 MHz) DTCMRAM. <br><br><h4>  Resultados </h4><br>  Durante las pruebas, resultó que con la ayuda de la CPU es posible leer a una velocidad de 12.5 MHz desde dos puertos.  Y 25 MHz de uno.  Entonces la opción no funciona ... <br><br>  Con la ayuda de DMA y <s>una madre así,</s> TIM12 pudo leer con éxito a una velocidad de 50 MHz, y en unas pocas horas no hubo una sola prueba de error.  Se leyeron ambos puertos, pero aún no era posible medir hasta qué punto la lectura en el segundo DMA se retrasa ... <br><br>  Entonces, en mi caso (ligeramente degenerado), logré alcanzar la velocidad de transferencia de información al procesador stm32h750 a una velocidad de 32x50 = 1600 Mbps. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/467459/">https://habr.com/ru/post/467459/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../467445/index.html">Lista evasiva de actualizaciones de Windows instaladas</a></li>
+<li><a href="../467449/index.html">Detección de vulnerabilidades y evaluación de resistencia a ataques de piratas informáticos de tarjetas inteligentes y procesadores criptográficos con protección incorporada</a></li>
+<li><a href="../467453/index.html">Resolviendo el problema del número 42 usando una supercomputadora planetaria</a></li>
+<li><a href="../467455/index.html">Plantilla QBS para programar microcontroladores en QtCreator usando el ejemplo de los controladores Milander</a></li>
+<li><a href="../467457/index.html">El camino desde la cirugía hasta el desarrollo de juegos o la primera experiencia de desarrollo móvil en Unity</a></li>
+<li><a href="../467461/index.html">RubyRussia 2019. Julian Pokrovsky: cómo optimizar un monolito</a></li>
+<li><a href="../467463/index.html">Solo división, o cómo crear una teoría matemática y ganar $ 400K con ella. Serie tres, final</a></li>
+<li><a href="../467465/index.html">¿La nube salvará los teléfonos inteligentes con un presupuesto ultrabajo?</a></li>
+<li><a href="../467471/index.html">Soul Mikrotik contra ILV sin alma y el mismo proveedor</a></li>
+<li><a href="../467473/index.html">Y más sobre tipos</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔺 💆🏼 🍖 Ir más allá de la vaina en Kubernetes a través de los registros de montaje 🖐🏻 🏾 🗼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nota perev. : Esta nota fue escrita por un investigador de seguridad de TI en Aqua Security, una compañía DevSecOps. Ella es una excelente ilustración...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Ir más allá de la vaina en Kubernetes a través de los registros de montaje</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/466625/"> <i><b>Nota</b></i>  <i><b>perev.</b></i>  <i>: Esta nota fue escrita por un investigador de seguridad de TI en Aqua Security, una compañía DevSecOps.</i>  <i>Ella es una excelente ilustración de las sutilezas en la configuración de Kubernetes, que es importante tener siempre en cuenta al servir clústeres en producción.</i>  <i>Por supuesto, si piensas en su seguridad ...</i> <br><br><img src="https://habrastorage.org/webt/aw/z0/ej/awz0ejuhbrd7tfaoggoapj86e7y.jpeg"><br><br>  Kubernetes consta de muchos componentes y, a veces, combinarlos de cierta manera conduce a resultados inesperados.  En este artículo, mostraré cómo un pod lanzado con privilegios de root y un directorio <code>/var/log</code> montado de un nodo puede <b>expandir el contenido de todo el sistema de archivos host a un</b> usuario con acceso a sus registros.  También discutiremos soluciones a este problema. <a name="habracut"></a><br><br><h2>  Cómo ve Kubernetes los registros </h2><br>  ¿Alguna vez te has preguntado cómo <code>kubectl logs &lt;pod_name&gt;</code> extrae los registros del pod?  ¿Quién es responsable de recolectar los registros de los contenedores?  ¿Y cómo llegan a tu computadora? <br><br>  El siguiente diagrama ilustra el proceso: <br><br><img src="https://habrastorage.org/webt/rc/3j/32/rc3j32co5ems4w2xvpztnqw3bwq.jpeg"><br><br>  Kubelet crea una estructura dentro del directorio <code>/var/log</code> en el host que representa los pods en el host.  Hay un archivo <code>0.log</code> (1) en el directorio de nuestro <code>0.log</code> , pero de hecho es un enlace simbólico al registro del contenedor ubicado en <code>/var/lib/docker/containers</code> .  Todo esto desde el punto de vista del anfitrión. <br><br>  Kubelet abre endpoint <code>/logs/</code> (2), que simplemente funciona con el servidor de archivos HTTP en el directorio (3), haciendo que los registros estén disponibles para las solicitudes que provienen del servidor API. <br><br>  Ahora imagine que implementamos pod con <code>hostPath</code> montado en <code>/var/log</code> .  Tal pod tendrá acceso a todos los archivos de registro en el host.  Aunque esto en sí mismo es un problema potencial, podemos dar el siguiente paso lógico.  ¿Qué <code>0.log</code> si reemplazamos <code>0.log</code> con un enlace simbólico para ... decir, <code>/etc/shadow</code> ? <br><br><pre> <code class="plaintext hljs">│ ├── var │ ├── logs │ │ ├── pods │ │ │ ├── default_mypod_e7869b14-abca-11e8-9888-42010a8e020e │ │ │ │ ├── mypod │ │ │ │ │ ├── 0.log -&gt; /etc/shadow │ │ │ │ │ │</code> </pre> <br>  Ahora, al intentar descargar los registros utilizando los registros de <code>kubectl logs</code> en la máquina cliente, obtenemos: <br><br><pre> <code class="bash hljs">$ kubectl logs mypod failed to get parse <span class="hljs-keyword"><span class="hljs-keyword">function</span></span>: unsupported <span class="hljs-built_in"><span class="hljs-built_in">log</span></span> format: <span class="hljs-string"><span class="hljs-string">"root:*:18033:0:99999:7:::\n"</span></span></code> </pre> <br>  Kubelet sigue el enlace y lee el contenido del archivo al que apunta (puede ser cualquier archivo en el nodo). <br><br>  Como se esperaba JSON, kubectl se bloqueó después de la primera línea, sin embargo, podemos leer fácilmente las líneas específicas del archivo de <code>shadow</code> ejecutando el comando con el <code>–-tail=-&lt;line_number&gt;</code> . <br><br>  Esto es asombroso.  Como kubelet sigue el enlace simbólico, puede usar sus privilegios de raíz para leer cualquier archivo en el nodo, simplemente creando un enlace simbólico dentro del pod. <br><br><h2>  Escapar de la vaina </h2><br>  Vamos aún más lejos.  Sabemos que al iniciar un pod en Kubernetes, se instala el token de ServiceAccount.  Por lo tanto, si la cuenta de servicio permite el acceso a los registros, podemos acceder directamente a los privilegios de kubelet y root en el nodo. <br><br>  Escribí una prueba de concepto (POC) que demuestra este vector de ataque: <br><br><ul><li>  despliegue de pod con punto de montaje <code>/var/log</code> ; </li><li>  crear un enlace simbólico al directorio raíz del host; </li><li>  leyendo la clave privada ssh del usuario en el host. </li></ul><br>  El <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">siguiente video</a> muestra dos comandos especiales que se ejecutan dentro de un pod: <br><br><ul><li>  <code>lsh == ls</code> (en el sistema de archivos del host); </li><li>  <code>cath == cat</code> (en el sistema de archivos del host). </li></ul><br>  <i><b>Nota</b></i>  <i><b>perev.</b></i>  <i>: Desafortunadamente, no arreglaron la inserción de contenido de asciinema en el hub, aunque ya <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">solucionamos</a> este problema, por lo tanto, nos vemos obligados a "incrustar" el video con el simple enlace de arriba.</i> <br><br>  Todos los archivos involucrados en este POC se pueden encontrar en el <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">repositorio de GitHub correspondiente</a> .  Hay otro script POC que recopila automáticamente claves privadas y tokens de ServiceAccount del sistema de archivos del host. <br><br><h2>  Montar directorios puede ser peligroso </h2><br>  Entonces, ¿es esto una vulnerabilidad o simplemente una mala práctica? <br><br>  La implementación de un pod con un <code>hostPath</code> en <code>/var/log</code> es poco frecuente (también hay otras formas de abusar del montaje de directorios secretos de host en el pod).  Pero incluso si sabía que montar <code>/var/log</code> era una práctica dudosa, probablemente no esperaba que le permitiera hacerse cargo del nodo con tanta facilidad. <br><br>  Antes de publicar, contactamos al equipo de seguridad de Kubernetes para averiguar si consideran que esto es una vulnerabilidad.  Llegaron a la conclusión de que esto era solo una triste consecuencia de montar un directorio de host privado con permisos de escritura: los riesgos involucrados están bien <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">documentados</a> .  Sin embargo, esta vulnerabilidad es bastante fácil de explotar.  En el mundo hay <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">muchos proyectos</a> que usan esta montura.  Si está utilizando uno de estos proyectos, recuerde que su implementación será vulnerable a esta forma de secuestrar el host. <br><br>  Este método ha sido probado en Kubernetes 1.15 y 1.13, pero probablemente afecta a otras versiones. <br><br><h2>  Eliminación </h2><br>  Tal "escape" es posible solo si el pod se está ejecutando como root.  Esto generalmente <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">debe evitarse</a> .  Aqua CSP le permite establecer una política con un mínimo de esfuerzos que evita que los contenedores se ejecuten bajo la raíz u otorga permisos solo a un grupo específico de imágenes que realmente necesitan raíz. <br><br>  Otra forma es simplemente no desplegar pods con <code>hostPath</code> con permisos de escritura en <code>/var/log</code> .  Este enfoque no está establecido por defecto y no es una práctica común, por lo tanto, es necesario determinarlo conscientemente (sin embargo, la posibilidad aún permanece).  ¿Pero cómo verificar? <br><br>  Agregamos un nuevo script (hunter) a <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">kube-hunter</a> , nuestra herramienta liviana de código abierto para probar Kubernetes, que verifica el clúster en busca de vainas con puntos de montaje tan peligrosos.  <i>( <b>Nota</b> : Kube-hunter estuvo presente en una <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">revisión reciente</a> de las utilidades de seguridad de K8, que publicamos en nuestro blog).</i> <br><br>  Los usuarios de Aqua pueden protegerse de este riesgo utilizando la política de tiempo de ejecución para evitar que se monten ciertos volúmenes: <br><br><img src="https://habrastorage.org/webt/yi/ue/1k/yiue1kwxcn7fonmqvd9n2pfm5oq.png"><br><br>  <i><b>Nota</b></i>  <i><b>perev.</b></i>  <i>: Parte de este problema se puede resolver utilizando las <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">políticas de seguridad de pod</a> , a saber, <code>AllowedHostPaths</code> .</i>  <i>Sin embargo, esto tampoco es protección contra enlaces simbólicos.</i>  <i>Finalmente, como sugieren los comentarios, simplemente podemos limitar el lanzamiento como root, nuevamente guiado por la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">PSP</a> .</i> <br><br><h2>  Resumen </h2><br>  Kubernetes es un sistema complejo con muchas sutilezas en la configuración de seguridad, que no siempre es obvio para el usuario promedio e incluso experimentado.  En este artículo, he mostrado cómo, bajo ciertas circunstancias, el registro inocente puede conducir a una vulnerabilidad potencial.  En la mayoría de los casos esto no es posible, pero Kubernetes ofrece a los usuarios una mayor libertad de acción que puede afectar la seguridad.  Es importante tener esto en cuenta e implementar controles apropiados para evitar tales errores. <br><br><h2>  PD del traductor </h2><br>  Lea también en nuestro blog: <br><br><ul><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">En el 19% de las imágenes Docker más populares, no hay contraseña para root</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">33+ Herramientas de seguridad de Kubernetes</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Introducción a las políticas de red de Kubernetes para profesionales de la seguridad</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Docker y Kubernetes en entornos exigentes de seguridad</a> "; </li><li>  "Las <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">9 mejores prácticas de seguridad en Kubernetes</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">11 maneras de (no) convertirse en una víctima del pirateo de Kubernetes</a> ". </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/466625/">https://habr.com/ru/post/466625/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../466607/index.html">"Todo lo que leas se usará en tu contra": cómo la música rap llegó a la sala del tribunal</a></li>
+<li><a href="../466609/index.html">Opción para usar la cadena de bloques de criptomonedas como medio de transmisión de comandos para elementos de botnet</a></li>
+<li><a href="../466611/index.html">Lo que no puede exigir y por qué no puede alabar a los empleados si desea que funcionen bien</a></li>
+<li><a href="../466615/index.html">Recetas TeamCity. Informe Yandex.Taxi</a></li>
+<li><a href="../466623/index.html">Crear un control deslizante de rango de valores para un filtro sin usar jQuery</a></li>
+<li><a href="../466629/index.html">¿Por qué su aplicación necesita accesibilidad?</a></li>
+<li><a href="../466631/index.html">Sistema de gestión de casos de prueba QuAck: las alegrías simples de las pruebas</a></li>
+<li><a href="../466633/index.html">Chat ssh</a></li>
+<li><a href="../466635/index.html">Noticias del mundo de OpenStreetMap No. 475 (08.20.2019-26.08.2019)</a></li>
+<li><a href="../466637/index.html">Diseño de máquina de mármol electromecánica v2.0</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

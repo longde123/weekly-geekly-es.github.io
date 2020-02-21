@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏼‍🤝‍👨🏻 👩🏻‍⚖️ 🐒 Desarrollo de un sistema operativo monolítico similar a Unix - Kernel System Log (3) 🙆🏻 ↖️ ☁️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="En el segundo artículo consecutivo anterior, desarrollamos las funciones necesarias para trabajar con cadenas de la biblioteca C. En esta lección, imp...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Desarrollo de un sistema operativo monolítico similar a Unix - Kernel System Log (3)</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/466765/">  En el segundo artículo consecutivo anterior, desarrollamos las funciones necesarias para trabajar con cadenas de la biblioteca C. En esta lección, implementamos una salida de depuración completa en la pantalla: el registro del sistema del núcleo. <br><a name="habracut"></a><br><h4>  Tabla de contenidos </h4><br><ol><li>  Sistema de construcción (marca, gcc, gas).  Arranque inicial (arranque múltiple).  Lanzamiento (qemu).  Biblioteca C (strcpy, memcpy, strext). </li><li>  Biblioteca C (sprintf, strcpy, strcmp, strtok, va_list ...).  Creación de la biblioteca en modo kernel y modo de aplicación de usuario. </li><li>  El registro del sistema del núcleo.  Memoria de video  Salida a la terminal (kprintf, kpanic, kassert). </li><li>  Memoria dinámica, montón (kmalloc, kfree). </li><li>  Organización de memoria y manejo de interrupciones (GDT, IDT, PIC, syscall).  Excepciones </li><li>  Memoria virtual (directorio de páginas y tabla de páginas). </li><li>  Proceso.  Planificador  Multitarea  Sistema de llamadas (kill, exit, ps). </li><li>  El sistema de archivos del kernel (initrd), elf y sus componentes internos.  Sistema de llamadas (exec). </li><li>  Controladores de dispositivos de caracteres.  Llamadas del sistema (ioctl, fopen, fread, fwrite).  Biblioteca C (fopen, fclose, fprintf, fscanf). </li><li>  Shell como un programa completo para el kernel. </li><li>  Modo de protección del usuario (anillo3).  Segmento de estado de la tarea (tss). </li></ol><br><h4>  Registro del sistema de kernel </h4><br>  Antes de comenzar, necesitaremos presentar algunas funciones útiles para trabajar con puertos de E / S.  Los puertos de E / S para un programador no son diferentes de las celdas ordinarias en la memoria, excepto que hay comandos separados para operarlos.  Los dispositivos que operan en estos puertos están conectados al bus de memoria.  También hay un espacio de direcciones dedicado para ellos.  Necesitaremos dos funciones de ensamblador para trabajar con puertos de entrada / salida, porque como ya recordará, no tolero las inserciones de ensamblador. <br><br><pre><code class="plaintext hljs">extern u_char asm_read_port(u_char port); extern void asm_write_port(u_int port, u_char data);</code> </pre> <br>  Del mismo modo, dos comandos para controlar interrupciones de procesador enmascaradas. <br><br><pre> <code class="plaintext hljs">extern void asm_lock(); extern void asm_unlock();</code> </pre> <br>  Bueno, para ahorrar energía después de errores fatales, necesita un comando de parada del procesador. <br><br><pre> <code class="plaintext hljs">extern void asm_hlt();</code> </pre> <br>  Como recordará, la memoria de video comienza en 0xB8000, pero sugiero escribir primero los mensajes en el búfer en formato de texto sin formato.  Y luego simplemente copie este búfer en la memoria de video, teniendo en cuenta los atributos de color.  Para hacer esto, implementé varias utilidades para trabajar con estos búferes.  Un búfer será para el syslog del núcleo y el resto para terminales virtuales.  El desplazamiento de la pantalla también se realizará en el búfer.  Y solo la función video_flush copiará el búfer en la memoria de video, expandiéndolo con atributos. <br><br><pre> <code class="plaintext hljs">extern void video_init(); extern void video_disable_cursor(); extern void* video_scroll(char const* video_buff, char* pos); extern char* video_clear(char const* video_buff); extern void video_flush(char const* video_buff);</code> </pre><br>  Ahora es el momento de presentar las funciones más utilizadas.  Los dos últimos se utilizarán para depurar el núcleo cuando el depurador depure la pereza.  Créame, nunca he usado un depurador cuando escribí este núcleo. <br><br><pre> <code class="plaintext hljs">extern void kpanic(char* message, ...); extern void kassert(const char* file, u_int line, bool expr); extern void kunreachable(const char* file, u_int line);</code> </pre><br>  Bueno, en realidad, funciona para trabajar con el registro del sistema del núcleo.  Para controlar lo que se muestra en la pantalla, ingresé la función kmode en el registro del sistema o en la consola del usuario.  Y para leer el registro del sistema en el búfer, necesitará la función klog, porque los procesos del usuario no tendrán acceso al núcleo, excepto a través de llamadas al sistema. <br><br><pre> <code class="plaintext hljs">extern void kclear(); extern void kprintf(const char* format, ...); extern void kvprintf(const char* format, va_list list); extern void kmode(bool is_early); extern void klog(char* buf, u_int n);</code> </pre><br>  Doy las funciones más interesantes aquí: <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Api - Scroll video buffer up * Returns new position */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">extern</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function">* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">video_scroll</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params">* video_buff, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params">* pos)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span>* ptr = (<span class="hljs-keyword"><span class="hljs-keyword">void</span></span>*)video_buff; <span class="hljs-comment"><span class="hljs-comment">/* scroll up */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">1</span></span>; i &lt; VIDEO_SCREEN_HEIGHT; ++i) { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH; ++j) { ptr[(i - <span class="hljs-number"><span class="hljs-number">1</span></span>) * VIDEO_SCREEN_WIDTH + j] = ptr[i * VIDEO_SCREEN_WIDTH + j]; } } <span class="hljs-comment"><span class="hljs-comment">/* empty last line */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH; ++j) { ptr[(VIDEO_SCREEN_HEIGHT - <span class="hljs-number"><span class="hljs-number">1</span></span>) * VIDEO_SCREEN_WIDTH + j] = <span class="hljs-string"><span class="hljs-string">' '</span></span>; } <span class="hljs-comment"><span class="hljs-comment">/* move position up */</span></span> pos -= VIDEO_SCREEN_WIDTH; <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> pos; }</code> </pre><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Api - Print kernel message */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">extern</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">kvprintf</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params">* format, va_list </span></span><span class="hljs-built_in"><span class="hljs-function"><span class="hljs-params"><span class="hljs-built_in">list</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> buff[VIDEO_SCREEN_WIDTH]; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> len = <span class="hljs-built_in"><span class="hljs-built_in">vsprintf</span></span>(buff, format, <span class="hljs-built_in"><span class="hljs-built_in">list</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; len; ++i) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (buff[i] != <span class="hljs-string"><span class="hljs-string">'\n'</span></span>) { kputc(buff[i]); } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> line_pos = (syslog_pos - syslog) % VIDEO_SCREEN_WIDTH; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH - line_pos; ++j) { kputc(<span class="hljs-string"><span class="hljs-string">' '</span></span>); } } } kflush(); }</code> </pre><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Put character to syslog */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">kputc</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> ch)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> ((<span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span>)syslog_pos - (<span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span>)syslog + <span class="hljs-number"><span class="hljs-number">1</span></span> &lt; VIDEO_SCREEN_SIZE) { *syslog_pos++ = ch; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { syslog_pos = video_scroll(syslog, syslog_pos); kputc(ch); } }</code> </pre><br>  Vea el tutorial detallado en el video tutorial. <br><br><h4>  Referencias </h4><br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Video tutorial para este artículo</a> <br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Código fuente</a> (necesita una rama de lección3) <br><br><h4>  Referencias </h4><br><ol><li>  James Molloy  Haga rodar su propio sistema operativo de clones UNIX de juguete. </li><li>  Zubkov  Ensamblador para DOS, Windows, Unix </li><li>  Kalashnikov.  ¡Ensamblador es fácil! </li><li>  Tanenbaum  Sistemas operativos  Implementación y desarrollo. </li><li>  Robert Love  Kernel de Linux  Descripción del proceso de desarrollo. </li></ol></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/466765/">https://habr.com/ru/post/466765/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../466755/index.html">La computadora te hará sabrosa</a></li>
+<li><a href="../466757/index.html">El primer mitap de Flutter en San Petersburgo - 26 de septiembre</a></li>
+<li><a href="../466759/index.html">Acerca de los programas de afiliación de la empresa de hosting</a></li>
+<li><a href="../466761/index.html">Triángulo de Pascal frente a cadenas del tipo "000 ... / 111 ..." en filas binarias y redes neuronales</a></li>
+<li><a href="../466763/index.html">DataLine Insight Brut Day, 3 de octubre, Moscú</a></li>
+<li><a href="../466769/index.html">Daga 2 es elemental (Parte 2)</a></li>
+<li><a href="../466773/index.html">Semana de la seguridad 37: vulnerabilidad en Android, Microsoft frente a deepfakes, popularidad de Windows 7</a></li>
+<li><a href="../466775/index.html">Cómo funciona: selección de frecuencia para 5G</a></li>
+<li><a href="../466777/index.html">Recomendaciones para crear aplicaciones en React Native. Parte 1</a></li>
+<li><a href="../466779/index.html">Aprender inglés: 8 formas de decir cortésmente que no</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
