@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍎 🛥️ 👖 Cómo transferir datos entre microcontroladores a 100 Mbps 🤵🏼 🈵 🤳🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Tengo este tipo de problema: necesito transferir datos entre dos microcontroladores STM32F407 al menos a una velocidad de 100 Mbps. Sería posible usar...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cómo transferir datos entre microcontroladores a 100 Mbps</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/460805/">  Tengo este tipo de problema: necesito transferir datos entre dos microcontroladores STM32F407 al menos a una velocidad de 100 Mbps.  Sería posible usar Ethernet (MAC-a-MAC), pero el problema es que está ocupado, es de estos datos que se toman ... <br>  Desde la periferia inactiva, tal vez solo haya SPI, pero solo 42 Mbps. <br><a name="habracut"></a><br>  Por extraño que parezca, no se encontró nada listo en la red.  Y decidí implementar un registro de reloj paralelo de 8 bits.  Y qué: la frecuencia se puede establecer en 10 MHz (es decir, por supuesto, el reloj en sí es el doble de rápido, pero 20 MHz no es algo complicado), por lo que con una frecuencia tan baja no tendrá que preocuparse por el cableado de la placa.  Y la velocidad será de 100 Mbps. <br><br>  Apenas dicho que hecho.  En general, el sistema se ve así.  Usamos un temporizador en el lado de transmisión, una de las señales de comparación se envía a un pin; esta será una señal de reloj y la segunda se usará para iniciar una ráfaga para DMA. <br><br>  Tengo un bus a 82 MHz (debido al consumo de corriente a una frecuencia más alta :), un temporizador a la misma frecuencia: para que con un período de ARR = 8 resulte aproximadamente 10 MHz (entonces será de aproximadamente 80 Mbps, bueno, está bien). <br><br>  DMA transferirá un byte de la memoria (con incremento automático, por supuesto) directamente al puerto de salida del registro, en mi caso, apareció PORTE, sus primeros 8 bits encajan como la dirección del receptor DMA. <br><br>  En el lado receptor, usaremos la señal de reloj en ambos bordes para cronometrar el temporizador, con un período de 1, y usaremos la señal de actualización para comenzar a reenviar el DMA, que lee los datos del puerto (el puerto PORTE se acercó nuevamente) y escribe en la memoria con incremento automático. <br><br>  Ahora queda configurar todo correctamente (código a continuación) y ejecutar.  La terminación en ambos lados está determinada por la interrupción del DMA. <br><br>  Sin embargo, para completar, por supuesto, debe incluir comprobaciones de retrasos en la transmisión y manejo de errores en el código, pero omito esto. <br><br>  En el siguiente código, el temporizador TIM8 usa el canal CC2 para emitir la señal, para ver qué sucede. <br><br><pre><code class="plaintext hljs">volatile int transmit_done; volatile int receive_done; void DMA2_Stream1_IRQHandler(void) { TIM8-&gt;CR1 &amp;= ~TIM_CR1_CEN; DMA2-&gt;LIFCR |= 0b1111 &lt;&lt; 8; receive_done = 1; } void DMA2_Stream4_IRQHandler(void) { TIM1-&gt;CR1 &amp;= ~TIM_CR1_CEN; TIM1-&gt;EGR |= TIM_EGR_BG; DMA2-&gt;HIFCR |= 0b1111101; transmit_done = 1; } void ii_receive(uint8_t *data, int len) { GPIOE-&gt;MODER = (GPIOE-&gt;MODER &amp; 0xFFFF0000) | 0x0000; DMA2_Stream1-&gt;PAR = (uint32_t) &amp;(GPIOE-&gt;IDR); DMA2_Stream1-&gt;M0AR = (uint32_t) data; DMA2_Stream1-&gt;NDTR = len; TIM8-&gt;CNT = 0; TIM8-&gt;BDTR |= TIM_BDTR_MOE; receive_done = 0; DMA2_Stream1-&gt;CR |= DMA_SxCR_EN; TIM8-&gt;CR1 |= TIM_CR1_CEN; } void ii_transmit(uint8_t *data, int len) { GPIOE-&gt;MODER = (GPIOE-&gt;MODER &amp; 0xFFFF0000) | 0x5555; DMA2_Stream4-&gt;PAR = (uint32_t) &amp;(GPIOE-&gt;ODR); DMA2_Stream4-&gt;M0AR = (uint32_t) data; DMA2_Stream4-&gt;NDTR = len; TIM1-&gt;CNT = 6; transmit_done = 0; DMA2_Stream4-&gt;CR |= DMA_SxCR_EN; TIM1-&gt;SR |= TIM_SR_BIF; TIM1-&gt;BDTR |= TIM_BDTR_MOE; TIM1-&gt;CR1 |= TIM_CR1_CEN; } // tx: TIM1 CH4 on DMA2/stream4/channel6, CH1 on output clock in PE9 // rx: TIM8 CH2 on DMA2/stream3/channel7, CH1 on input clock in PC6 void ii_init() { __HAL_RCC_GPIOC_CLK_ENABLE(); __HAL_RCC_GPIOE_CLK_ENABLE(); __HAL_RCC_TIM1_CLK_ENABLE(); __HAL_RCC_TIM8_CLK_ENABLE(); __HAL_RCC_TIM2_CLK_ENABLE(); __HAL_RCC_DMA2_CLK_ENABLE(); GPIOC-&gt;MODER |= (0b10 &lt;&lt; GPIO_MODER_MODE6_Pos) | (0b10 &lt;&lt; GPIO_MODER_MODE7_Pos); GPIOC-&gt;PUPDR |= (0b10 &lt;&lt; GPIO_PUPDR_PUPD7_Pos); GPIOC-&gt;AFR[0] |= (GPIO_AF3_TIM8 &lt;&lt; 24) | (GPIO_AF3_TIM8 &lt;&lt; 28); GPIOE-&gt;MODER |= (0b10 &lt;&lt; GPIO_MODER_MODE9_Pos); GPIOE-&gt;OSPEEDR |= GPIO_OSPEEDER_OSPEEDR9 | 0xFFFF; GPIOE-&gt;AFR[1] |= GPIO_AF1_TIM1 &lt;&lt; 4; GPIOE-&gt;PUPDR |= (0b10 &lt;&lt; GPIO_PUPDR_PUPD9_Pos); TIM1-&gt;ARR = 8; TIM1-&gt;CCR1 = 5; TIM1-&gt;CCR4 = 1; TIM1-&gt;EGR |= TIM_EGR_CC4G; TIM1-&gt;DIER |= TIM_DIER_CC4DE; TIM1-&gt;CCMR1 |= (0b110 &lt;&lt; TIM_CCMR1_OC1M_Pos); TIM1-&gt;CCER |= TIM_CCER_CC1E; TIM1-&gt;EGR |= TIM_EGR_BG; TIM8-&gt;ARR = 1; TIM8-&gt;CCR2 = 1; TIM8-&gt;EGR |= TIM_EGR_UG; TIM8-&gt;DIER |= TIM_DIER_UDE; TIM8-&gt;SMCR |= (0b100 &lt;&lt; TIM_SMCR_TS_Pos) | (0b111 &lt;&lt; TIM_SMCR_SMS_Pos); TIM8-&gt;CCMR1 = (0b01 &lt;&lt; TIM_CCMR1_CC1S_Pos) | (0b110 &lt;&lt; TIM_CCMR1_OC2M_Pos); TIM8-&gt;CCER |= (0b11 &lt;&lt; TIM_CCER_CC1P_Pos) | TIM_CCER_CC2E; DMA2_Stream1-&gt;CR = DMA_CHANNEL_7 | DMA_PRIORITY_VERY_HIGH | DMA_MINC_ENABLE | (0b00 &lt;&lt; DMA_SxCR_DIR_Pos) | DMA_SxCR_TCIE | DMA_SxCR_TEIE | DMA_SxCR_DMEIE; DMA2_Stream1-&gt;FCR |= DMA_FIFOMODE_ENABLE; DMA2_Stream4-&gt;CR = DMA_CHANNEL_6 | DMA_PRIORITY_VERY_HIGH | DMA_MINC_ENABLE | (0b01 &lt;&lt; DMA_SxCR_DIR_Pos) | DMA_SxCR_TCIE | DMA_SxCR_TEIE | DMA_SxCR_DMEIE; DMA2_Stream4-&gt;FCR |= DMA_FIFOMODE_ENABLE; HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0); HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn); HAL_NVIC_SetPriority(DMA2_Stream4_IRQn, 0, 0); HAL_NVIC_EnableIRQ(DMA2_Stream4_IRQn); }</code> </pre> <br>  Para las pruebas, se utilizó la misma placa, solo la salida del reloj PE9 se conectó a la entrada PC6.  El bucle principal se veía así: <br><br><pre> <code class="plaintext hljs"> ii_receive(rdata, 256); ii_transmit(tdata, 256); while (!transmit_done); while (!receive_done);</code> </pre><br>  Según los resultados: los datos se enviaron perfectamente durante 30-31 microsegundos sin pérdida.  Las señales se parecen a esto: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/z7/dx/gx/z7dxgxw4ppqv7mot4mk4kmjvi00.png"></div><br>  aquí, el blanco es la salida del temporizador TIM8, el rojo es la señal del reloj (TIM1) y el naranja es el bit de datos menos significativo (0-1-0-1 -...). <br><br>  Lo que no me gusta de esto es que no puede iniciar DMA por la interrupción de la entrada GPIO, tiene que trabajar con temporizadores.  Tal vez alguien te dirá otra manera? <br><br>  PD Como resultado de nuevos experimentos, resultó que elevar la frecuencia a 168 MHz naturalmente aumentó la velocidad en 2 veces y los datos se transmitieron en 14 microsegundos (es decir, 150 Mbps), pero cuando el temporizador maestro se redujo por debajo de 7, el lado receptor comenzó a fallar: el temporizador no tiene tiempo TIM8.  A las 7 todavía funciona, pero a las 6 ya se ha ido, y después de todo sería 200 Mbps ... </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/460805/">https://habr.com/ru/post/460805/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../460795/index.html">12 consejos para mejorar el rendimiento de la aplicación JavaScript</a></li>
+<li><a href="../460797/index.html">Desarrollo responsable de JavaScript, parte 2</a></li>
+<li><a href="../460799/index.html">Solicitud de pago de API de navegador estándar</a></li>
+<li><a href="../460801/index.html">27 increíbles herramientas VS Code para desarrolladores modernos de JavaScript</a></li>
+<li><a href="../460803/index.html">Lectura para el verano: libros para técnicos</a></li>
+<li><a href="../460807/index.html">Mida siete veces, una vez que implemente la herramienta de BI</a></li>
+<li><a href="../460811/index.html">Componentes comunes de diferentes equipos. Informe Yandex</a></li>
+<li><a href="../460813/index.html">Cómo usar diagramas de Voronoi para controlar la IA</a></li>
+<li><a href="../460815/index.html">Inventar la biblioteca vusb</a></li>
+<li><a href="../460819/index.html">WorldSkills: Revisión del participante de la Olimpiada.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
