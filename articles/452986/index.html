@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨‍❤️‍👨 🤰🏽 ✴️ Cerraduras en Postgres: 7 consejos para trabajar con cerraduras 💆🏻 👨🏿‍🏭 🍗</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hola de nuevo El próximo martes, se inicia una nueva transmisión en el curso "DBMS relacional" , por lo que seguimos publicando material útil sobre el...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cerraduras en Postgres: 7 consejos para trabajar con cerraduras</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/452986/">  Hola de nuevo  El próximo martes, se inicia una nueva transmisión en el curso <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">"DBMS relacional"</a> , por lo que seguimos publicando material útil sobre el tema.  Vamos <br><br><img src="https://habrastorage.org/webt/po/5y/8b/po5y8bmag8pjvbidl16ck9w1o1u.png"><br><br>  La semana pasada escribí sobre el <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">acceso competitivo en Postgres</a> , qué equipos se están bloqueando entre sí y cómo se pueden diagnosticar los equipos bloqueados.  Por supuesto, después del diagnóstico, es posible que necesite tratamiento.  Con Postgres, puedes dispararte en el pie, pero Postgres también te ofrece formas de no golpear la punta.  Estos son algunos consejos importantes sobre cómo y cómo no hacerlo que encontramos útiles al trabajar con los usuarios al pasar de su única base de datos Postgres a <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Citus</a> o al crear nuevas aplicaciones de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">análisis en tiempo real</a> . <br><a name="habracut"></a><br><h2>  1. Nunca agregue una columna con un valor predeterminado </h2><br>  Regla Golden PostgreSQL: al agregar una columna a una tabla en un entorno de producción, <i>nunca especifique un valor predeterminado</i> . <br><br>  Agregar una columna requiere un bloqueo de tabla muy agresivo, que bloquea tanto la lectura como la escritura.  Si agrega una columna con un valor predeterminado, PostgreSQL sobrescribirá la tabla completa para completar el valor predeterminado para cada fila, lo que puede tomar varias horas en tablas grandes.  Al mismo tiempo, todas las solicitudes serán bloqueadas, por lo que su base de datos no estará disponible. <br><br>  No hagas esto: <br><br><pre><code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--     ,       (?) ALTER TABLE items ADD COLUMN last_update timestamptz DEFAULT now();</span></span></code> </pre> <br>  Hazlo mejor así: <br><br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">-- select, update, insert  delete ,      () ALTER TABLE items ADD COLUMN last_update timestamptz; -- select  insert ,  update  delete ,    UPDATE items SET last_update = now();</span></span></code> </pre> <br>  O, mejor aún, evite actualizar y <code>delete</code> bloqueos durante mucho tiempo, actualizando en pequeños lotes, por ejemplo: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">do</span></span> { numRowsUpdated = executeUpdate( <span class="hljs-string"><span class="hljs-string">"UPDATE items SET last_update = ? "</span></span> + <span class="hljs-string"><span class="hljs-string">"WHERE ctid IN (SELECT ctid FROM items WHERE last_update IS NULL LIMIT 5000)"</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">now</span></span>); } while (numRowsUpdate &gt; 0);</code> </pre><br>  De esta forma, puede agregar y completar una nueva columna con una mínima interferencia para sus usuarios. <br><br><h2>  2. Tenga cuidado con las colas de bloqueo, use tiempos de espera </h2><br>  Cada bloqueo en PostgreSQL tiene una prioridad.  Si la transacción B intenta apoderarse de un bloqueo que ya está retenido por la transacción A con un nivel de bloqueo en conflicto, la transacción B esperará en la cola de bloqueo.  Ahora sucede algo interesante: si llega otra transacción C, tendrá que verificar no solo el conflicto con A, sino también con la transacción B y cualquier otra transacción en la cola de bloqueo. <br><br>  Esto significa que, incluso si su comando DDL puede ejecutarse muy rápidamente, puede estar en la cola durante mucho tiempo, esperando que se completen <i>las solicitudes</i> , <i>y las solicitudes que se ejecutan después se bloquearán detrás de él</i> . <br><br>  Si puede encontrar largas consultas <code>SELECT</code> en una tabla, no haga esto: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> items <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COLUMN</span></span> last_update timestamptz;</code> </pre> <br>  Mejor haz esto: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> lock_timeout <span class="hljs-keyword"><span class="hljs-keyword">TO</span></span> <span class="hljs-string"><span class="hljs-string">'2s'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> items <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COLUMN</span></span> last_update timestamptz;</code> </pre> <br>  Si <code>lock_timeout</code> establece <code>lock_timeout</code> comando DDL no se ejecutará si está esperando un bloqueo y, por lo tanto, bloquea las solicitudes durante más de 2 segundos.  La desventaja es que su <code>ALTER TABLE</code> puede no ejecutarse, pero puede intentarlo más tarde.  Puede consultar <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">pg_stat_activity</a> para ver si tiene consultas largas antes de ejecutar el comando DDL. <br><br><h2>  3. Utilice la creación de índice sin bloqueo </h2><br>  Otra regla de oro de PostgreSQL: siempre use la creación de índice sin bloqueo. <br>  Crear un índice para un conjunto de datos grande puede llevar horas o incluso días, y el comando <code>CREATE INDEX</code> regular bloquea todos los registros durante la duración del comando.  A pesar de que no bloquea los SELECT, sigue siendo bastante malo, y hay una mejor manera: <code>CREATE INDEX CONCURRENTLY</code> . <br><br>  No hagas esto: <br><br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--    CREATE INDEX items_value_idx ON items USING GIN (value jsonb_path_ops);</span></span></code> </pre> <br>  En cambio, haz esto: <br><br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--    DDL CREATE INDEX CONCURRENTLY items_value_idx ON items USING GIN (value jsonb_path_ops);</span></span></code> </pre> <br>  La creación de índices sin bloqueo tiene un inconveniente.  Si algo sale mal, no retrocede y deja un índice incompleto ("no válido").  Si esto sucede, no te preocupes, solo corre <pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DROP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> CONCURRENTLY items_value_idx</code> </pre>  e intenta crearlo de nuevo. <br><br><h2>  4. Use cerraduras agresivas lo más tarde posible </h2><br>  Cuando necesite ejecutar un comando que reciba bloqueos de tabla agresivos, intente hacerlo lo más tarde posible en la transacción para que las consultas puedan continuar el mayor tiempo posible. <br><br>  Por ejemplo, si desea reemplazar completamente el contenido de la tabla.  No hagas esto: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; <span class="hljs-comment"><span class="hljs-comment">--     : TRUNCATE items; -  : \COPY items FROM 'newdata.csv' WITH CSV COMMIT;</span></span></code> </pre> <br>  En su lugar, cargue los datos en una nueva tabla y luego reemplace la anterior: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> items_new (<span class="hljs-keyword"><span class="hljs-keyword">LIKE</span></span> items <span class="hljs-keyword"><span class="hljs-keyword">INCLUDING</span></span> ALL); <span class="hljs-comment"><span class="hljs-comment">--  : \COPY items_new FROM 'newdata.csv' WITH CSV --     : DROP TABLE items; ALTER TABLE items_new RENAME TO items; COMMIT;</span></span></code> </pre> <br>  Hay un problema: no bloqueamos los registros desde el principio, y la vieja tabla de elementos podría haber cambiado para el momento en que la reiniciamos.  Para evitar esto, podemos bloquear explícitamente la tabla para escribir, pero no para leer: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">LOCK</span></span> items <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> EXCLUSIVE <span class="hljs-keyword"><span class="hljs-keyword">MODE</span></span>; ...</code> </pre> <br>  A veces es mejor tomar el bloqueo en tus propias manos. <br><br><h2>  5. Agregar una clave primaria con un bloqueo mínimo </h2><br>  Agregar una clave principal a sus tablas suele ser una buena idea.  Por ejemplo, si desea utilizar la replicación lógica o migrar una base de datos con <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Citus Warp</a> . <br><br>  Postgres hace que sea muy fácil crear una clave primaria usando <code>ALTER TABLE</code> , pero por ahora se crea un índice para la clave primaria, que puede llevar mucho tiempo si la tabla es grande, todas las solicitudes serán bloqueadas. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> items <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>); <span class="hljs-comment"><span class="hljs-comment">--     </span></span></code> </pre> <br>  Afortunadamente, puede hacer todo el trabajo duro primero utilizando <code>CREATE UNIQUE INDEX CONCURRENTLY</code> , y luego usar el índice único como clave principal, que es una operación rápida. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">UNIQUE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> CONCURRENTLY items_pk <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> items (<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>); <span class="hljs-comment"><span class="hljs-comment">--   ,     ALTER TABLE items ADD CONSTRAINT items_pk PRIMARY KEY USING INDEX items_pk; --  ,  </span></span></code> </pre> <br>  La división de la creación de la clave primaria en dos etapas prácticamente no afecta al usuario. <br><br><h2>  6. Nunca use VACUUM FULL </h2><br>  La experiencia del usuario postgres a veces puede ser un poco increíble.  Aunque <code>VACUUM FULL</code> suena como lo que le gustaría hacer para limpiar el "polvo" de su base de datos, un comando más adecuado sería: <br><br><pre> <code class="sql hljs">PLEASE FREEZE MY DATABASE FOR HOURS;</code> </pre> <br>  <code>VACUUM FULL</code> sobrescribe la tabla completa en el disco, lo que puede llevar horas o días, y al mismo tiempo bloquea todas las solicitudes.  Aunque hay varios <code>VACUUM FULL</code> uso válidos para <code>VACUUM FULL</code> , como una tabla que solía ser grande, pero ahora es pequeña y todavía ocupa mucho espacio, pero probablemente esta no sea su opción. <br>  Aunque debe esforzarse por configurar las opciones de limpieza automática y usar índices para acelerar las consultas, a veces puede ejecutar <code>VACUUM</code> , pero NO <code>VACUUM FULL</code> . <br><br><h2>  7. Evite los puntos muertos organizando comandos </h2><br>  Si ha estado usando PostgreSQL durante algún tiempo, lo más probable es que haya visto errores como: <br><br><pre> <code class="sql hljs">ERROR: deadlock detected DETAIL: Process 13661 waits for ShareLock on transaction 45942; blocked by process 13483. Process 13483 waits for ShareLock on transaction 45937; blocked by process 13661.</code> </pre> <br>  Esto sucede cuando las transacciones concurrentes toman los mismos bloqueos en un orden diferente.  Por ejemplo, una transacción ejecuta los siguientes comandos. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> items <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> counter = counter + <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> = <span class="hljs-string"><span class="hljs-string">'hello'</span></span>; <span class="hljs-comment"><span class="hljs-comment">--    hello UPDATE items SET counter = counter + 1 WHERE key = 'world'; --    world END;</span></span></code> </pre> <br>  Al mismo tiempo, otra transacción puede emitir los mismos comandos, pero en un orden diferente. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> items <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> counter = counter + <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> = <span class="hljs-string"><span class="hljs-string">'world'</span></span>; <span class="hljs-comment"><span class="hljs-comment">--    world UPDATE items SET counter = counter + 1 WHERE key = 'hello'; --    hello END;</span></span></code> </pre> <br>  Si estos bloques de transacciones se ejecutan al mismo tiempo, es probable que se queden atascados y nunca terminen.  Postgres reconoce esta situación en aproximadamente un segundo y cancelará una de las transacciones para completar la otra.  Cuando esto sucede, debe echar un vistazo a su aplicación para averiguar si puede asegurarse de que sus transacciones siempre se ejecuten en el mismo orden.  Si ambas transacciones cambian <code>hello</code> primero, luego <code>world</code> , entonces la primera transacción bloqueará la segunda en <code>hello</code> antes de que pueda capturar cualquier otra cerradura. <br>  ¡Comparte tus consejos! <br><br>  Esperamos que encuentre útiles estas recomendaciones.  Si tiene otros consejos, no dude en tuitear <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">@citusdata</a> o nuestra comunidad activa de usuarios de Citus en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Slack</a> . <br><br>  Le recordamos que en unas horas habrá un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">día abierto</a> en el que hablaremos en detalle sobre el programa para el próximo curso. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/452986/">https://habr.com/ru/post/452986/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../452974/index.html">Programación asincrónica (curso completo)</a></li>
+<li><a href="../452978/index.html">ok.tech: datos explicados</a></li>
+<li><a href="../452980/index.html">AWP KBR-N - El día X llegará pronto, quien no se preparó para culpar</a></li>
+<li><a href="../452982/index.html">Integración simple de MS Project y Redmine</a></li>
+<li><a href="../452984/index.html">Arduino y Frambuesa ilegalizados</a></li>
+<li><a href="../452988/index.html">Kubernetes Dashboard e integración de GitLab</a></li>
+<li><a href="../452990/index.html">"Necesita conocer tanto la pila web como C ++": una entrevista con Alexei Kozyatinsky sobre el desarrollo de Chrome DevTools y no solo</a></li>
+<li><a href="../452992/index.html">La plataforma CAD de CATIA 3DEXPERIENCE ayudó a recrear el buque de guerra de Leonardo da Vinci</a></li>
+<li><a href="../452996/index.html">Entrenamiento de Data Science en la empresa y mitap temático en Voronezh</a></li>
+<li><a href="../452998/index.html">Android Un widget dinámico en forma de tarjetas basado en StackView (algo así como Tinder)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
