@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐔 🐫 👠 Obtención automática de certificados SSL por Let's Encrypt usando DNS-01 challenge y AWS ℹ️ 📱 👤</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Esta publicación describe los pasos necesarios para configurar la creación y renovación de certificados SSL automáticos, utilizando Let's Encrypt como...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Obtención automática de certificados SSL por Let's Encrypt usando DNS-01 challenge y AWS</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/451200/"><p> Esta publicación describe los pasos necesarios para configurar la creación y renovación de certificados SSL automáticos, utilizando <em>Let's Encrypt</em> como la Autoridad de Certificación automatizada, que proporciona una API bien mantenida. <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><code><strong>acme-dns-route53</strong></code></a> es la herramienta para obtener certificados SSL de <em>Let's Encrypt</em> usando el <em>desafío DNS-01</em> con <em>Route53</em> y <em>Amazon Certificate Manager</em> de AWS.  <code>acme-dns-route53</code> también tiene la funcionalidad incorporada para usar esta herramienta dentro de AWS Lambda, y esto es lo que vamos a hacer. </p><a name="habracut"></a><br><p>  Esta publicación se divide en 4 secciones: </p><br><ul><li>  construir un archivo zip desplegable e independiente </li><li>  crear un rol de IAM para la función lambda que le otorga los permisos necesarios para ejecutar </li><li>  creando una función lambda que ejecuta <code>acme-dns-route53</code> </li><li>  crear un temporizador CloudWatch que active una función lambda dos veces al día </li></ul><br><p>  <em>Nota: antes de comenzar, asegúrese de que GoLang 1.9+ y AWS CLI ya estén instalados.</em> </p><br><h3 id="built-a-self-contained-deployable-zip-file">  Construyó un archivo zip desplegable e independiente </h3><br><p>  <code>acme-dns-route53</code> está escrito en GoLang y la versión de soporte no es inferior a 1.9.  Necesitamos crear un archivo zip desplegable y autónomo que contenga el ejecutable de la herramienta <code>acme-dns-route53</code> . </p><br><p>  El primer paso es construir un ejecutable desde el repositorio remoto de GitHub de la herramienta <code>acme-dns-route53</code> usando el comando <code>go install</code> : </p><br><pre> <code class="bash hljs">$ env GOOS=linux GOARCH=amd64 go install github.com/begmaroman/acme-dns-route53</code> </pre> <br><p>  El ejecutable se instalará en el <code>$GOPATH/bin</code> .  Importante: como parte de este comando, estamos usando env para establecer temporalmente dos variables de entorno durante la duración del comando ( <code>GOOS=linux</code> y <code>GOARCH=amd64</code> ).  Estos le indican al compilador Go que cree un ejecutable adecuado para usar con un sistema operativo Linux y una arquitectura amd64, que es en lo que se ejecutará cuando lo implementemos en AWS. <br>  AWS requiere que carguemos nuestras funciones lambda en un archivo zip, así que hagamos un archivo zip <code>acme-dns-route53.zip</code> que contenga el ejecutable que acabamos de crear: </p><br><pre> <code class="bash hljs">$ zip -j ~/acme-dns-route53.zip <span class="hljs-variable"><span class="hljs-variable">$GOPATH</span></span>/bin/acme-dns-route53</code> </pre> <br><p>  Tenga en cuenta que el ejecutable debe estar en la raíz del archivo zip, no en una carpeta dentro del archivo zip.  Para asegurar esto, he usado la bandera <code>-j</code> en el fragmento de arriba para los nombres de directorio basura. </p><br><p>  Ahora el archivo zip se puede implementar, pero aún necesita permisos para ejecutarse. </p><br><h3 id="creating-an-iam-role-for-lambda-function-that-gives-it-the-necessary-permissions-to-execute">  Crear un rol de IAM para la función lambda que le otorgue los permisos necesarios para ejecutar </h3><br><p>  Necesitamos configurar un rol de IAM que defina el permiso que tendrá nuestra función lambda cuando se esté ejecutando. <br>  Por ahora, configuremos un rol de <code>lambda-acme-dns-route53-executor</code> y <code>AWSLambdaBasicExecutionRole</code> política administrada <code>AWSLambdaBasicExecutionRole</code> .  Esto le dará a nuestra función lambda los permisos básicos que necesita para ejecutarse e iniciar sesión en el servicio AWS CloudWatch. <br>  Primero, tenemos que crear un archivo JSON de política de confianza.  Esto esencialmente le indicará a AWS que permita que los servicios lambda asuman el rol de <code>lambda-acme-dns-route53-executor</code> : </p><br><pre> <code class="bash hljs">$ touch ~/lambda-acme-dns-route53-executor-policy.json</code> </pre> <br><p>  El contenido del archivo JSON creado debe ser el siguiente: </p><br><pre> <code class="json hljs">{ <span class="hljs-attr"><span class="hljs-attr">"Version"</span></span>: <span class="hljs-string"><span class="hljs-string">"2012-10-17"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Statement"</span></span>: [ { <span class="hljs-attr"><span class="hljs-attr">"Effect"</span></span>: <span class="hljs-string"><span class="hljs-string">"Allow"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Action"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"logs:CreateLogGroup"</span></span> ], <span class="hljs-attr"><span class="hljs-attr">"Resource"</span></span>: <span class="hljs-string"><span class="hljs-string">"arn:aws:logs:&lt;AWS_REGION&gt;:&lt;AWS_ACCOUNT_ID&gt;:*"</span></span> }, { <span class="hljs-attr"><span class="hljs-attr">"Effect"</span></span>: <span class="hljs-string"><span class="hljs-string">"Allow"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Action"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"logs:PutLogEvents"</span></span>, <span class="hljs-string"><span class="hljs-string">"logs:CreateLogStream"</span></span> ], <span class="hljs-attr"><span class="hljs-attr">"Resource"</span></span>: <span class="hljs-string"><span class="hljs-string">"arn:aws:logs:&lt;AWS_REGION&gt;:&lt;AWS_ACCOUNT_ID&gt;:log-group:/aws/lambda/acme-dns-route53:*"</span></span> }, { <span class="hljs-attr"><span class="hljs-attr">"Sid"</span></span>: <span class="hljs-string"><span class="hljs-string">""</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Effect"</span></span>: <span class="hljs-string"><span class="hljs-string">"Allow"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Action"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"route53:ListHostedZones"</span></span>, <span class="hljs-string"><span class="hljs-string">"cloudwatch:PutMetricData"</span></span>, <span class="hljs-string"><span class="hljs-string">"acm:ImportCertificate"</span></span>, <span class="hljs-string"><span class="hljs-string">"acm:ListCertificates"</span></span> ], <span class="hljs-attr"><span class="hljs-attr">"Resource"</span></span>: <span class="hljs-string"><span class="hljs-string">"*"</span></span> }, { <span class="hljs-attr"><span class="hljs-attr">"Sid"</span></span>: <span class="hljs-string"><span class="hljs-string">""</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Effect"</span></span>: <span class="hljs-string"><span class="hljs-string">"Allow"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"Action"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"sns:Publish"</span></span>, <span class="hljs-string"><span class="hljs-string">"route53:GetChange"</span></span>, <span class="hljs-string"><span class="hljs-string">"route53:ChangeResourceRecordSets"</span></span>, <span class="hljs-string"><span class="hljs-string">"acm:ImportCertificate"</span></span>, <span class="hljs-string"><span class="hljs-string">"acm:DescribeCertificate"</span></span> ], <span class="hljs-attr"><span class="hljs-attr">"Resource"</span></span>: [ <span class="hljs-string"><span class="hljs-string">"arn:aws:sns:&lt;AWS_REGION&gt;:&lt;AWS_ACCOUNT_ID&gt;:&lt;TOPIC_NAME&gt;"</span></span>, <span class="hljs-string"><span class="hljs-string">"arn:aws:route53:::hostedzone/*"</span></span>, <span class="hljs-string"><span class="hljs-string">"arn:aws:route53:::change/*"</span></span>, <span class="hljs-string"><span class="hljs-string">"arn:aws:acm:&lt;AWS_REGION&gt;:&lt;AWS_ACCOUNT_ID&gt;:certificate/*"</span></span> ] } ] }</code> </pre> <br><p>  Luego use el comando <code>aws iam create-role</code> para crear el rol con esta política de confianza: </p><br><pre> <code class="bash hljs">$ aws iam create-role --role-name lambda-acme-dns-route53-executor \ --assume-role-policy-document ~/lambda-acme-dns-route53-executor-policy.json</code> </pre> <br><p>  <em>Tome nota del ARN (nombre de recurso de Amazon) devuelto; lo necesitará en el siguiente paso.</em> </p><br><p>  Ahora que se ha creado el rol <code>lambda-acme-dns-route53-executor</code> , necesitamos especificar los permisos que tiene el rol.  La forma más fácil de hacer esto es usar el comando <code>aws iam attach-role-policy</code> , pasando el ARN de la política de permisos <code>AWSLambdaBasicExecutionRole</code> de la <code>AWSLambdaBasicExecutionRole</code> manera: </p><br><pre> <code class="bash hljs">$ aws iam attach-role-policy --role-name lambda-acme-dns-route53-executor \ --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole</code> </pre> <br><p>  <em>Nota: puede encontrar una lista de otras políticas de permisos que pueden ser útiles <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">aquí</a> .</em> </p><br><h3 id="creating-a-lambda-function-which-executes-acme-dns-route53">  Crear una función lambda que ejecute acme-dns-route53 </h3><br><p>  Ahora estamos listos para implementar la función lambda en AWS, lo que podemos hacer con el comando <code>aws lambda create-function</code> .  La función lambda debe configurarse con las siguientes opciones: </p><br><ul><li>  <code>AWS_LAMBDA</code> variable de entorno con valor <code>1</code> que ajusta la herramienta para usar dentro de la función Lambda. </li><li>  <code>DOMAINS</code> es la variable de entorno que contiene una lista de dominios separados por comas para los que se emitirán certificados. </li><li>  <code>LETSENCRYPT_EMAIL</code> es la variable de entorno que contiene el correo electrónico de caducidad Let's Encrypt. </li><li>  <code>NOTIFICATION_TOPIC</code> es la variable de entorno que contiene el ARN del tema de notificación SNS. </li><li>  <code>STAGING</code> es la variable de entorno que debe contener <code>1</code> valor para usar el entorno Let's Encrypt de puesta en escena o <code>0</code> para el entorno de producción. </li><li>  <code>RENEW_BEFORE</code> es el número de días que define el período antes del vencimiento dentro del cual se debe renovar un certificado. </li><li>  <code>1024</code> MB es el límite de memoria (se puede cambiar si es necesario). </li><li>  <code>900</code> segundos (15 min) es el tiempo de espera máximo. </li><li>  <code>acme-dns-route53</code> es el nombre del controlador de la función lambda. </li><li>  <code>fileb://~/acme-dns-route53.zip</code> es el archivo .zip creado arriba. </li></ul><br><p>  Siga adelante e intente implementarlo: </p><br><pre> <code class="bash hljs">$ aws lambda create-function \ --<span class="hljs-keyword"><span class="hljs-keyword">function</span></span>-name acme-dns-route53 \ --runtime go1.x \ --role arn:aws:iam::&lt;AWS_ACCOUNT_ID&gt;:role/lambda-acme-dns-route53-executor \ --environment Variables=<span class="hljs-string"><span class="hljs-string">"{AWS_LAMBDA=1,DOMAINS=\"example1.com,example2.com\",LETSENCRYPT_EMAIL=begmaroman@gmail.com,STAGING=0,NOTIFICATION_TOPIC=acme-dns-route53-obtained,RENEW_BEFORE=7}"</span></span> \ --memory-size 1024 \ --timeout 900 \ --handler acme-dns-route53 \ --zip-file fileb://~/acme-dns-route53.zip { <span class="hljs-string"><span class="hljs-string">"FunctionName"</span></span>: <span class="hljs-string"><span class="hljs-string">"acme-dns-route53"</span></span>, <span class="hljs-string"><span class="hljs-string">"LastModified"</span></span>: <span class="hljs-string"><span class="hljs-string">"2019-05-03T19:07:09.325+0000"</span></span>, <span class="hljs-string"><span class="hljs-string">"RevisionId"</span></span>: <span class="hljs-string"><span class="hljs-string">"e3fadec9-2180-4bff-bb9a-999b1b71a558"</span></span>, <span class="hljs-string"><span class="hljs-string">"MemorySize"</span></span>: 1024, <span class="hljs-string"><span class="hljs-string">"Environment"</span></span>: { <span class="hljs-string"><span class="hljs-string">"Variables"</span></span>: { <span class="hljs-string"><span class="hljs-string">"DOMAINS"</span></span>: <span class="hljs-string"><span class="hljs-string">"example1.com,example2.com"</span></span>, <span class="hljs-string"><span class="hljs-string">"STAGING"</span></span>: <span class="hljs-string"><span class="hljs-string">"1"</span></span>, <span class="hljs-string"><span class="hljs-string">"LETSENCRYPT_EMAIL"</span></span>: <span class="hljs-string"><span class="hljs-string">"your@email.com"</span></span>, <span class="hljs-string"><span class="hljs-string">"NOTIFICATION_TOPIC"</span></span>: <span class="hljs-string"><span class="hljs-string">"acme-dns-route53-obtained"</span></span>, <span class="hljs-string"><span class="hljs-string">"RENEW_BEFORE"</span></span>: <span class="hljs-string"><span class="hljs-string">"7"</span></span>, <span class="hljs-string"><span class="hljs-string">"AWS_LAMBDA"</span></span>: <span class="hljs-string"><span class="hljs-string">"1"</span></span> } }, <span class="hljs-string"><span class="hljs-string">"Version"</span></span>: <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$LATEST</span></span></span><span class="hljs-string">"</span></span>, <span class="hljs-string"><span class="hljs-string">"Role"</span></span>: <span class="hljs-string"><span class="hljs-string">"arn:aws:iam::&lt;AWS_ACCOUNT_ID&gt;:role/lambda-acme-dns-route53-executor"</span></span>, <span class="hljs-string"><span class="hljs-string">"Timeout"</span></span>: 900, <span class="hljs-string"><span class="hljs-string">"Runtime"</span></span>: <span class="hljs-string"><span class="hljs-string">"go1.x"</span></span>, <span class="hljs-string"><span class="hljs-string">"TracingConfig"</span></span>: { <span class="hljs-string"><span class="hljs-string">"Mode"</span></span>: <span class="hljs-string"><span class="hljs-string">"PassThrough"</span></span> }, <span class="hljs-string"><span class="hljs-string">"CodeSha256"</span></span>: <span class="hljs-string"><span class="hljs-string">"+2KgE5mh5LGaOsni36pdmPP9O35wgZ6TbddspyaIXXw="</span></span>, <span class="hljs-string"><span class="hljs-string">"Description"</span></span>: <span class="hljs-string"><span class="hljs-string">""</span></span>, <span class="hljs-string"><span class="hljs-string">"CodeSize"</span></span>: 8456317, <span class="hljs-string"><span class="hljs-string">"FunctionArn"</span></span>: <span class="hljs-string"><span class="hljs-string">"arn:aws:lambda:us-east-1:&lt;AWS_ACCOUNT_ID&gt;:function:acme-dns-route53"</span></span>, <span class="hljs-string"><span class="hljs-string">"Handler"</span></span>: <span class="hljs-string"><span class="hljs-string">"acme-dns-route53"</span></span> }</code> </pre> <br><h3 id="creating-a-cloudwatch-timer-that-triggers-a-lambda-function-once-a-day">  Crear un temporizador CloudWatch que active una función lambda una vez al día </h3><br><p>  El último paso es crear un activador diario para la función.  Para hacer esto podemos: </p><br><ul><li>  cree una regla de CloudWatch con la expresión_programación deseada (cuándo debería ejecutarse). </li><li>  crear un objetivo de regla (lo que debería ejecutarse) especificando el ARN de la función lambda. </li><li>  otorgue permiso a la regla de CloudWatch para invocar la función lambda. </li></ul><br><p>  He pegado mi configuración de Terraform a continuación, pero también es muy sencillo hacerlo desde la consola de AWS o desde la CLI. </p><br><pre> <code class="plaintext hljs"># Cloudwatch event rule that runs acme-dns-route53 lambda every 12 hours resource "aws_cloudwatch_event_rule" "acme_dns_route53_sheduler" { name = "acme-dns-route53-issuer-scheduler" schedule_expression = "cron(0 */12 * * ? *)" } # Specify the lambda function to run resource "aws_cloudwatch_event_target" "acme_dns_route53_sheduler_target" { rule = "${aws_cloudwatch_event_rule.acme_dns_route53_sheduler.name}" arn = "${aws_lambda_function.acme_dns_route53.arn}" } # Give CloudWatch permission to invoke the function resource "aws_lambda_permission" "permission" { action = "lambda:InvokeFunction" function_name = "${aws_lambda_function.acme_dns_route53.function_name}" principal = "events.amazonaws.com" source_arn = "${aws_cloudwatch_event_rule.acme_dns_route53_sheduler.arn}" }</code> </pre> <br><p>  ¡Ahora usted también puede tener renovaciones de certificados TLS 100% automatizadas! </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/451200/">https://habr.com/ru/post/451200/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../451184/index.html">Proyecto Blue Origin Blue Moon: Gente en la Luna para 2024</a></li>
+<li><a href="../451186/index.html">El repositorio de LINSTOR y su integración con OpenNebula</a></li>
+<li><a href="../451188/index.html">Sberbank o allí y de regreso</a></li>
+<li><a href="../451196/index.html">Separación de perfiles de clientes y autónomos.</a></li>
+<li><a href="../451198/index.html">El papel de la realidad aumentada y la realidad virtual en la NBA</a></li>
+<li><a href="../451204/index.html">Editores de texto gratuitos para colaboración</a></li>
+<li><a href="../451206/index.html">¿Qué está pasando con los repositorios RDF en este momento?</a></li>
+<li><a href="../451208/index.html">Clasificación "topológica" de un gráfico con ciclos</a></li>
+<li><a href="../451210/index.html">Integración de Jira con GitLab</a></li>
+<li><a href="../451212/index.html">Sistema de protección de arco con la capacidad de operar con una señal de corriente.</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
