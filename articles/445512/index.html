@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐄 🐂 🕙 Cómo creamos PHP 7 el doble de rápido que PHP 5. Parte 2: optimización de bytecode en PHP 7.1 ♎️ 👩🏻‍🏫 👩🏼‍💻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="En la primera parte de la historia, basada en una presentación de Dmitry Stogov de Zend Technologies en HighLoad ++, entendimos la estructura interna ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cómo creamos PHP 7 el doble de rápido que PHP 5. Parte 2: optimización de bytecode en PHP 7.1</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/oleg-bunin/blog/445512/">  En la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">primera parte de la</a> historia, basada en una <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">presentación de</a> <strong>Dmitry Stogov</strong> de Zend Technologies en HighLoad ++, entendimos la estructura interna de PHP.  Aprendimos en detalle y de primera mano qué cambios en las estructuras de datos básicas permitieron que PHP 7 se acelerara más de dos veces.  Esto podría haberse detenido, pero ya en la versión 7.1, los desarrolladores fueron mucho más lejos, ya que todavía tenían muchas ideas para la optimización. <br><br>  La experiencia acumulada trabajando en JIT antes de los siete ahora se puede interpretar, observando los resultados en 7.0 sin JIT y los resultados de HHVM con JIT.  En PHP 7.1, se decidió no trabajar con JIT, sino recurrir nuevamente al intérprete.  Si antes la optimización se refería al intérprete, en este artículo veremos la optimización del código de bytes, utilizando la inferencia de tipos que se implementó para nuestro JIT. <br><br><img src="https://habrastorage.org/webt/km/1d/cu/km1dcunb58tbgkftxkwegfktjto.png"><br><br>  Debajo del corte, Dmitry Stogov mostrará cómo funciona todo esto, usando un ejemplo simple. <br><a name="habracut"></a><br><h3>  Bytecode optimization </h3><br>  A continuación se muestra el código de bytes en el que el compilador estándar de PHP compila la función.  Es de un solo paso: rápido y tonto, pero capaz de hacer su trabajo en cada solicitud HTTP nuevamente (si OPcache no está conectado). <br><img src="https://habrastorage.org/webt/ur/rp/xe/urrpxeazkhjaoccg7lgswufya-o.png"><br><br><h3>  Optimizaciones de OPcache </h3><br>  Con el advenimiento de OPcache, comenzamos a optimizarlo.  Algunos métodos de optimización <strong>se han incorporado desde hace mucho tiempo a OPcache</strong> , por ejemplo, métodos de optimización de <strong>rendijas</strong> : cuando miramos el código a través de la mirilla, buscamos patrones familiares y los reemplazamos por heurísticos.  Estos métodos continúan utilizándose en 7.0.  Por ejemplo, tenemos dos operaciones: suma y asignación. <br><img src="https://habrastorage.org/webt/hn/qm/dg/hnqmdgqu4_etjvz7zxnzbfwgpve.png"><br><br>  Se pueden combinar en una operación de asignación compuesta, que realiza la suma directamente en el resultado: <code>ASSIGN_ADD $sum, $i</code> .  Otro ejemplo es una variable posterior al incremento que teóricamente podría devolver algún tipo de resultado. <br><img src="https://habrastorage.org/webt/re/gt/m4/regtm4l3qupkaynn4dulv8bliok.png"><br><br>  Puede no ser un valor escalar y debe eliminarse.  Para hacer esto, use las instrucciones <code>FREE</code> le siguen.  Pero si lo cambia a un incremento previo, no se requiere la instrucción <code>FREE</code> . <br><img src="https://habrastorage.org/webt/xz/pd/0b/xzpd0bnqezhnqbcx3_zqseojbkq.png"><br><br>  Al final hay dos declaraciones <code>RETURN</code> : la primera es un reflejo directo de la declaración RETURN en el texto fuente, y la segunda la agrega un compilador tonto con un corchete de cierre.  Este código nunca se alcanzará y se puede eliminar. <br>  Solo quedan cuatro instrucciones en el bucle.  Parece que no hay nada más que optimizar, pero no para nosotros. <br>  Mire el <code>$i++</code> y su instrucción correspondiente: el pre-incremento <code>PRE_INC</code> .  Cada vez que se ejecuta: <br><br><ul><li>  necesita verificar qué tipo de variable vino; </li><li>  si <code>is_long</code> ; </li><li>  realizar incremento; </li><li>  verificar el desbordamiento; </li><li>  pasar al siguiente </li><li>  tal vez verifique la excepción. </li></ul><br>  Pero una persona, solo mirando el código PHP, verá que la variable <code>$i</code> encuentra en el rango de 0 a 100, y no puede haber desbordamiento, no son necesarias verificaciones de tipo, y tampoco puede haber excepciones.  <strong>En PHP 7.1, tratamos de enseñarle al compilador a entender esto</strong> . <br><br><h3>  Optimización del gráfico de flujo de control </h3><img src="https://habrastorage.org/webt/6c/kc/ov/6ckcovmmyomlp00lnvxvcdqkxpk.png"><br><br>  Para hacer esto, debe deducir los tipos, y para ingresarlos, primero debe construir una representación formal de los flujos de datos que la computadora entiende.  Pero comenzaremos construyendo un Gráfico de flujo de control, un gráfico de dependencia de control.  Inicialmente, dividimos el código en bloques básicos: un conjunto de instrucciones con una entrada y una salida.  Por lo tanto, cortamos el código en los lugares donde ocurre la transición, es decir, las etiquetas L0, L1.  También lo cortamos después de los operadores de rama condicional e incondicional, y luego lo conectamos con arcos que muestran las dependencias para el control. <br><img src="https://habrastorage.org/webt/jb/rd/a2/jbrda2sz2t2yukuja4uido5ptk8.png"><br><br>  Entonces tenemos CFG. <br><br><h3>  Optimización del formulario de asignación única estática </h3><br>  Bueno, ahora necesitamos una dependencia de datos.  Para hacer esto, utilizamos el Formulario de asignación única estática, una representación popular en el mundo de la optimización de compiladores.  Implica que el valor de cada variable solo se puede asignar una vez. <br><img src="https://habrastorage.org/webt/io/se/cd/iosecdoawvlte3fa8hn-q5ga3ea.png"><br><br>  Para cada variable, agregamos un índice o número de reencarnación.  En cada lugar donde se lleva a cabo la tarea, colocamos un nuevo índice y donde los usamos, hasta los signos de interrogación, porque no siempre se conoce en todas partes.  Por ejemplo, en la instrucción <code>IS_SMALLER</code> $ i puedo provenir tanto del bloque L0 con el número 4 como del primer bloque con el número 2. <br><br>  Para resolver este problema, la SSA introduce <strong>la pseudofunción Phi</strong> , que, si es necesario, se inserta al comienzo del bloque basic-&gt;, toma todo tipo de índices de una variable que llegó al bloque basic desde diferentes lugares y crea una nueva reencarnación de la variable.  Son esas variables las que luego se usan para eliminar la ambigüedad. <br><img src="https://habrastorage.org/webt/ef/um/d8/efumd8l0ymc_8ffs0wwgraqso_q.png"><br><br>  Reemplazando todos los signos de interrogación de esta manera, construiremos la SSA. <br><br><h3>  Optimización de tipo </h3><br>  Ahora deducimos los tipos, como si tratara de ejecutar este código directamente en la administración. <br><img src="https://habrastorage.org/webt/jd/tl/zf/jdtlzfxasn7ioyfhmumpxosc6z0.png"><br><br>  En el primer bloque, a las variables se les asignan valores constantes: ceros, y sabemos con certeza que estas variables serán de tipo largo.  El siguiente es la función Phi.  Long llega a la entrada, y no conocemos los valores de otras variables que provienen de otras ramas. <br><img src="https://habrastorage.org/webt/qr/bf/ji/qrbfjicsc1njj9g0uv7llwwlax8.png"><br><br>  Creemos que la salida phi () tendremos mucho tiempo. <br><img src="https://habrastorage.org/webt/ci/au/rx/ciaurxm91_qykojqstnrye1ixyo.png"><br><br>  Distribuimos más.  Llegamos a funciones específicas, por ejemplo, <code>ASSIGN_ADD</code> y <code>PRE_INC</code> .  Suma dos largos.  El resultado puede ser largo o doble si se produce un desbordamiento. <br><img src="https://habrastorage.org/webt/sh/h1/xk/shh1xkzcm6gnefcsrn1n4jncrwu.png"><br><br>  Estos valores vuelven a caer en la función Phi, se produce la unión de los conjuntos de tipos posibles que llegan a diferentes ramas.  Bueno, etc., continuamos extendiéndonos hasta llegar a un punto fijo y todo se calma. <br><img src="https://habrastorage.org/webt/cp/wi/pc/cpwipcwroghcv7tflquaeblynp8.png"><br><br>  Tenemos un posible conjunto de valores de tipo en cada punto del programa.  Esto ya está bien.  La computadora ya sabe que <code>$i</code> solo puede ser largo o doble, y puede excluir algunas verificaciones innecesarias.  Pero sabemos que doble <code>$i</code> no puedo ser.  Como lo sabemos  Y vemos una condición que limita el crecimiento de <code>$i</code> en el ciclo a un posible desbordamiento.  Le enseñaremos a la computadora a ver esto. <br><br><h3>  Optimización de propagación de rango </h3><br>  En la instrucción <code>PRE_INC</code> nunca descubrimos que solo puedo ser un número entero: cuesta mucho o el doble.  Esto sucede porque no intentamos inferir posibles rangos.  Entonces podríamos responder la pregunta de si ocurrirá un desbordamiento o no. <br><br>  Esta salida de los rangos se realiza de manera similar, pero un poco más compleja.  Como resultado, obtenemos un rango fijo de variables <code>$i</code> con los índices 2, 4, 6 7, y ahora podemos decir con confianza que el incremento <code>$i</code> no conducirá a un desbordamiento. <br><img src="https://habrastorage.org/webt/pd/fu/od/pdfuod-a6kri95noggd--fjtgly.png"><br><br>  Al combinar estos dos resultados, podemos decir con certeza que la variable doble <code>$i</code> nunca <code>$i</code> convertirse. <br><img src="https://habrastorage.org/webt/pj/ls/v7/pjlsv7o9sb_sovt2klcfhv0rthg.png"><br><br>  Todo lo que tenemos aún no es optimización, ¡es información para la optimización!  Considere la <code>ASSIGN_ADD</code> .  En términos generales, el valor anterior de la suma que vino a esta instrucción podría ser, por ejemplo, un objeto.  Luego, después de la adición, el valor anterior debería haberse eliminado.  Pero en nuestro caso, sabemos con certeza que hay un valor largo o doble, es decir, un valor escalar.  No se requiere destrucción, podemos reemplazar <code>ASSIGN_ADD</code> con <code>ADD</code> , una instrucción más fácil.  <code>ADD</code> usa la variable <code>sum</code> como argumento y valor. <br><img src="https://habrastorage.org/webt/s5/ln/i7/s5lni7nz1-kiwnyo-ch9h1jfpds.png"><br><br>  Para las operaciones previas al incremento, sabemos con certeza que el operando siempre es largo y que no se pueden producir desbordamientos.  Utilizamos un controlador altamente especializado para esta instrucción, que realizará solo las acciones necesarias sin ninguna verificación. <br><img src="https://habrastorage.org/webt/90/9v/vm/909vvmh7ygoi4cudrfek9r9igw0.png"><br><br>  Ahora compare la variable al final del ciclo.  Sabemos que el valor de la variable solo será largo; puede verificar este valor de inmediato comparándolo con cien.  Si antes registramos el resultado de la verificación en una variable temporal, y luego una vez más verificamos la variable temporal para verdadero / falso, ahora esto se puede hacer con una instrucción, es decir, simplificada. <br><img src="https://habrastorage.org/webt/y0/rl/gu/y0rlgu9ga2q1t9oxt_fdszkizei.png"><br><br>  Resultado del código de bytes en comparación con el original. <br><img src="https://habrastorage.org/webt/_c/k7/ed/_ck7edx3i303of0vmfgpx6cefz4.png"><br><br>  Solo quedan 3 instrucciones en el ciclo, y dos de ellas son altamente especializadas.  Como resultado, el código de la derecha es <strong>3 veces más rápido que el</strong> original. <br><br><h3>  Manipuladores altamente especializados </h3><br>  Cualquier <strong>controlador de rastreo PHP es solo una función C.</strong>  A la izquierda hay un controlador estándar, y en la parte superior derecha hay uno altamente especializado.  El izquierdo verifica: el tipo de operando, si se ha producido un desbordamiento, si se ha producido una excepción.  El correcto solo agrega uno y eso es todo.  Se traduce en 4 instrucciones de máquina.  Si fuimos más allá e hicimos JIT, entonces solo necesitaríamos una instrucción única, <code>incl</code> . <br><img src="https://habrastorage.org/webt/jg/zk/me/jgzkmezahf-1rxzvxrgvhdrhmiw.png"><br><br><h2>  Que sigue </h2><br>  Continuamos aumentando la velocidad de PHP branch 7 sin JIT.  <strong>PHP 7.1 volverá a ser un 60% más rápido</strong> en pruebas sintéticas típicas, pero en aplicaciones reales esto casi no da una victoria, solo 1-2% en WordPress.  Esto no es particularmente interesante.  Desde agosto de 2016, cuando la rama 7.1 se congeló por cambios importantes, nuevamente comenzamos a trabajar en JIT para PHP 7.2 o más bien PHP 8. <br><br>  En un nuevo intento, usamos <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">DynAsm</a> para generar el código, que fue desarrollado por Mike Paul <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">para LuaJIT-2</a> .  Es bueno porque <strong>genera código muy rápidamente</strong> : el hecho de que los minutos se compilaron en la versión JIT en LLVM ahora ocurre en 0.1-0.2 s.  Ya hoy, la <strong>aceleración en bench.php en JIT es 75 veces más rápida</strong> que PHP 5. <br><br>  No hay aceleración en aplicaciones reales, y este es el próximo desafío para nosotros.  En parte, obtuvimos el código óptimo, pero después de compilar demasiados scripts PHP, obstruimos el caché del procesador, por lo que no funcionó más rápido.  Y no la velocidad del código fue un cuello de botella en aplicaciones reales ... <br><br>  Quizás DynAsm pueda usarse para compilar solo ciertas funciones que serán seleccionadas por un programador o por heurísticas basadas en contadores: cuántas veces se ha llamado una función, cuántas veces se repiten los ciclos, etc. <br><br>  A continuación se muestra el código de máquina que genera nuestro JIT para el mismo ejemplo.  Muchas instrucciones se compilan de manera óptima: incremente en una instrucción de CPU, inicialización variable a constantes en dos.  Cuando los tipos no se traman, debe molestarse un poco más. <br><img src="https://habrastorage.org/webt/fj/zh/n9/fjzhn9m8unce1eui5yhb7otreng.png"><br><br>  Volviendo a la imagen del título, PHP, en comparación con lenguajes similares en la prueba de Mandelbrot, muestra muy buenos resultados (aunque los datos son relevantes a finales de 2016). <br><img src="https://habrastorage.org/webt/km/1d/cu/km1dcunb58tbgkftxkwegfktjto.png"><br>  <i>El diagrama muestra el tiempo de ejecución en segundos, menos es mejor.</i> <br><br>  Quizás <strong>Mandelbrot no sea la mejor prueba.</strong>  Es computacional, pero simple e implementado igualmente en todos los idiomas.  Sería bueno saber qué tan rápido Wordpress funcionaría en C ++, pero casi no hay ninguna rareza lista para reescribirlo solo para verificar e incluso repetir todas las perversiones del código PHP.  Si tiene ideas para un conjunto de puntos de referencia más adecuado, sugiérale. <br><br><blockquote>  Nos reuniremos en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">PHP Rusia</a> <strong>el 17 de mayo</strong> , discutiremos las perspectivas y el desarrollo del ecosistema y la experiencia de usar PHP para proyectos realmente complejos y geniales.  Ya con nosotros: <br><br><ul><li>  <strong>Nikita Popov</strong> , uno de los desarrolladores más destacados del núcleo PHP, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">contará</a> lo que nos espera en la próxima versión de PHP 7.4. </li><li>  <strong>Dmitry Stogov</strong> hablará sobre <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">planes</a> grandiosos <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">en PHP 8</a> . </li><li>  <strong>Anton Titov</strong> , autor del servidor de aplicaciones RoadRunner, presentará el tema " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Desarrollo de aplicaciones híbridas PHP / Go utilizando RoadRunner</a> ". </li></ul><br>  Por supuesto, esto está lejos de todo.  Y Call for Papers todavía está cerrado, <strong>hasta el 1 de abril,</strong> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">estamos esperando solicitudes</a> de aquellos que puedan aplicar enfoques modernos y mejores prácticas para implementar servicios PHP geniales.  No tenga miedo de competir con oradores eminentes: estamos <strong>buscando experiencia en el uso de</strong> lo que hacen en proyectos reales y lo ayudaremos a mostrar los beneficios de sus casos. <br></blockquote></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/445512/">https://habr.com/ru/post/445512/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../445496/index.html">Cómo el fragmento de marcado CSS rompió el compilador de C ++</a></li>
+<li><a href="../445500/index.html">Acerca de Open Distros, Open Source y Elastic</a></li>
+<li><a href="../445502/index.html">Vivaldi 2.4 - Mueve los botones con las dos manos</a></li>
+<li><a href="../445504/index.html">La gestión de servicios de TI (ITSM) se hizo más eficiente con las herramientas de aprendizaje automático</a></li>
+<li><a href="../445506/index.html">OS1: núcleo primitivo en Rust para x86</a></li>
+<li><a href="../445514/index.html">Lo más interesante en la exposición Securika Moscú 2019</a></li>
+<li><a href="../445516/index.html">Estados cuánticos neuronales: representación de una función de onda por una red neuronal</a></li>
+<li><a href="../445518/index.html">Hierro viejo: herramientas electrónicas que se pierden en las profundidades de la historia.</a></li>
+<li><a href="../445520/index.html">Extensiones para Visual Studio Code que lo ayudan a trabajar con Git</a></li>
+<li><a href="../445524/index.html">Análisis de la pantalla (interfaz de la disposición de los productos en la tienda)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

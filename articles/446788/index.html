@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍇 ☯️ ⛳️ Consejos y trucos de Kubernetes: sobre desarrollo local y telepresencia ☁️ 🙏🏽 🚴🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Cada vez se nos pregunta más sobre el desarrollo de microservicios en Kubernetes. Los desarrolladores, especialmente los idiomas interpretados, desean...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Consejos y trucos de Kubernetes: sobre desarrollo local y telepresencia</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/446788/"><img src="https://habrastorage.org/webt/hi/ph/x9/hiphx9pgfhckxtda-itahq7tq1s.png"><br><br>  Cada vez se nos pregunta más sobre el desarrollo de microservicios en Kubernetes.  Los desarrolladores, especialmente los idiomas interpretados, desean corregir rápidamente el código en su IDE favorito y sin esperar a que la compilación / implementación vea el resultado, simplemente presionando F5.  Y cuando se trataba de la aplicación monolítica, fue suficiente para aumentar localmente la base de datos y el servidor web (en Docker, VirtualBox ...), después de lo cual, disfrute inmediatamente del desarrollo.  Con el corte de los monolitos en microservicios y el advenimiento de Kubernetes, con la aparición de dependencias entre sí, las cosas <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">se complicaron un poco</a> .  Cuanto más de estos microservicios, más problemas.  Para volver a disfrutar del desarrollo, debe levantar más de uno o dos contenedores Docker, y a veces incluso más de una docena ... En general, todo esto puede llevar mucho tiempo, porque también necesita mantenerlo actualizado. <a name="habracut"></a><br><br>  En diferentes momentos, probamos diferentes soluciones al problema.  Y comenzaré con las soluciones acumuladas o simplemente "muletas". <br><br><h2>  1. muletas </h2><br>  La mayoría de los IDE tienen la capacidad de editar código directamente en el servidor usando FTP / SFTP.  Este camino es muy obvio e inmediatamente decidimos usarlo.  Su esencia es la siguiente: <br><br><ol><li>  En el pod para entornos de desarrollo (desarrollo / revisión), se lanza un contenedor adicional con acceso a través de SSH y reenvía la clave SSH pública del desarrollador que confirmará / implementará la aplicación. </li><li>  En la etapa de inicio (dentro del contenedor de <code>prepare-app</code> ) transferimos el código a <code>emptyDir</code> para tener acceso al código desde los contenedores con la aplicación y el servidor SSH. </li></ol><br><img src="https://habrastorage.org/webt/4i/i0/km/4ii0kmxovuszvyeyuyfdgadrvvg.png"><br><br>  Para una mejor comprensión de la implementación técnica de dicho esquema, daré fragmentos de las configuraciones de YAML involucradas en Kubernetes. <br><br><h3>  Configuraciones </h3><br><h4>  1.1.  valores.yaml </h4><br><pre> <code class="plaintext hljs">ssh_pub_key: vasya.pupkin: &lt;ssh public key in base64&gt;</code> </pre><br>  Aquí <code>vasya.pupkin</code> es el valor de la variable <code>${GITLAB_USER_LOGIN}</code> . <br><br><h4>  1.2.  despliegue.yaml </h4><br><pre> <code class="plaintext hljs">... {{ if eq .Values.global.debug "yes" }} volumes: - name: ssh-pub-key secret: defaultMode: 0600 secretName: {{ .Chart.Name }}-ssh-pub-key - name: app-data emptyDir: {} initContainers: - name: prepare-app {{ tuple "backend" . | include "werf_container_image" | indent 8 }} volumeMounts: - name: app-data mountPath: /app-data command: ["bash", "-c", "cp -ar /app/* /app-data/" ] {{ end }} containers: {{ if eq .Values.global.debug "yes" }} - name: ssh image: corbinu/ssh-server volumeMounts: - name: ssh-pub-key readOnly: true mountPath: /root/.ssh/authorized_keys subPath: authorized_keys - name: app-data mountPath: /app ports: - name: ssh containerPort: 22 protocol: TCP {{ end }} - name: backend volumeMounts: {{ if eq .Values.global.debug "yes" }} - name: app-data mountPath: /app {{ end }} command: ["/usr/sbin/php-fpm7.2", "--fpm-config", "/etc/php/7.2/php-fpm.conf", "-F"] ...</code> </pre><br><h4>  1.3.  secret.yaml </h4><br><pre> <code class="plaintext hljs">{{ if eq .Values.global.debug "yes" }} apiVersion: v1 kind: Secret metadata: name: {{ .Chart.Name }}-ssh-pub-key type: Opaque data: authorized_keys: "{{ first (pluck .Values.global.username .Values.ssh_pub_key) }}" {{ end }}</code> </pre><br><h4>  Toque final </h4><br>  Después de eso, solo queda pasar las <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">variables necesarias a gitlab-ci.yml</a> : <br><br><pre> <code class="plaintext hljs">dev: stage: deploy script: - type multiwerf &amp;&amp; source &lt;(multiwerf use 1.0 beta) - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf deploy --namespace ${CI_PROJECT_NAME}-stage --set "global.env=stage" --set "global.git_rev=${CI_COMMIT_SHA}" --set "global.debug=yes" --set "global.username=${GITLAB_USER_LOGIN}" tags: - build</code> </pre><br>  Voila: el desarrollador que lanzó la implementación puede conectarse utilizando el nombre del servicio ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">ya le dijimos</a> cómo emitir acceso al clúster de forma segura) desde su escritorio a través de SFTP y editar el código sin esperar a que se entregue al clúster. <br><br>  Esta es una solución completamente funcional, pero desde el punto de vista de la implementación tiene desventajas obvias: <br><br><ul><li>  la necesidad de refinar el diagrama de Helm, lo que complica aún más su lectura; </li><li>  Solo uno que haya implementado el servicio puede usarlo; </li><li>  debe recordar sincronizarlo con el directorio local con el código y confirmar en Git. </li></ul><br><h2>  2. Telepresencia </h2><br>  El proyecto de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">telepresencia</a> se conoce desde hace bastante tiempo, pero en la práctica lo intentó con nosotros, como dicen, "no llegó a nuestras manos".  Sin embargo, la demanda ha hecho su trabajo y ahora nos complace compartir experiencias que pueden ser útiles para los lectores de nuestro blog, especialmente porque todavía no había otros materiales sobre Telepresencia en el centro. <br><br>  En resumen, no fue tan aterrador.  Todas las acciones que requieren ejecución por parte del desarrollador, las colocamos en el archivo de texto del Helm-chart, llamado <code>NOTES.txt</code> .  Por lo tanto, el desarrollador después de implementar el servicio en Kubernetes ve las instrucciones para iniciar el entorno de desarrollo local en el registro de trabajo de GitLab: <br><br><pre> <code class="plaintext hljs">!!!   ,   Kubernetes !!! *   * *       VPN * *     kubectl ( https://kubernetes.io/docs/tasks/tools/install-kubectl/ ) * *  config-  kubectl (  ~/.kube/config) * *     telepresence ( https://www.telepresence.io/reference/install ) * *    Docker * *    reporter     https://gitlab.site.com/group/app * *    registry  /  GitLab (  ): ######################################################################### docker login registry.site.com ######################################################################### *   ######################################################################### telepresence --namespace {{ .Values.global.env }} --swap-deployment {{ .Chart.Name }}:backend --mount=/tmp/app --docker-run -v `pwd`:/app -v /tmp/app/var/run/secrets:/var/run/secrets -ti registry.site.com/group/app/backend:v8 #########################################################################</code> </pre> <br><br>  No nos detendremos en los pasos descritos en este manual ... excepto el último.  ¿Qué sucede durante el lanzamiento de Telepresence? <br><br><h3>  Trabajar con telepresencia </h3><br>  Al inicio (mediante el último comando especificado en las instrucciones anteriores) establecemos: <br><br><ul><li>  espacio de nombres (espacio de nombres) en el que se inicia el microservicio; </li><li>  los nombres de la implementación y el contenedor que queremos penetrar. </li></ul><br>  Los argumentos restantes son opcionales.  Si nuestro servicio interactúa con la API de Kubernetes y <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">se crea</a> una cuenta de servicio para ello, necesitamos montar los certificados / tokens en nuestro escritorio.  Para hacer esto, use la opción <code>--mount=true</code> (o <code>--mount=/dst_path</code> ), que montará la raíz (/) desde el contenedor en Kubernetes a nuestro escritorio.  Después de eso, podemos (dependiendo del sistema operativo y la forma en que se inicia la aplicación) usar las "claves" del clúster. <br><br>  Primero, considere la opción de inicio de aplicaciones más versátil: en el contenedor Docker.  Para hacer esto, use el <code>--docker-run</code> y monte el directorio con el código en el contenedor: <code>-v `pwd`:/app</code> <br><br>  Tenga en cuenta que esto implica comenzar desde el directorio con el proyecto.  El código de la aplicación se montará en el directorio <code>/app</code> en el contenedor. <br><br>  Siguiente: <code>-v /tmp/app/var/run/secrets:/var/run/secrets</code> - para montar el directorio con el certificado / token en el contenedor. <br><br>  Finalmente, esta opción es seguida por la imagen en la que se iniciará la aplicación.  <b>NB</b> : ¡Al construir una imagen, debe especificar <code>CMD</code> o <code>ENTRYPOINT</code> ! <br><br>  ¿Qué pasará después? <br><br><ul><li>  En Kubernetes, para la implementación especificada, el número de réplicas se cambiará a 0. En su lugar, se lanzará una nueva implementación, con el contenedor de fondo reemplazado. </li><li>  En el escritorio, se iniciarán 2 contenedores: el primero, con Telepresencia (enviará solicitudes de proxy a / para Kubernetes), el segundo, con la aplicación en desarrollo. </li><li>  Si exec'nitsya está en el contenedor con la aplicación, tendremos acceso a todas las variables ENV pasadas por Helm durante la implementación, así como a todos los servicios disponibles.  Todo lo que queda es editar el código en su IDE favorito y disfrutar del resultado. </li><li>  Al final del trabajo, es suficiente simplemente cerrar el terminal donde se está ejecutando Telepresence (finalizar la sesión usando Ctrl + C), los contenedores Docker se detendrán en el escritorio y todo volverá a su estado original en Kubernetes.  Todo lo que queda es comprometerse, emitir el MR y pasarlo a revisión / fusión / ... (dependiendo de sus flujos de trabajo). </li></ul><br>  Si no queremos ejecutar la aplicación en un contenedor Docker, por ejemplo, no la desarrollamos en PHP, sino en Go, y aún la recopilamos localmente, lanzar Telepresence será aún más fácil: <br><br><pre> <code class="plaintext hljs">telepresence --namespace {{ .Values.global.env }} --swap-deployment {{ .Chart.Name }}:backend --mount=true</code> </pre> <br>  Si la aplicación accede a la API de Kubernetes, deberá montar el <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">directorio con las claves</a> .  Para Linux, hay una utilidad de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">prueba</a> : <br><br><pre> <code class="plaintext hljs">proot -b $TELEPRESENCE_ROOT/var/run/secrets/:/var/run/secrets bash</code> </pre> <br>  Después de iniciar Telepresence sin la opción <code>--docker-run</code> , todas las variables de entorno estarán disponibles en el terminal actual, por lo que debe iniciar la aplicación en él. <br><br>  <b>Nota</b> : cuando utilice, por ejemplo, PHP, debe recordar desactivar varios op_cache, apc y otros aceleradores para el desarrollo; de lo contrario, editar el código no producirá el resultado deseado. <br><br><h2>  Resumen </h2><br>  El desarrollo local con Kubernetes es un problema cuya necesidad de solución está creciendo en proporción a la difusión de esta plataforma.  Después de haber recibido solicitudes relevantes de los desarrolladores (de nuestros clientes), comenzamos a resolverlas con los primeros medios disponibles, que, sin embargo, no demostraron su valía a larga distancia.  Afortunadamente, esto se ha vuelto obvio no solo ahora y no solo para nosotros, por lo tanto, ya han aparecido medios más adecuados en el mundo, y Telepresence es el más famoso de ellos (por cierto, todavía hay un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">skaffold</a> de Google).  Nuestra experiencia en su uso no es tan buena, pero ya da razones para recomendar "colegas". ¡Pruébelo! <br><br><h2>  PS </h2><br>  Otros del ciclo de consejos y trucos de K8s: <br><br><ul><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Herramientas para desarrolladores de aplicaciones que se ejecutan en Kubernetes</a> "; </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Consejos y trucos de Kubernetes: páginas de error personalizadas en NGINX Ingress</a> ; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Transferencia de recursos que trabajan en un clúster a la gestión de Helm 2</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Sobre la asignación de nodos y la carga en la aplicación web</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Acceso a sitios de desarrollo</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Acelerar el arranque de grandes bases de datos</a> " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">.</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/446788/">https://habr.com/ru/post/446788/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../446774/index.html">Diseño de personajes de baja poli</a></li>
+<li><a href="../446776/index.html">Prueba de trabajo efectiva</a></li>
+<li><a href="../446780/index.html">Cómo crear un tema oscuro y no dañar. Yandex.Mail Team Experience</a></li>
+<li><a href="../446782/index.html">Yo-ho-ho y una botella de ron</a></li>
+<li><a href="../446786/index.html">¿Por qué rechacé Disqus y tú también deberías ir?</a></li>
+<li><a href="../446790/index.html">Cómo descubrí un huevo de pascua en la seguridad de Android y no conseguí un trabajo en Google</a></li>
+<li><a href="../446794/index.html">Trabajamos con Wordstat correctamente. Guía completa</a></li>
+<li><a href="../446796/index.html">Circuitos no estándar: indicador de siete segmentos en ATtiny13</a></li>
+<li><a href="../446798/index.html">La partida de un ingeniero electrónico de Apple causó revuelo entre los especuladores bursátiles. ¿Cómo llegar a ser como él?</a></li>
+<li><a href="../446802/index.html">Recarga de cartuchos de puntos: es interesante</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
