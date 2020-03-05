@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⛹🏽 👨🏾‍🤝‍👨🏽 ⛹🏿 Cómo utilizamos la replicación diferida para la recuperación ante desastres con PostgreSQL 💒 💳 🧖🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="La replicación no es una copia de seguridad. O no? Así es como usamos la replicación diferida para la recuperación al eliminar accesos directos accide...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cómo utilizamos la replicación diferida para la recuperación ante desastres con PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/445446/"><p><img src="https://habrastorage.org/webt/d5/ij/ht/d5ijhtuldyyxn2aomtg2r4sdvum.jpeg"></p><br><p>  La replicación no es una copia de seguridad.  O no?  Así es como usamos la replicación diferida para la recuperación al eliminar accesos directos accidentalmente. </p><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Los especialistas</a> en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">infraestructura</a> de GitLab son responsables de ejecutar <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">GitLab.com</a> , la mayor instancia de GitLab en la naturaleza.  Hay 3 millones de usuarios y casi 7 millones de proyectos, y este es uno de los sitios SaaS de código abierto más grandes con una arquitectura dedicada.  Sin el sistema de base de datos PostgreSQL, la infraestructura de GitLab.com no irá muy lejos, y simplemente no lo hacemos por tolerancia a fallas en caso de fallas cuando se pueden perder datos.  Es poco probable que ocurra tal catástrofe, pero estamos bien preparados y equipados con diferentes mecanismos de copia de seguridad y replicación. </p><br><p> La replicación no es una herramienta de respaldo de la base de datos para usted ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">ver más abajo</a> ).  Pero ahora veremos cómo recuperar rápidamente los datos eliminados accidentalmente mediante la replicación retrasada: en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">GitLab.com, el</a> usuario <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">eliminó el acceso directo</a> para el proyecto <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><code>gitlab-ce</code></a> y perdió contacto con solicitudes y tareas de fusión. </p><br><p>  Con una réplica retrasada, recuperamos datos en solo 1.5 horas.  Mira cómo fue. </p><a name="habracut"></a><br><h3 id="vosstanovlenie-na-moment-vremeni-s-postgresql">  Recuperación de punto en el tiempo con PostgreSQL </h3><br><p>  PostgreSQL tiene una función integrada que restaura el estado de la base de datos en un momento específico.  Se llama <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Point-in-Time Recovery</a> (PITR) y utiliza los mismos mecanismos que mantienen la relevancia de la réplica: comenzando con una instantánea confiable de todo el clúster de la base de datos (copia de seguridad básica), aplicamos una serie de cambios de estado hasta cierto punto en el tiempo. </p><br><p>  Para usar esta función para una copia de seguridad en frío, regularmente hacemos una copia de seguridad básica de la base de datos y la almacenamos en un archivo (los archivos de GitLab viven en el <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">almacenamiento</a> en la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">nube de Google</a> ).  También supervisamos los cambios en el estado de la base de datos archivando el <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">registro de escritura anticipada</a> (WAL).  Y con todo esto, podemos realizar PITR para la recuperación ante desastres: comenzamos con la imagen tomada antes del error y aplicamos los cambios desde el archivo WAL hasta la falla. </p><br><h3 id="chto-takoe-otlozhennaya-replikaciya">  ¿Qué es la replicación diferida? </h3><br><p>  La replicación diferida es la aplicación de cambios WAL retrasados.  Es decir, la transacción ocurrió en la hora <code>X</code> , pero aparecerá en la réplica con un retraso de <code>d</code> en la hora <code>X + d</code> . </p><br><p>  PostgreSQL tiene 2 formas de configurar la réplica física de la base de datos: restaurar desde el archivo y la replicación de transmisión.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">La restauración desde el archivo</a> , de hecho, funciona como PITR, pero continuamente: extraemos constantemente los cambios del archivo WAL y los aplicamos a la réplica.  Y <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">la replicación de transmisión</a> recupera directamente la transmisión WAL del host de la base de datos ascendente.  Preferimos la recuperación del archivo: es más fácil de administrar y tiene un rendimiento normal, que no va a la zaga del clúster de trabajo. </p><br><h3 id="kak-nastroit-otlozhennoe-vosstanovlenie-iz-arhiva">  Cómo configurar la recuperación diferida del archivo </h3><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Las opciones de recuperación se</a> describen en el archivo <code>recovery.conf</code> .  Un ejemplo: </p><br><pre> <code class="plaintext hljs">standby_mode = 'on' restore_command = '/usr/bin/envdir /etc/wal-ed/env /opt/wal-e/bin/wal-e wal-fetch -p 4 "%f" "%p"' recovery_min_apply_delay = '8h' recovery_target_timeline = 'latest'</code> </pre> <br><p>  Con estos parámetros, configuramos una réplica perezosa con recuperación del archivo.  Aquí <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">wal-e se usa</a> para extraer segmentos WAL ( <code>restore_command</code> ) del archivo, y los cambios se aplicarán después de ocho horas ( <code>recovery_min_apply_delay</code> ).  La réplica supervisará los cambios en la línea de tiempo en el archivo, por ejemplo, debido a la conmutación por error en el clúster ( <code>recovery_target_timeline</code> ). </p><br><p>  Con <code>recovery_min_apply_delay</code> puede configurar la replicación de transmisión diferida, pero hay un par de trucos asociados con las ranuras de replicación, retroalimentación de repuesto dinámico, etc.  El archivo WAL le permite evitarlos. </p><br><p>  El parámetro <code>recovery_min_apply_delay</code> apareció solo en PostgreSQL 9.3.  En versiones anteriores, para la replicación diferida, debe configurar una combinación <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">de funciones de administración de recuperación</a> ( <code>pg_xlog_replay_pause(), pg_xlog_replay_resume()</code> ) o mantener segmentos WAL en el archivo para el retraso de tiempo. </p><br><h3 id="kak-postgresql-eto-delaet">  ¿Cómo hace esto PostgreSQL? </h3><br><p>  Curioso por ver cómo PostgreSQL implementa la recuperación diferida.  Veamos <a href=""><code>recoveryApplyDelay(XlogReaderState)</code></a> .  Se llama desde el <a href="">bucle principal</a> para cada entrada en el WAL. </p><br><pre> <code class="plaintext hljs">static bool recoveryApplyDelay(XLogReaderState *record) { uint8 xact_info; TimestampTz xtime; long secs; int microsecs; /* nothing to do if no delay configured */ if (recovery_min_apply_delay &lt;= 0) return false; /* no delay is applied on a database not yet consistent */ if (!reachedConsistency) return false; /* * Is it a COMMIT record? * * We deliberately choose not to delay aborts since they have no effect on * MVCC. We already allow replay of records that don't have a timestamp, * so there is already opportunity for issues caused by early conflicts on * standbys. */ if (XLogRecGetRmid(record) != RM_XACT_ID) return false; xact_info = XLogRecGetInfo(record) &amp; XLOG_XACT_OPMASK; if (xact_info != XLOG_XACT_COMMIT &amp;&amp; xact_info != XLOG_XACT_COMMIT_PREPARED) return false; if (!getRecordTimestamp(record, &amp;xtime)) return false; recoveryDelayUntilTime = TimestampTzPlusMilliseconds(xtime, recovery_min_apply_delay); /* * Exit without arming the latch if it's already past time to apply this * record */ TimestampDifference(GetCurrentTimestamp(), recoveryDelayUntilTime, &amp;secs, &amp;microsecs); if (secs &lt;= 0 &amp;&amp; microsecs &lt;= 0) return false; while (true) { // Shortened: // Use WaitLatch until we reached recoveryDelayUntilTime // and then break; } return true; }</code> </pre> <br><p>  La conclusión es que el retraso se basa en el tiempo físico registrado en la marca de tiempo de confirmación de transacción ( <code>xtime</code> ).  Como puede ver, la demora se aplica solo a las confirmaciones y no toca otros registros: todos los cambios se aplican directamente y la confirmación se retrasa, de modo que veremos los cambios solo después de que se configure la demora. </p><br><h3 id="kak-ispolzovat-otlozhennuyu-repliku-dlya-vosstanovleniya-dannyh">  Cómo usar la réplica perezosa para recuperar datos </h3><br><p>  Digamos que tenemos un clúster de base de datos en producción y una réplica con un retraso de ocho horas.  Veamos cómo recuperar datos usando el ejemplo de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">eliminar accesos directos accidentalmente</a> . </p><br><p>  Cuando descubrimos el problema, detuvimos la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">recuperación del archivo</a> para la réplica diferida: </p><br><pre> <code class="plaintext hljs">SELECT pg_xlog_replay_pause();</code> </pre> <br><p>  Con una pausa, no teníamos riesgo de que la réplica repitiera la solicitud <code>DELETE</code> .  Lo útil si necesita tiempo para resolverlo. </p><br><p>  La conclusión es que la réplica diferida debe llegar al punto anterior a la solicitud <code>DELETE</code> .  Aproximadamente conocimos el tiempo físico de la remoción.  Eliminamos <code>recovery_min_apply_delay</code> y agregamos <code>recovery_target_time</code> a <code>recovery.conf</code> .  Entonces la réplica llega sin demora al momento correcto: </p><br><pre> <code class="plaintext hljs">recovery_target_time = '2018-10-12 09:25:00+00'</code> </pre> <br><p>  Con marcas de tiempo, es mejor reducir el exceso para no perderse.  Es cierto que cuanto mayor es la disminución, más datos perdemos.  Una vez más, si pasamos por <code>DELETE</code> solicitud <code>DELETE</code> , todo se eliminará nuevamente y tendrá que comenzar de nuevo (o incluso tomar una copia de seguridad en frío para PITR). </p><br><p>  Reiniciamos la instancia diferida de Postgres, y los segmentos WAL se repitieron hasta el tiempo especificado.  Puede realizar un seguimiento del progreso en esta etapa mediante solicitud: </p><br><pre> <code class="plaintext hljs">SELECT -- current location in WAL pg_last_xlog_replay_location(), -- current transaction timestamp (state of the replica) pg_last_xact_replay_timestamp(), -- current physical time now(), -- the amount of time still to be applied until recovery_target_time has been reached '2018-10-12 09:25:00+00'::timestamptz - pg_last_xact_replay_timestamp() as delay;</code> </pre> <br><p>  Si la marca de tiempo ya no cambia, la recuperación está completa.  Puede configurar la acción <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><code>recovery_target_action</code></a> para cerrar, avanzar o pausar una instancia después de una reproducción (de forma predeterminada, se detiene). </p><br><p>  La base de datos llegó a un estado anterior a esa solicitud desafortunada.  Ahora puede, por ejemplo, exportar datos.  Exportamos los datos eliminados sobre el acceso directo y todas las conexiones con tareas y solicitudes de fusión y los transferimos a la base de datos de trabajo.  Si las pérdidas son a gran escala, simplemente puede promocionar la réplica y usarla como la principal.  Pero entonces todos los cambios se perderán después del momento en que nos hayamos recuperado. </p><br><p>  En lugar de marcas de tiempo, es mejor usar ID de transacción.  Es útil escribir estos ID, por ejemplo, para sentencias DDL (como <code>DROP TABLE</code> ), usando <code>log_statements = 'ddl'</code> .  Si tuviéramos una ID de transacción, tomaríamos <code>recovery_target_xid</code> y ejecutaremos todo hasta la transacción antes de la solicitud <code>DELETE</code> . </p><br><p>  Volver al trabajo es muy simple: elimine todos los cambios de <code>recovery.conf</code> y reinicie Postgres.  Pronto, una demora de ocho horas aparecerá nuevamente en la réplica, y estamos listos para futuros problemas. </p><br><h3 id="preimuschestva-dlya-vosstanovleniya">  Beneficios de recuperación </h3><br><p>  Con una réplica retrasada, en lugar de una copia de seguridad en frío, no tiene que restaurar la imagen completa del archivo durante horas.  Por ejemplo, necesitamos cinco horas para obtener la copia de seguridad básica completa de 2 TB.  Y luego todavía tiene que aplicar el WAL diario completo para recuperarse al estado deseado (en el peor de los casos). </p><br><p>  Una réplica retrasada es mejor que una copia de seguridad en frío de dos maneras: </p><br><ol><li>  No es necesario obtener toda la copia de seguridad base del archivo. </li><li>  Hay una ventana fija de ocho horas de segmentos WAL que deben repetirse. </li></ol><br><p>  También verificamos constantemente si es posible hacer PITR desde WAL, y notamos rápidamente daños u otros problemas con el archivo WAL, monitoreando el retraso de la réplica demorada. </p><br><p>  En este ejemplo, nos tomó 50 minutos recuperarnos, es decir, la velocidad era de 110 GB de datos WAL por hora (el archivo todavía estaba en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">AWS S3</a> ).  En total, resolvimos el problema y restauramos los datos en 1,5 horas. </p><br><h3 id="itogi-gde-prigoditsya-otlozhennaya-replika-a-gde-net">  En pocas palabras: donde la réplica retrasada es útil (y donde no) </h3><br><p>  Utilice la replicación diferida como primeros auxilios si pierde accidentalmente datos y nota este desastre dentro del retraso configurado. </p><br><blockquote>  Pero tenga en cuenta: la replicación no es una copia de seguridad. </blockquote><p>  La copia de seguridad y la replicación tienen diferentes objetivos.  Una copia de seguridad en frío es útil si accidentalmente realizó una <code>DELETE</code> o <code>DROP TABLE</code> .  Hacemos una copia de seguridad desde el almacenamiento en frío y restauramos el estado anterior de la tabla o la base de datos completa.  Pero al mismo tiempo, la consulta <code>DROP TABLE</code> se reproduce casi instantáneamente en todas las réplicas en el clúster de trabajo, por lo que la replicación regular no lo salvará aquí.  La replicación en sí misma mantiene la base de datos accesible cuando se alquilan servidores separados y distribuye la carga. </p><br><p>  Incluso con una réplica retrasada, a veces realmente necesitamos una copia de seguridad fría en un lugar seguro si un centro de datos falla, daños ocultos u otros eventos que no se notan de inmediato.  No tiene sentido una réplica. </p><br><p>  <strong>Nota</strong>  En <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">GitLab.com,</a> ahora protegemos contra la pérdida de datos solo a nivel de sistema y no restauramos datos a nivel de usuario. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/445446/">https://habr.com/ru/post/445446/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../445434/index.html">Mejor trabajo peor del mundo: buscando un Habraautor</a></li>
+<li><a href="../445436/index.html">Reentrenamiento en DevOps: para qué prepararse</a></li>
+<li><a href="../445438/index.html">Conocimiento del elemento iluminado y los componentes web basados ​​en él.</a></li>
+<li><a href="../445440/index.html">Revisión de código: malos consejos para contribuidor y revisor</a></li>
+<li><a href="../445444/index.html">Actualización de módulos solares de alto rendimiento de REC y Trina (Solar)</a></li>
+<li><a href="../445448/index.html">Configuración de la recepción automática de certificados de letsencrypt usando docker en linux</a></li>
+<li><a href="../445450/index.html">Extensión del navegador para toster.ru</a></li>
+<li><a href="../445452/index.html">Repositorios útiles con Eloquent?</a></li>
+<li><a href="../445454/index.html">Pantalla Braille Raspberry Pi Zero Inside Handy Tech Active Star 40</a></li>
+<li><a href="../445456/index.html">Buscar a 1 TB / s</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
