@@ -1,0 +1,129 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧑🏽‍🤝‍🧑🏼 🥥 🚁 Estamos preparando una búsqueda de texto completo en Postgres. Parte 1 👨🏿‍⚖️ 🦂 🥉</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="UPD Parte 2 
+
+
+ Este artículo es el primero de una pequeña serie de artículos sobre cómo configurar de forma óptima la búsqueda de texto completo en P...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Estamos preparando una búsqueda de texto completo en Postgres. Parte 1</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/442170/"><p>  <strong>UPD</strong>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Parte 2</a> </p><br><p>  Este artículo es el primero de una pequeña serie de artículos sobre cómo configurar de <em>forma óptima</em> la búsqueda de texto completo en PostgreSQL.  Recientemente tuve que resolver un problema similar en el trabajo, y me sorprendió mucho la ausencia de al menos algunos materiales sanos sobre este tema.  Mi experiencia de pelear bajo el corte. </p><a name="habracut"></a><br><h2 id="zavyazka">  Empate </h2><br><p>  Apoyo un proyecto relativamente grande que tiene una búsqueda pública de documentos.  La base de datos contiene ~ 500 mil documentos con un volumen total de ~ 3.6 GB.  La esencia de la búsqueda es esta: el usuario llena un formulario en el que hay una consulta de texto completo y un filtro por una variedad de campos en la base de datos, incluso con join-s. </p><br><p>  La búsqueda funciona (o mejor dicho, funcionó) a través de Sphinx, y no funcionó muy bien.  Los principales problemas fueron los siguientes: </p><br><ol><li>  La indexación consumió alrededor de 8 GB de RAM.  En un servidor con 8 GB de RAM, esto es un problema.  Memoria intercambiada, condujo a <em>un</em> rendimiento <em>terrible</em> . </li><li>  El índice se construyó en unos 40 minutos.  No hubo dudas sobre la consistencia de los resultados de búsqueda; la indexación se lanzó una vez al día. </li><li> La búsqueda funcionó durante <em>mucho tiempo</em> .  Se llevaron a cabo solicitudes por un tiempo particularmente largo, que correspondía a una gran cantidad de documentos: una gran cantidad de id-shniks tuvieron que ser transferidos de la esfinge a la base de datos, y ordenados por relevancia en el backend. </li></ol><br><p>  Debido a estos problemas, surgió la tarea: optimizar la búsqueda de texto completo.  Esta tarea tiene dos soluciones: </p><br><ol><li>  Apriete Sphinx: configure un índice en tiempo real, almacene atributos para filtrar en el índice. </li><li>  Utilice el FTS PostgreSQL incorporado. </li></ol><br><p>  Se decidió implementar la segunda solución: de esta manera, puede proporcionar de forma nativa la actualización automática del índice, deshacerse de la comunicación <em>prolongada</em> entre dos servicios y monitorear un servicio en lugar de dos. </p><br><p>  Parecería ser una buena solución.  Pero hay problemas por delante. </p><br><p>  Comencemos desde el principio. </p><br><h2 id="naivno-ispolzuem-polnotekstovyy-poisk">  Usamos ingenuamente la búsqueda de texto completo </h2><br><p> Como dice la documentación, las búsquedas de texto completo requieren el uso de los <code>tsquery</code> <code>tsvector</code> y <code>tsquery</code> .  El primero almacena el texto del documento en un formulario optimizado para búsqueda, el segundo almacena la consulta de texto completo. </p><br><p>  Para buscar PostgreSQL, hay funciones <code>to_tsvector</code> , <code>plainto_tsquery</code> , <code>to_tsquery</code> .  Para clasificar los resultados hay <code>ts_rank</code> .  Su uso es intuitivo y están bien descritos en la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">documentación</a> , por lo que no nos detendremos en los detalles de su uso. </p><br><p>  Una consulta de búsqueda tradicional que los use se verá así: </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> id, ts_rank(to_tsvector("document_text"), plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> to_tsvector("document_text") @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> ts_rank(to_tsvector("document_text"), plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> <br><p>  Deducimos los id-s de los documentos en el texto de los cuales existe la palabra "consulta", y los ordenamos en orden descendente de relevancia.  ¿Todo parece estar bien?  No </p><br><p>  El enfoque anterior tiene muchas desventajas: </p><br><ol><li>  No utilizamos el índice para la búsqueda. </li><li>  Se llama a la función ts_vector para cada fila de la tabla. </li><li>  La función ts_rank se llama para cada fila de la tabla. </li></ol><br><p>  Todo esto lleva al hecho de que la búsqueda lleva mucho tiempo.  <code>EXPLAIN</code> resultados en una base de combate: </p><br><pre> <code class="plaintext hljs">Gather Merge (actual time=420289.477..420313.969 rows=58742 loops=1) Workers Planned: 2 Workers Launched: 2 -&gt; Sort (actual time=420266.150..420267.935 rows=19581 loops=3) Sort Key: (ts_rank(to_tsvector(document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 2278kB -&gt; Parallel Seq Scan on documents_document (actual time=65.454..420235.446 rows=19581 loops=3) Filter: (to_tsvector(document_text) @@ plainto_tsquery(''::text)) Rows Removed by Filter: 140636 Planning time: 3.706 ms Execution time: 420315.895 ms</code> </pre> <br><p>  420 segundos!  Por una solicitud! </p><br><p>  La base también genera muchos vorings de la <code>[54000] word is too long to be indexed</code> forma <code>[54000] word is too long to be indexed</code> .  No hay nada de qué preocuparse.  La razón es que en mi base de datos hay documentos creados en el editor WYSIWYG.  Inserta mucho <code>&amp;nbsp;</code>  siempre que sea posible, y hay 54 mil seguidos.  Postgres ignora palabras de esta longitud y escribe un vorning que no se puede deshabilitar. </p><br><p>  Intentaremos solucionar todos los problemas observados y acelerar la búsqueda. </p><br><h2 id="naivno-optimiziruem-poisk">  Ingenuamente optimizamos la búsqueda </h2><br><p>  No jugaremos con la base de combate, por supuesto, crearemos una base de prueba.  Contiene ~ 12 mil documentos.  La solicitud del ejemplo es de ~ 35 segundos.  ¡Imperdonablemente largo! </p><br><div class="spoiler">  <b class="spoiler_title">EXPLICAR Resultados</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">Sort (actual time=35431.874..35432.208 rows=3593 loops=1) Sort Key: (ts_rank(to_tsvector(document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Seq Scan on documents_document (actual time=8.470..35429.261 rows=3593 loops=1) Filter: (to_tsvector(document_text) @@ plainto_tsquery(''::text)) Rows Removed by Filter: 9190 Planning time: 0.200 ms Execution time: 35432.294 ms</code> </pre> </div></div><br><h3 id="indeks">  Indice </h3><br><p>  En primer lugar, por supuesto, debe agregar un índice.  La forma más fácil: un índice funcional. </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_gin_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> gin (to_tsvector(<span class="hljs-string"><span class="hljs-string">'russian'</span></span>, "document_text"));</code> </pre> <br><p>  Tal índice se creará durante mucho tiempo: tomó ~ 26 segundos en la base de prueba.  Necesita revisar la base de datos y llamar a la función to_tsvector para cada registro.  Aunque todavía acelera la búsqueda a 12 segundos, ¡todavía es imperdonablemente largo! </p><br><div class="spoiler">  <b class="spoiler_title">EXPLICAR Resultados</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">Sort (actual time=12213.943..12214.327 rows=3593 loops=1) Sort Key: (ts_rank(to_tsvector('russian'::regconfig, document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Bitmap Heap Scan on documents_document (actual time=3.849..12212.248 rows=3593 loops=1) Recheck Cond: (to_tsvector('russian'::regconfig, document_text) @@ plainto_tsquery(''::text)) Heap Blocks: exact=946 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.427..0.427 rows=3593 loops=1) Index Cond: (to_tsvector('russian'::regconfig, document_text) @@ plainto_tsquery(''::text)) Planning time: 0.109 ms Execution time: 12214.452 ms</code> </pre> </div></div><br><h3 id="mnogokratnyy-vyzov-to_tsvector">  Llamada repetida <code>to_tsvector</code> </h3><br><p>  Para resolver este problema, debe almacenar <code>tsvector</code> en la base de datos.  Al cambiar los datos en una tabla con documentos, por supuesto, debe actualizarlos, a través de disparadores en la base de datos, utilizando el back-end. </p><br><p>  Hay dos formas de hacer esto: </p><br><ol><li>  Agregue una columna de tipo <code>tsvector</code> a la tabla con documentos. </li><li>  Cree una tabla separada con comunicación uno a uno con la tabla de documentos y almacene los vectores allí. </li></ol><br><p>  Las ventajas del primer enfoque: la falta de combinaciones en la búsqueda. <br>  Las ventajas del segundo enfoque: la falta de datos adicionales en la tabla con los documentos, sigue siendo del mismo tamaño que antes.  Con la copia de seguridad, no tiene que perder tiempo ni colocarla en <code>tsvector</code> , que no necesita hacer una copia de seguridad. </p><br><p>  Ambos viajes conducen al hecho de que los datos en el disco se duplican: los textos de los documentos y sus vectores se almacenan. </p><br><p>  Elegí el segundo enfoque para mí, sus ventajas son más significativas para mí. </p><br><div class="spoiler">  <b class="spoiler_title">Creación de índice</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_gin_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> gin ("document_text");</code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Nueva consulta de búsqueda</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> documents_document.id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.id = documents_documentvector.document_id <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> </div></div><br><p>  Agregue datos a la tabla vinculada y cree un índice.  Agregar datos tomó 24 segundos como prueba, y crear un índice solo tomó <em>2.7 segundos</em> .  La actualización del índice y los datos, como vemos, no se aceleró significativamente, pero el índice en sí mismo ahora se puede actualizar <em>muy</em> rápidamente. </p><br><p>  ¿Y cuántas veces se ha acelerado la búsqueda? </p><br><pre> <code class="plaintext hljs">Sort (actual time=48.147..48.432 rows=3593 loops=1) Sort Key: (ts_rank(documents_documentvector.text, plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Hash Join (actual time=2.281..47.389 rows=3593 loops=1) Hash Cond: (documents_document.id = documents_documentvector.document_id) -&gt; Seq Scan on documents_document (actual time=0.003..2.190 rows=12783 loops=1) -&gt; Hash (actual time=2.252..2.252 rows=3593 loops=1) Buckets: 4096 Batches: 1 Memory Usage: 543kB -&gt; Bitmap Heap Scan on documents_documentvector (actual time=0.465..1.641 rows=3593 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=577 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.404..0.404 rows=3593 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.410 ms Execution time: 48.573 ms</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Métricas sin unirse</b> <div class="spoiler_text"><p>  Solicitud: </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><p>  Resultado: </p><br><pre>  Ordenar (tiempo real = 44.339..44.487 filas = 3593 bucles = 1)
+   Clave de clasificación: (ts_rank (text, plainto_tsquery ('query' :: text)))
+   Método de clasificación: memoria rápida: 265kB
+   -&gt; Escaneo de montón de mapa de bits en documentos_documentovector (tiempo real = 0.692..43.682 filas = 3593 bucles = 1)
+         Vuelva a verificar Cond: (text @@ plainto_tsquery ('query' :: text))
+         Bloques de montón: exactos = 577
+         -&gt; Escaneo de índice de mapa de bits en idx_gin_document (tiempo real = 0.577..0.577 filas = 3593 bucles = 1)
+               Índice Cond: (text @@ plainto_tsquery ('query' :: text))
+ Tiempo de planificación: 0.182 ms
+ Tiempo de ejecución: 44.610 ms
+</pre></div></div><br><p>  Increíble!  Y esto a pesar de unirse y <code>ts_rank</code> .  Ya es un resultado bastante aceptable, la mayor parte del tiempo se <code>ts_rank</code> no por la búsqueda, sino por el cálculo de <code>ts_rank</code> para cada una de las líneas. </p><br><h3 id="mnogokratnyy-vyzov-ts_rank">  <code>ts_rank</code> llamada múltiple </h3><br><p>  Parece que hemos resuelto con éxito todos nuestros problemas, excepto este.  44 milisegundos es un tiempo de entrega decente.  ¿Feliz final parece cercano?  Ahí estaba! </p><br><p>  Ejecute la misma consulta sin <code>ts_rank</code> y compare los resultados. </p><br><div class="spoiler">  <b class="spoiler_title">Sin ts_rank</b> <div class="spoiler_text"><p>  Solicitud: </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><p>  Resultado: </p><br><pre> <code class="plaintext hljs">Bitmap Heap Scan on documents_documentvector (actual time=0.503..1.609 rows=3593 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=577 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.439..0.439 rows=3593 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.147 ms Execution time: 1.715 ms</code> </pre> </div></div><br><p>  1,7 ms!  ¡Treinta veces más rápido!  Para una base de combate, los resultados son ~ 150 ms y 1.5 segundos.  La diferencia en cualquier caso es un orden de magnitud, y 1.5 segundos no es el tiempo que desea esperar una respuesta de la base.  Que hacer </p><br><p>  No puede desactivar la clasificación por relevancia; no puede reducir el número de líneas para contar (la base de datos debe calcular <code>ts_rank</code> para todos <code>ts_rank</code> documentos <code>ts_rank</code> , de lo contrario no se pueden clasificar). </p><br><p>  En algunos lugares de Internet, se recomienda almacenar en caché las solicitudes más frecuentes (y, en consecuencia, llamar a ts_rank).  Pero no me gusta este enfoque: es bastante difícil seleccionar las consultas correctas correctamente, y la búsqueda aún se ralentizará en las consultas incorrectas. </p><br><p>  Me gustaría mucho que después de revisar el índice, los datos vinieran en una forma ya ordenada, como lo hace Sphinx.  Desafortunadamente, no se puede hacer nada desde el cuadro en PostgreSQL. </p><br><p>  Pero tuvimos suerte: el índice RUM puede hacer esto.  Se pueden encontrar detalles al respecto, por ejemplo, en la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">presentación de sus autores</a> .  Almacena información adicional sobre la solicitud, lo que le permite evaluar directamente la llamada.  "distancia" entre <code>tsvector</code> y <code>tsquery</code> y producir un resultado ordenado inmediatamente después de escanear el índice. </p><br><p>  Pero lanzar un GIN e instalar RUM no vale la pena de inmediato.  Tiene desventajas, ventajas y límites de aplicación. Escribiré sobre esto en el próximo artículo. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/442170/">https://habr.com/ru/post/442170/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../442158/index.html">Heroes III - 20 años</a></li>
+<li><a href="../442162/index.html">Inicio rápido STM32. Parte 1 software, materiales, Cube MX</a></li>
+<li><a href="../442164/index.html">Roskomnadzor planea multar a Facebook por incumplimiento</a></li>
+<li><a href="../442166/index.html">Esquema alternativo de metro de Minsk</a></li>
+<li><a href="../442168/index.html">Habra megarating: los mejores artículos y estadísticas de Habr durante 12 años. Parte 2/2</a></li>
+<li><a href="../442176/index.html">Los científicos desarrollan un ejército universal de linfocitos T para destruir el cáncer</a></li>
+<li><a href="../442178/index.html">Mayhem: una máquina que puede detectar vulnerabilidades en los programas y repararlos</a></li>
+<li><a href="../442180/index.html">Damos "hierro" gratis</a></li>
+<li><a href="../442182/index.html">Sala de emergencias: la vida secreta de los moderadores de Facebook en los EE. UU.</a></li>
+<li><a href="../442184/index.html">Hackear autobus CAN. Tablero virtual</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
