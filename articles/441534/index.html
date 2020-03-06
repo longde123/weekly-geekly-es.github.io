@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤴🏽 👩🏿‍🔬 🧘 Balanceadores de carga para sistemas de orquestación 🏘️ ✋🏼 🐾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Los equilibradores de carga en los sistemas de orquestación (Kubernetes, Nomad y otros) tienen más requisitos que solo el equilibrio de carga. Primero...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Balanceadores de carga para sistemas de orquestación</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/441534/"> Los equilibradores de carga en los sistemas de orquestación (Kubernetes, Nomad y otros) tienen más requisitos que solo el equilibrio de carga.  Primero, Load Balancer debería poder leer un directorio con una lista de servicios a los que se debe redirigir el tráfico (o, como opción, permitir que los servicios se registren para incluirlos en el tráfico).  En segundo lugar, hazlo dinámicamente, porque  Los sistemas de orquestación pueden en cualquier momento aumentar o disminuir el número de réplicas de servicios, o moverlas a otras direcciones en la red.  Y en tercer lugar, hágalo sin detener el tráfico. <br><br>  En la publicación de hoy, describiré trabajar con dos equilibradores de carga: Traefik y HAProxy.  Estos equilibradores de carga tienen la capacidad de trabajar con una impresionante lista de herramientas de orquestación.  Los ejemplos describirán cómo trabajar con el sistema de orquestación Nomad. <br><a name="habracut"></a><br>  En la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">última publicación</a> ya di un ejemplo de Balanceadores de carga: Fabio.  Sus limitaciones: solo funciona con protocolos http / https y solo con Consul.  A diferencia de Fabio, Load Balancers Traefik trabaja con una impresionante cantidad de sistemas diferentes.  Aquí hay una lista parcial tomada del sitio del desarrollador: Docker, modo Swarm, Kubernetes, Marathon, Consul, Etcd, Rancher, Amazon ECS, ... <br><br>  Continuaré con el ejemplo de la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">publicación anterior</a> , en la que se crearon varias réplicas del servicio django. <br><br>  Traefik se puede descargar del sitio del desarrollador como un archivo ejecutable para los sistemas operativos más comunes.  Para integrarse con Nomad (en realidad con Consul) necesita crear un archivo de configuración: <br><br><pre><code class="plaintext hljs">[entryPoints] [entryPoints.http] address = ":5001" [web] address = ":8080" [consulCatalog] endpoint = "127.0.0.1:8500" domain = "consul.localhost" exposedByDefault = false prefix = "traefik"</code> </pre> <br>  Y luego ejecute el comando con el archivo de configuración dado: <br><br><pre> <code class="plaintext hljs">traefik -c nomad/traefik.toml</code> </pre> <br>  Después de eso, UI Traefik estará disponible en el puerto 8080, que aún no ha publicado ningún servicio.  Hay varias formas de publicar servicios, que en última instancia hacen lo mismo: cargan datos de clave / valor en el sistema Traefik.  Aprovecharemos la oportunidad para establecer pares clave / valor a través de etiquetas de servicio.  Expandamos el archivo de configuración del servicio django con el parámetro tags: <br><br><pre> <code class="plaintext hljs">job "django-job" { datacenters = ["dc1"] type = "service" group "django-group" { count = 3 restart { attempts = 2 interval = "30m" delay = "15s" mode = "fail" } ephemeral_disk { size = 300 } task "django-job" { driver = "docker" config { image = "apapacy/tut-django:1.0.1" port_map { lb = 8000 } } resources { network { mbits = 10 port "lb" {} } } service { name = "django" tags = [ "traefik.enable=true", "traefik.frontend.entryPoints=http", "traefik.frontend.rule=Host:localhost;PathStrip:/test", "traefik.tags=exposed" ] port = "lb" check { name = "alive" type = "http" path = "/" interval = "10s" timeout = "2s" } } } } }</code> </pre><br>  En este ejemplo, el servicio se publicará en el host localhost y se montará en la ruta / test.  Traefik ha desarrollado un sistema flexible y completo de reglas para configurar rutas, incluido el trabajo con expresiones regulares.  La lista de parámetros para las <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">reglas</a> en la documentación del desarrollador. <br><br>  Después de ejecutar el <code>nomad job run nomad/django.conf</code> se aplican <code>nomad job run nomad/django.conf</code> reglas y el tráfico del Load Balancer se dirigirá al servicio.  En consecuencia, puede cambiar estos parámetros, implementar una nueva opción de servicio con el <code>nomad job run nomad/django.conf</code> , y todos los cambios se aplicarán sin molestas paradas de tráfico. <br><br>  La desventaja de Traefik es que funciona con los protocolos de la familia http / https (por si acaso, noto que esta familia también incluye sockets web).  Pero aún existe la posibilidad de que sea necesario trabajar con otros protocolos.  Pasemos a la siguiente solución más amplia basada en HAProxy.  Hace algún tiempo, HAProxy tenía problemas con la carga suave, lo que dificultaba su uso con los sistemas de orquestación (durante el reinicio, era necesario detener el movimiento de los paquetes a nivel de red).  Ahora esto ya no es un problema. <br><br>  Primero necesitas instalar haproxy en tu computadora.  Aquí, la opción de instalar dentro del contenedor no funcionará.  En haproxy, solo recientemente fue posible reiniciar el proceso en modo "soft", pero el contenedor docker todavía se detiene, ya que el segundo proceso en realidad comienza con haproxy, simplemente cambia en modo de espera, que no funciona con el docker y su principio "uno -container es un proceso ". <br><br>  Para que funcione el haproxy, debe tener un archivo de configuración que contenga las reglas necesarias.  Nomad (en realidad en Consul) utiliza un sistema de plantillas que puede generar configuraciones: <br><br><pre> <code class="plaintext hljs">global debug defaults log global mode http option httplog option dontlognull timeout connect 5000 timeout client 50000 timeout server 50000 frontend http_front bind *:5001 stats uri /haproxy?stats default_backend http_back backend http_back balance roundrobin{{range service "django"}} server {{.Node}} {{.Address}}:{{.Port}} check{{end}}</code> </pre><br>  La palabra clave de <code>range</code> en este caso actúa como un iterador.  Para los tres servicios "django", se generará el siguiente archivo de configuración: <br><br><pre> <code class="plaintext hljs">global debug defaults log global mode http option httplog option dontlognull timeout connect 5000 timeout client 50000 timeout server 50000 frontend http_front bind *:5001 stats uri /haproxy?stats default_backend http_back backend http_back balance roundrobin server 228.195.86.224 127.0.0.1:21469 check server 228.195.86.224 127.0.0.1:25872 check server 228.195.86.224 127.0.0.1:25865 check</code> </pre><br>  La biblioteca <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">https://github.com/hashicorp/consul-template</a> se utiliza para iniciar el proceso de generación de acuerdo con la plantilla sobre la marcha.  Desde el recurso del desarrollador, puede descargar el archivo ejecutable para todos los sistemas operativos comunes e iniciar el proceso en nombre de un usuario no autorizado con el comando: <br><br><pre> <code class="plaintext hljs">consul-template -template="haproxy/haproxy.cfg.tmpl:haproxy/haproxy.cfg:./haproxy/haproxy.reload.sh"</code> </pre><br>  El parámetro <code>-template</code> contiene parámetros separados por dos puntos 1) el nombre de la plantilla, 2) el nombre del archivo de configuración resultante 3) el comando que se ejecuta después de que se genera el archivo.  El archivo se generará automáticamente si se cambian las variables incluidas en la plantilla (por ejemplo, se cambia la cantidad de réplicas del servicio django). <br><br>  Después de iniciar el motor de plantillas que generará la primera configuración, puede ejecutar haproxy: <br><br><pre> <code class="plaintext hljs">haproxy -D -f haproxy/haproxy.cfg -p `pwd`/haproxy.pid</code> </pre><br>  Especificamos explícitamente el archivo pid para poder enviar una señal a la sobrecarga de haproxy "suave": <br><br><pre> <code class="plaintext hljs">haproxy -D -f ./haproxy/haproxy.cfg -p `pwd`/haproxy.pid -sf $(cat `pwd`/haproxy.pid)</code> </pre><br>  En este ejemplo, el servicio se publica en el puerto 5001. En el mismo puerto, puede ver las estadísticas de haproxy en la dirección <code>/haproxy?stats</code> . <br><br>  ACTUALIZADO 02/24/2019 10:43 PM <br><br>  Según <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">el</a> comentario de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">@ usego</a> , se realizó un refinamiento adicional en la operación de haproxy en el contenedor acoplable, en particular de acuerdo con el fragmento de la documentación <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">github.com/neo4j/docker-library-docs/tree/master/haproxy#reloading-config</a> <br><br><blockquote>  Recargando config <br><br>  Si usó un montaje de enlace para la configuración y ha editado su archivo haproxy.cfg, puede usar la función de recarga elegante de HAProxy enviando un SIGHUP al contenedor: <br><br>  $ docker kill -s HUP my-running-haproxy <br><br>  El script de punto de entrada en la imagen verifica la ejecución del comando haproxy y lo reemplaza con haproxy-systemd-wrapper de HAProxy upstream que se encarga del manejo de la señal para realizar la recarga elegante.  Debajo del capó, esto usa la opción -sf de haproxy, por lo que "hay dos ventanas pequeñas de unos pocos milisegundos cada una donde es posible que se noten algunas fallas de conexión durante las cargas altas" (consulte Detener y reiniciar HAProxy). <br></blockquote><br><br>  Con este enfoque, la configuración se vuelve a cargar realmente, pero como resultado de la interrupción del proceso actual.  Y esto significa que los servicios tendrán, aunque sean muy insignificantes, pero sin embargo un período de inaccesibilidad y algunos clientes pueden observar un mensaje de error.  Pero a veces este no es el criterio principal de selección.  Por lo tanto, daré además la configuración docker-compose.yml para iniciar haproxy en docker: <br><br><pre> <code class="plaintext hljs">version: '3' services: haproxy_lb: image: haproxy volumes: - ./haproxy:/usr/local/etc/haproxy network_mode: host</code> </pre><br><br>  El comando que sobrecargará la configuración de haproxy también cambiará: <br><br><pre> <code class="plaintext hljs">consul-template -template="haproxy/haproxy.cfg.tmpl:haproxy/haproxy.cfg:docker kill -s HUP $(docker-compose ps -q haproxy_lb)"</code> </pre><br><br>  Las ventajas de esta implementación incluyen la capacidad de trabajar sin instalar haproxy. <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">El código de muestra está disponible en el repositorio.</a> <br><br>  Enlaces utiles: <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">1.www.haproxy.com/blog/haproxy-and-consul-with-dns-for-service-discovery</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">2.m.mattmclaugh.com/traefik-and-consul-catalog-example-2c33fc1480c0</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">3.www.hashicorp.com/blog/load-balancing-strategies-for-consul</a> <br><br>  apapacy@gmail.com <br>  24 de febrero de 2019 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/441534/">https://habr.com/ru/post/441534/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../441524/index.html">Nuevos resultados del estudio: el trasplante de médula ósea puede retrasar el envejecimiento</a></li>
+<li><a href="../441526/index.html">Factores del valor de Bitcoin</a></li>
+<li><a href="../441528/index.html">Cómo mi vida se convirtió en un libro de Kafka</a></li>
+<li><a href="../441530/index.html">SDN se lanzará al espacio: ¿por qué es necesario?</a></li>
+<li><a href="../441532/index.html">Pez murciélago Introduccion</a></li>
+<li><a href="../441536/index.html">Variedades de SIMD</a></li>
+<li><a href="../441538/index.html">Arquitectura del almacén de datos: tradicional y en la nube</a></li>
+<li><a href="../441540/index.html">Vue mixins, la forma explícita (por un ejemplo de plugin de modificadores BEM)</a></li>
+<li><a href="../441546/index.html">Hayabusa-2 "tocó por primera vez el asteroide</a></li>
+<li><a href="../441550/index.html">La vida de un programador simple es dura y llana</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
