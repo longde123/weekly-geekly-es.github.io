@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨‍👩‍👦 🗣️ 🛍️ Cluster Storage Pacemaker + DRBD (Dual primario) + samba 👨🏿‍✈️ 🔅 📆</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="En la continuación del artículo "Pacemaker Cluster Storage + DRBD (Dual primary) + ctdb", presento una versión completamente terminada y funcional de ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cluster Storage Pacemaker + DRBD (Dual primario) + samba</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/441210/">  En la continuación del <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">artículo "Pacemaker Cluster Storage + DRBD (Dual primary) + ctdb",</a> presento una versión completamente terminada y funcional de las bolas de archivo del clúster HA para 2-4 nodos para centos 6 y centos 7. Si desea implementar esto, usted es un pervertido o usted No dieron ninguna opción, y es necesario implementarlo de alguna manera. <br><br>  Simplemente describiré el pastel de hojaldre que recogeremos: <br><br>  En el dispositivo de bloque, cree la tabla gpt =&gt; una partición para todo el espacio bajo lvm =&gt; grupo de volúmenes lvm para todo el espacio disponible =&gt; volumen lvm para todo el espacio disponible =&gt; dispositivo drbd =&gt; dlm =&gt; márquelo como el volumen físico de lvm para todo el espacio disponible =&gt; en él un grupo de volúmenes de lvm =&gt; volumen de lvm en todo el espacio disponible =&gt; marque fs gfs2 =&gt; conéctese al punto de montaje. <br>  Y todo esto será impulsado por marcapasos con una dirección IP virtual. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ym/t7/zf/ymt7zf8sbzor8sp5keqoijl93q0.jpeg"></div><br>  Si aún quieres continuar, sigue leyendo debajo del corte. <br><a name="habracut"></a><br><div class="spoiler">  <b class="spoiler_title">De la fuente necesitamos lo siguiente:</b> <div class="spoiler_text">  CPU 1 núcleo <br>  1 GB mínimo de memoria de acceso aleatorio <br>  15 GB de disco + el lugar donde almacenará los datos <br>  Los discos pueden ser cualquier número, incluso uno. <br><br>  Si tiene una unidad, es mejor particionarla de la siguiente manera: <br>  Tabla de particiones gpt =&gt; Partición de 200 MB para efi (opcional) =&gt; Partición de 1 GB para / boot =&gt; todo lo demás bajo lvm. <br><br>  En un volumen lvm, debe crear 2 grupos de volúmenes.  El primer grupo de volúmenes bajo el sistema operativo es 10 GB + dos veces el tamaño de RAM, pero no más de 4 GB. <br><br>  Quien haya dicho eso, pero el intercambio a veces ayuda mucho, por lo que en el grupo lvm creamos una partición lvm para el intercambio igual al doble del tamaño de RAM, pero no más de 4 GB y el espacio restante se asigna a la raíz del sistema operativo. <br><br>  El segundo grupo de lvm para almacenamiento de datos.  Cree una sección lvm para el espacio restante. <br></div></div><br>  Según los términos, nos dieron 2 máquinas virtuales y eso es todo.  Es mejor poner Ceph para que funcione correctamente en 6 nodos, al menos 4, y sería bueno tener algo de experiencia con él, de lo contrario funcionará como un ratón en la nube.  Gluster para cientos de miles de archivos pequeños en términos de rendimiento no funcionará, se debilita en la inmensidad del Habré muchas veces.  ipfs, lustre y similares tienen los mismos requisitos que ceph o incluso más. <br><br><h4>  ¡Comencemos la batalla!  Tenía dos máquinas virtuales en CentOS 7 con 2 discos. </h4><br>  1) Pacemaker versión 1.1 no funciona con ip correctamente, por lo que para mayor confiabilidad agregamos entradas a / etc / hosts: <br><br><pre><code class="bash hljs">192.168.0.1 node1 192.168.0.2 node2</code> </pre> <br>  2) No hay DRBD en los repositorios estándar, por lo que debe conectar uno de terceros. <br><br><pre> <code class="bash hljs">rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org yum localinstall -y http://ftp.nluug.nl/os/Linux/distr/elrepo/elrepo/el7/x86_64/RPMS/$(curl -s http://ftp.nluug.nl/os/Linux/distr/elrepo/elrepo/el7/x86_64/RPMS/ | grep -oP <span class="hljs-string"><span class="hljs-string">"&gt;elrepo-release.*rpm"</span></span> | cut -c 2-)</code> </pre> <br>  3) Instalar drbd versión 8.4 <br><br><pre> <code class="bash hljs">yum install -y kmod-drbd84 drbd84-utils</code> </pre> <br>  4) Activar y habilitar el módulo de kernel drbd en el inicio <br><br><pre> <code class="bash hljs">modprobe drbd <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> drbd &gt; /etc/modules-load.d/drbd.conf</code> </pre><br>  5) Crear una partición de disco y configurar lvm <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -e <span class="hljs-string"><span class="hljs-string">"g\nn\n\n\n\nt\n8e\nw\n"</span></span> | fdisk /dev/sdb vgcreate drbd_vg /dev/sdb1 lvcreate -l +100%FREE --name r0 drbd_vg</code> </pre><br>  6) Cree el archivo de configuración para el recurso drbd /etc/drbd.d/r0.res <br><br><pre> <code class="bash hljs">resource r0 { protocol C; device /dev/drbd1; meta-disk internal; disk /dev/mapper/drbd_vg-r0; net { allow-two-primaries; } disk { fencing resource-and-stonith; } handlers { fence-peer <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-fence-peer.sh"</span></span>; after-resync-target <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-unfence-peer.sh"</span></span>; } startup { become-primary-on both; } on node1 { address 192.168.0.1:7788; } on node2 { address 192.168.0.2:7788; }</code> </pre><br>  7) Eliminamos el servicio drbd de la carga automática (luego el marcapasos se encargará de ello), creamos metadatos para el disco drbd, aumentamos el recurso <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">disable</span></span> drbd drbdadm create-md r0 drbdadm up r0</code> </pre><br>  8) En el primer nodo, haga que el recurso sea primario <br><br><pre> <code class="bash hljs">drbdadm primary --force r0</code> </pre> <br>  9) Pon el marcapasos <br><br><pre> <code class="bash hljs">yum install -y pacemaker corosync pcs resource-agents fence-agents-all</code> </pre> <br>  10) Establezca una contraseña para el grupo de usuarios para la autorización en los nodos <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> CHANGEME | passwd --stdin hacluster</code> </pre> <br>  11) Ejecute pcsd en ambos nodos <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> pcsd systemctl start pcsd</code> </pre><br>  12) Inicie sesión en el clúster.  Desde esta etapa, hacemos todo en un nodo <br><br><pre> <code class="bash hljs">pcs cluster auth node1 node2 -u hacluster -p CHANGEME --force</code> </pre> <br>  13) Crear un clúster llamado samba_cluster <br><br><pre> <code class="bash hljs">pcs cluster setup --force --name samba_cluster node1 node2</code> </pre> <br>  14) activar nodos y agregar servicios al inicio e iniciarlos <br><br><pre> <code class="bash hljs">pcs cluster <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> --all pcs cluster start --all systemctl start corosync pcsd pacemaker systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> corosync pcsd pacemaker</code> </pre><br>  15) Dado que tenemos máquinas virtuales como servidores, desactivamos el mecanismo STONITH, ya que no tenemos ningún mecanismo para administrarlos.  También tenemos solo 2 autos, por lo que también deshabilitamos el quórum, solo funciona con 3 o más máquinas. <br><br><pre> <code class="bash hljs">pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> stonith-enabled=<span class="hljs-literal"><span class="hljs-literal">false</span></span> pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> no-quorum-policy=ignore</code> </pre><br>  16) Crear VIP <br><br><pre> <code class="bash hljs">pcs resource create virtual_ip ocf:heartbeat:IPaddr2 ip=192.168.0.10 cidr_netmask=32 nic=eth0 clusterip_hash=sourceip-sourceport op monitor interval=1s</code> </pre><br>  17) Crear un recurso drbd <br><br><pre> <code class="bash hljs">pcs resource create DRBD1 ocf:linbit:drbd drbd_resource=r0 op monitor interval=60s master master-max=2 master-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-max=2 notify=<span class="hljs-literal"><span class="hljs-literal">true</span></span> op start interval=0s timeout=240 promote interval=0s timeout=130 monitor interval=150s role=Master monitor interval=155s role=Slave</code> </pre><br>  18) Instale los paquetes necesarios para clvm y prepare clvm <br><br><pre> <code class="bash hljs">yum install -y lvm2-cluster gfs2-utils /sbin/lvmconf --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-cluster</code> </pre><br>  19) Agregue el recurso dlm y clvd al marcapasos <br><br><pre> <code class="bash hljs">pcs resource create dlm ocf:pacemaker:controld allow_stonith_disabled=<span class="hljs-literal"><span class="hljs-literal">true</span></span> <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> meta interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs resource create clvmd ocf:heartbeat:clvm <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> meta interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span></code> </pre><br>  20) Prohibimos que LVM escriba un caché y lo borre.  En ambos nodos <br><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'s/write_cache_state = 1/write_cache_state = 0/'</span></span> /etc/lvm/lvm.conf rm /etc/lvm/cache/*</code> </pre><br><br>  21) Crear una partición CLVM.  Hacemos solo en una nota <br><pre> <code class="bash hljs">vgcreate -A y -cy cl_vg /dev/drbd1 lvcreate -l 100%FREE -n r0 cl_vg</code> </pre><br>  22) Marcamos la sección en gfs2, aquí es importante que la tabla de bloqueo tenga el mismo nombre que nuestro clúster en pacificador.  Hacemos solo en una nota <br><br><pre> <code class="bash hljs">mkfs.gfs2 -j 2 -p lock_dlm -t samba_cluster:r0 /dev/cl_vg/r0</code> </pre> <br>  23) Luego, agregue el montaje de esta sección en marcapasos y dígale que arranque después de clvmd <br><br><pre> <code class="bash hljs">pcs resource create fs ocf:heartbeat:Filesystem device=<span class="hljs-string"><span class="hljs-string">"/dev/cl_vg/r0"</span></span> directory=<span class="hljs-string"><span class="hljs-string">"/mnt"</span></span> fstype=<span class="hljs-string"><span class="hljs-string">"gfs2"</span></span> <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span></code> </pre> <br>  24) Ahora es el turno de ctdb que ejecutará samba <br><br><pre> <code class="bash hljs">yum install -y samba ctdb cifs-utils</code> </pre> <br>  25) Edite la configuración /etc/ctdb/ctdbd.conf <br><br><pre> <code class="bash hljs">CTDB_RECOVERY_LOCK=<span class="hljs-string"><span class="hljs-string">"/mnt/ctdb/.ctdb.lock"</span></span> CTDB_NODES=/etc/ctdb/nodes CTDB_MANAGES_SAMBA=yes CTDB_LOGGING=file:/var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/ctdb.log CTDB_DEBUGLEVEL=NOTICE</code> </pre><br>  26) Cree un archivo con una lista de nodos / etc / ctdb / nodo <br>  ATENCION!  Después de cada dirección en la lista debe haber un avance de línea.  De lo contrario, el nodo no se encenderá durante la inicialización. <br><br><pre> <code class="bash hljs">192.168.0.1 192.168.0.2</code> </pre><br>  27) Finalmente, cree el recurso ctdb <br><br><pre> <code class="bash hljs">pcs resource create samba systemd:ctdb <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> meta interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span></code> </pre><br>  28) Configuramos la cola de carga y las dependencias de recursos para ejecutar <br><br><pre> <code class="bash hljs">pcs constraint colocation add dlm-clone with DRBD1-master pcs constraint colocation add clvmd-clone with dlm-clone pcs constraint colocation add fs-clone with clvmd-clone pcs constraint colocation add samba-clone with fs-clone pcs constraint colocation add virtual_ip with samba-clone pcs constraint order promote DRBD1-master <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> dlm-clone pcs constraint order start dlm-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> clvmd-clone pcs constraint order start clvmd-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> fs-clone pcs constraint order start fs-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> samba-clone</code> </pre><br>  29) Establecemos la cola para detener los recursos, sin esto su máquina puede congelarse en el momento del apagado <br><br><pre> <code class="bash hljs">pcs constraint order stop fs-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> stop clvmd-clone pcs constraint order stop clvmd-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> stop dlm-clone pcs constraint order stop dlm-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> stop DRBD1-master pcs constraint order stop samba-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> stop fs-clone</code> </pre><br><h3>  PS </h3><br>  La bola en sí puede estar en nfs y en samba, pero conectarse a ellos es una conmutación por error por IP, aunque el almacenamiento HA en sí.  Si desea HA completo, entonces, en lugar de samba y nfs, necesita instalar iSCSI y conectarse a través de múltiples rutas.  Además, puede obtener splitbrain si uno de los nodos muere, y cuando el maestro se eleva, no lo hará.  Verifiqué que si el sistema operativo se apaga correctamente, luego de levantar el nodo cuando no hay un maestro, pasa al modo desactualizado y no se convierte en el maestro para evitar cerebros divididos.  Las opciones de quórum (DRBD y / o marcapasos) y cualquier distorsión de las construcciones en cascada de DRBD después de que su configuración sea insostenible debido a su alta complejidad, otro administrador tardará mucho tiempo en descubrirlo.  Aunque con lo que escribí no mejor, no lo hagas. <br><br>  Referencias <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Hay una instrucción similar con sintaxis para marcapasos 1.0.</a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/441210/">https://habr.com/ru/post/441210/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../441198/index.html">Dinámica espiral de Scrum y Graves: cómo no toparse con los arrecifes</a></li>
+<li><a href="../441202/index.html">¿Las empresas de servicios sueñan con sus productos? Conversación con Maxilect</a></li>
+<li><a href="../441204/index.html">Un enfoque avanzado para detectar límites utilizando paredes de vasos como ejemplo</a></li>
+<li><a href="../441206/index.html">Wolfensteiny 3D - ingeniería inversa 251 bytes de JavaScript</a></li>
+<li><a href="../441208/index.html">Cómo redujimos la emisión de préstamos a 2 clics</a></li>
+<li><a href="../441212/index.html">Trabaje con protección de información criptográfica y portadores de claves de hardware en Linux</a></li>
+<li><a href="../441214/index.html">Guía del usuario de Kibana. Visualización. Parte 1</a></li>
+<li><a href="../441216/index.html">¿Espejo negro o anuncio Picooc?</a></li>
+<li><a href="../441218/index.html">OpenAI Gym + ROS + Gazebo: entrenando un robot independiente en casa. Parte 1</a></li>
+<li><a href="../441220/index.html">Análisis de ataques masivos recientes con captura de DNS</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

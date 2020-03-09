@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏼‍🔧 👨‍👩‍👦 👏🏽 "Eliminar" objetos en Django ☝️ ⛽️ 🤹🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Tarde o temprano, los desarrolladores se enfrentan a la tarea de eliminar datos innecesarios. Y cuanto más complicado sea el servicio, más matices deb...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>"Eliminar" objetos en Django</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/438280/"><img src="https://habrastorage.org/webt/6h/-4/-w/6h-4-wzp5wlydal3wkp2df8aq5a.jpeg"><br><br>  Tarde o temprano, los desarrolladores se enfrentan a la tarea de eliminar datos innecesarios.  Y cuanto más complicado sea el servicio, más matices debe tener en cuenta.  En este artículo, describiré cómo implementamos la "eliminación" en una base de datos con cientos de enlaces. <br><a name="habracut"></a><br><h2>  Antecedentes </h2><br>  Para monitorear la operabilidad de la mayoría de los proyectos, <b>Mail.ru Group</b> y <b>VKontakte</b> usan un servicio de su propio desarrollo: <b>Monitoreo</b> .  Comenzando su historia desde finales de 2012, durante más de 6 años, el proyecto se ha convertido en un gran sistema, que ha ganado mucha funcionalidad.  El monitoreo verifica regularmente la disponibilidad de servidores y la exactitud de las respuestas a las solicitudes, recopila estadísticas sobre la memoria utilizada, la utilización de la CPU, etc.  Cuando los parámetros del servidor monitoreado exceden los valores permitidos, los responsables del servidor reciben notificaciones en el sistema y por SMS. <br><br>  Todas las verificaciones e incidentes se registran para rastrear la dinámica del rendimiento del servidor, por lo que la base de datos ha alcanzado el orden de cientos de millones de registros.  Periódicamente aparecen nuevos servidores, y los viejos dejan de usarse.  La información sobre los servidores no utilizados debe eliminarse del sistema de Monitoreo para: <i>a) no sobrecargar la interfaz con información innecesaria,</i> <i>yb) liberar identificadores únicos</i> . <br><br><h2>  Eliminar </h2><br>  A sabiendas, en el encabezado del artículo, la palabra "eliminar" escribió entre comillas.  Hay varias formas de eliminar un objeto del sistema: <br><br><ul><li>  completamente eliminado de la base de datos; </li><li>  marcar objetos como eliminados y esconderse de la interfaz.  Como marcador, puede usar Boolean o DateTime para un registro más preciso. </li></ul><br><h4>  Iteración # 1 </h4><br>  Inicialmente, se utilizó el primer enfoque, cuando simplemente <code>object.delete()</code> y el objeto se eliminó con todas las dependencias.  Pero con el tiempo, tuvimos que abandonar este enfoque, ya que un objeto podría tener dependencias con millones de otros objetos, y la eliminación en cascada de tablas rígidamente bloqueadas.  Y dado que el servicio realiza miles de comprobaciones cada segundo y las registra, el bloqueo de las mesas condujo a una seria desaceleración en el servicio, lo que era inaceptable para nosotros. <br><br><h4>  Iteración # 2 </h4><br>  Para evitar bloqueos largos, decidimos eliminar datos en lotes.  Esto permitiría registrar datos de monitoreo reales en los intervalos entre eliminaciones de objetos.  Se puede obtener una lista de todos los objetos que se eliminarán en cascada mediante el método que se utiliza en el panel de administración al eliminar un objeto (al confirmar la eliminación): <br><br><pre> <code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">from</span></span> django.contrib.admin.util <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> NestedObjects <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> django.db <span class="hljs-keyword"><span class="hljs-keyword">import</span></span> DEFAULT_DB_ALIAS collector = NestedObjects(using=DEFAULT_DB_ALIAS) collector.collect([obj]) objects_to_delete = collector.nested() <span class="hljs-comment"><span class="hljs-comment"># Recursive delete objects</span></span></code> </pre> <br>  La situación mejoró: la carga se distribuyó con el tiempo, los nuevos datos comenzaron a registrarse más rápido.  Pero inmediatamente nos encontramos con el siguiente escollo.  El hecho es que la lista de objetos a eliminar se forma al comienzo de la eliminación, y si se agregan nuevos objetos dependientes en el proceso de eliminación "en porciones", el elemento padre no se puede eliminar. <br><br>  Inmediatamente abandonamos la idea de un error en la eliminación recursiva para recopilar nuevamente datos sobre nuevas dependencias o prohibimos agregar registros dependientes al eliminar, porque <i>a) puede ir a un bucle infinito</i> <i>ob) debe encontrar todos los objetos dependientes en todo el código</i> . <br><br><h4>  Iteración # 3 </h4><br>  Pensamos en el segundo tipo de eliminación, cuando los datos se marcan y se ocultan de la interfaz.  Inicialmente, este enfoque fue rechazado, porque parecía una tarea durante al menos una semana encontrar todas las consultas y agregar un filtro por la ausencia de un padre eliminado.  Además, había una alta probabilidad de perder el código necesario, lo que llevaría a consecuencias impredecibles. <br><br>  Luego decidimos usar decoradores para anular el administrador de consultas.  Además, es mejor ver el código que escribir cien palabras. <br><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">exclude_objects_for_deleted_hosts</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(*fields)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-string"><span class="hljs-string">""" Decorator that adds .exclude({field__}is_deleted=True) for model_class.objects.get_queryset :param fields: fields for exclude condition """</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">wrapper</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(model_class)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">apply_filters</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(qs)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> field <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> filter_fields: qs = qs.exclude(**{ <span class="hljs-string"><span class="hljs-string">'{}is_deleted'</span></span>.format(<span class="hljs-string"><span class="hljs-string">'{}__'</span></span>.format(field) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> field <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> <span class="hljs-string"><span class="hljs-string">''</span></span>): <span class="hljs-keyword"><span class="hljs-keyword">True</span></span>, }) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> qs model_class.all_objects = copy.deepcopy(model_class.objects) filter_fields = set(fields) get_queryset = model_class.objects.get_queryset model_class.objects.get_queryset = <span class="hljs-keyword"><span class="hljs-keyword">lambda</span></span>: apply_filters(get_queryset()) <span class="hljs-comment"><span class="hljs-comment"># save info about model decorator setattr(model_class, DECORATOR_DEL_HOST_ATTRIBUTE, filter_fields) return model_class return wrapper</span></span></code> </pre><br>  El <code>exclude_objects_for_deleted_hosts(fields)</code> para los campos especificados del modelo de campos agrega automáticamente un filtro de <code>exclude</code> para cada solicitud, que simplemente elimina las entradas que no deberían mostrarse en la interfaz. <br><br>  Ahora es suficiente para todos los modelos que se verán afectados de alguna manera por la eliminación para agregar un decorador: <br><br><pre> <code class="python hljs"><span class="hljs-meta"><span class="hljs-meta">@exclude_objects_for_deleted_hosts('host') class Alias(models.Model): host = models.ForeignKey(to=Host, verbose_name='Host', related_name='alias')</span></span></code> </pre><br>  Ahora, para eliminar el objeto <code>Host</code> , simplemente cambie el atributo <code>is_deleted</code> : <br><br><pre> <code class="python hljs">host.is_deleted = <span class="hljs-keyword"><span class="hljs-keyword">True</span></span> <span class="hljs-comment"><span class="hljs-comment"># after this save the host and all related objects will be inaccessible host.save()</span></span></code> </pre> <br>  Todas las consultas excluirán automáticamente los registros que hacen referencia a objetos remotos: <br><br><pre> <code class="python hljs"><span class="hljs-comment"><span class="hljs-comment"># model decorator @exclude_objects_for_deleted_hosts('checker__monhost', 'alias__host') CheckerToAlias.objects.filter( alias__hostname__in=['cloud.spb.s', 'cloud.msk.s'] ).values('id')</span></span></code> </pre><br>  Resulta la siguiente consulta SQL: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> monitoring_checkertoalias.id <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> monitoring_checkertoalias <span class="hljs-keyword"><span class="hljs-keyword">INNER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> monitoring_checker <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (<span class="hljs-string"><span class="hljs-string">`monitoring_checkertoalias`</span></span>.<span class="hljs-string"><span class="hljs-string">`checker_id`</span></span> = monitoring_checker.<span class="hljs-string"><span class="hljs-string">`id`</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">INNER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Hosts</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (<span class="hljs-string"><span class="hljs-string">`monitoring_checker`</span></span>.<span class="hljs-string"><span class="hljs-string">`monhost_id`</span></span> = Hosts.<span class="hljs-string"><span class="hljs-string">`id`</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">INNER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> dcmap_alias <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (<span class="hljs-string"><span class="hljs-string">`monitoring_checkertoalias`</span></span>.<span class="hljs-string"><span class="hljs-string">`alias_id`</span></span> = dcmap_alias.<span class="hljs-string"><span class="hljs-string">`id`</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">INNER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">Hosts</span></span> T5 <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (<span class="hljs-string"><span class="hljs-string">`dcmap_alias`</span></span>.<span class="hljs-string"><span class="hljs-string">`host_id`</span></span> = T5.<span class="hljs-string"><span class="hljs-string">`id`</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> (<span class="hljs-string"><span class="hljs-string">`Hosts`</span></span>.<span class="hljs-string"><span class="hljs-string">`is_deleted`</span></span> = <span class="hljs-literal"><span class="hljs-literal">TRUE</span></span>) <span class="hljs-comment"><span class="hljs-comment">-- ,   monitoring_checker AND NOT (T5.`is_deleted` = TRUE) -- ,   dcmap_alias AND dcmap_alias.name IN ('dir1.server.p', 'dir2.server.p') );</span></span></code> </pre> <br>  Como puede ver, <code>`is_deleted` = TRUE</code> agregado a la solicitud combinaciones adicionales para los campos especificados en el decorador y comprobaciones de <code>`is_deleted` = TRUE</code> . <br><br><h2>  Un poco sobre números </h2><br>  Es lógico que las uniones y condiciones adicionales aumenten el tiempo de ejecución de la consulta.  El estudio de este tema mostró que el grado de "complicación" depende de la estructura de la base de datos, el número de registros y la presencia de índices. <br><br>  Específicamente, en nuestro caso, para cada nivel de dependencia, la solicitud es multada alrededor del 30%.  Esta es la penalización máxima que obtenemos en la tabla más grande con millones de registros; en tablas más pequeñas, la penalización se reduce a un pequeño porcentaje.  Afortunadamente, tenemos los índices necesarios configurados, y para la mayoría de las consultas críticas, las uniones necesarias ya estaban allí, por lo que no sentimos una gran diferencia en el rendimiento. <br><br><h2>  Identificadores únicos </h2><br>  Antes de eliminar datos, puede ser necesario liberar los identificadores que se planean usar en el futuro, ya que esto puede dar lugar a un error no único al crear un nuevo objeto.  A pesar de que no habrá objetos visibles en la aplicación Django, todavía estarán en la base de datos.  Por lo tanto, para los objetos eliminados, agregamos uuid al identificador. <br><br><pre> <code class="python hljs">host.hostname = <span class="hljs-string"><span class="hljs-string">'{}_{}'</span></span>.format(host.hostname, uuid.uuid4()) host.is_deleted = <span class="hljs-keyword"><span class="hljs-keyword">True</span></span> host.save()</code> </pre><br><h2>  Operación </h2><br>  Para cada nuevo modelo o dependencia, el decorador debe actualizarse si es necesario.  Para simplificar la búsqueda de modelos dependientes, escribimos una prueba "inteligente": <br><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">test_deleted_host_decorator_for_models</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(self)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">recursive_host_finder</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(model, cache, path, filters)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-comment"><span class="hljs-comment"># cache for skipping looked models cache.add(model) # process all related models for field in (f for f in model._meta.fields if isinstance(f, ForeignKey)): if field.related_model == Host: filters.add(path + field.name) elif field.related_model not in cache: recursive_host_finder(field.related_model, cache.copy(), path + field.name + '__', filters) # check all models for current_model in apps.get_models(): model_filters = getattr(current_model, DECORATOR_DEL_HOST_ATTRIBUTE, set()) found_filters = set() if current_model == Host: found_filters.add('') else: recursive_host_finder(current_model, set(), '', found_filters) if found_filters or model_filters: try: self.assertSetEqual(model_filters, found_filters) except AssertionError as err: err.args = ( '{}\n !!! Fix decorator "exclude_objects_for_deleted_hosts" ' 'for model {}'.format(err.args[0], current_model), ) raise err</span></span></code> </pre><br>  La prueba verifica recursivamente todos los modelos para detectar la presencia de una dependencia en el modelo que se va a eliminar, luego busca ver si el decorador para los campos requeridos se ha configurado para este modelo.  Si falta algo, la prueba le indicará delicadamente dónde agregar el decorador. <br><br><h2>  Epílogo </h2><br>  Por lo tanto, con la ayuda de un decorador, fue posible implementar una "pequeña eliminación" de datos que tiene una gran cantidad de dependencias.  Todas las solicitudes reciben automáticamente el filtro de <code>exclude</code> requerido.  La imposición de condiciones adicionales ralentiza el proceso de obtención de datos, el grado de "complicación" depende de la estructura de la base de datos, el número de registros y la disponibilidad de índices.  La prueba propuesta le dirá para qué modelos necesita agregar decoradores, y en el futuro controlará su consistencia. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/438280/">https://habr.com/ru/post/438280/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../438266/index.html">¿Por qué el pentesting es importante para su negocio?</a></li>
+<li><a href="../438270/index.html">Love Kubernetes en Mail.ru Group: 14 de febrero</a></li>
+<li><a href="../438272/index.html">Cómo enviamos SMS desde la cueva</a></li>
+<li><a href="../438274/index.html">Definición de "personalidad tóxica" en TI</a></li>
+<li><a href="../438278/index.html">Enseñar a los niños a programar</a></li>
+<li><a href="../438286/index.html">Trabajando con zonas horarias en JavaScript</a></li>
+<li><a href="../438288/index.html">Protección sin miedo. Seguridad de memoria en óxido</a></li>
+<li><a href="../438290/index.html">Post-mortem con GGJ-2019: cómo obtener golpes, pero aún así hacer el juego</a></li>
+<li><a href="../438292/index.html">Automatización de apartamentos con HomePod, Raspberry Pi y Node.js</a></li>
+<li><a href="../438294/index.html">Encontrar Twitch Streamers en una partida de PUBG</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
