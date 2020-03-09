@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕴🏼 💨 👨‍🔧 Optimización del tiempo de inicio de Prometheus 2.6.0 con pprof 👲 💪🏾 🙌🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Prometheus 2.6.0 optimizó la carga de WAL, lo que acelera el proceso de inicio. 
+
+
+ El objetivo no oficial de desarrollar Prometheus 2.x TSDB es acele...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Optimización del tiempo de inicio de Prometheus 2.6.0 con pprof</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/436922/"><p>  Prometheus <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">2.6.0</a> optimizó la carga de WAL, lo que acelera el proceso de inicio. </p><br><p>  El objetivo no oficial de desarrollar Prometheus 2.x TSDB es acelerar el lanzamiento para que no demore más de un minuto.  En los últimos meses, ha habido informes de que el proceso está tardando un poco más, y si Prometheus se reinicia por algún motivo, entonces esto ya es un problema.  Casi todo este tiempo, se carga el WAL (grabación de pregrabación), que incluye muestras de las últimas horas que aún no se han comprimido en un bloque.  A fines de octubre, finalmente logré resolverlo;  el resultado es <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">PR # 440</a> , que reduce el tiempo de CPU en 6.5 veces y el tiempo de cálculo en 4 veces.  Veamos cómo hice estas mejoras. </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/b59/bb0/1f7/b59bb01f785b863d244cb527c6b27632.png" alt="imagen"></p><a name="habracut"></a><br><p> Primero, se necesita una configuración de prueba.  Creé un pequeño programa Go que genera TSDB con WAL con mil millones de muestras dispersas en 10,000 series de tiempo.  Luego abrí este TSDB y miré cuánto tiempo tardó en usar la utilidad de <code>time</code> (no una estructura incorporada, ya que no incluye estadísticas de memoria), y también creé un perfil de CPU usando el <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">paquete de tiempo de ejecución / pprof</a> : </p><br><pre> <code class="plaintext hljs">f, err := os.Create("cpu.prof") if err != nil { log.Fatal(err) } pprof.StartCPUProfile(f) defer pprof.StopCPUProfile()</code> </pre> <br><p>  El perfil de la CPU no nos permite determinar directamente el tiempo de cálculo que nos interesa, sin embargo, existe una correlación significativa.  Como resultado, en mi computadora de escritorio (procesador i7-3770 con 16 GB de RAM y unidades de estado sólido), la descarga tardó aproximadamente 4 minutos y un poco menos de 6 GB de RAM en su punto máximo: </p><br><pre> <code class="plaintext hljs">1727.50user 16.61system 4:01.12elapsed 723%CPU (0avgtext+0avgdata 5962812maxresident)k 23625165inputs+95outputs (196major+2042817minor)pagefaults 0swaps</code> </pre> <br><p>  Esto no es un zumbido, así que <code>go tool pprof cpu.prof</code> el perfil usando la <code>go tool pprof cpu.prof</code> y veamos cuánto tiempo llevará el proceso si usa el comando <code>top</code> . </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/562/0e1/996/5620e19968ec33e73d42238e1ed1e909.png" alt="imagen"></p><br><p>  Aquí <code>flat</code> es la cantidad de tiempo dedicado a una función determinada, y <code>cum</code> es el tiempo dedicado a esta función y a todas las funciones que llama.  También puede ser útil ver estos datos en un gráfico para tener una idea de la pregunta.  Prefiero usar el comando <code>web</code> para esto, pero hay otras opciones, incluidos los archivos svg, png y pdf. </p><br><p>  Se puede ver que aproximadamente un tercio de nuestra CPU se gasta en agregar muestras a la base de datos interna, aproximadamente dos tercios en el procesamiento de WAL en general y un cuarto en limpiar la memoria ( <code>runtime.scanobject</code> ).  Veamos el código para el primero de estos procesos usando <code>list memSeries.*append</code> : </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/208/454/263/208454263da34943818a5f89ca2112da.png" alt="imagen"></p><br><p>  Lo siguiente es sorprendente aquí: se dedica más de la mitad del tiempo a obtener el dato principal de la serie en la línea 1443. Además, no se dedica poco tiempo a establecer el número de muestras en este dato en la línea 1449. El tiempo necesario para completar la línea 1465 - esperado, ya que este es el núcleo de la acción de esta función.  En consecuencia, esperaba que la operación tomara la mayor parte del tiempo. </p><br><p>  Eche un vistazo al elemento <code>memSeries.head</code> : calcula una pieza de datos que se devuelve cada vez.  El fragmento de datos cambia solo después de cada 120 adiciones y, por lo tanto, podemos <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">guardar el fragmento de encabezado actual en la estructura de datos de la serie</a> .  Esto ocupa parte de la RAM (a la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">que volveré más adelante</a> ), pero ahorra una cantidad significativa de CPU.  Y en general, también acelera Prometheus. </p><br><p>  Entonces echemos un vistazo a <code>Head.processWALSamples</code> : </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/df3/677/ce9/df3677ce990c5d263a0790d88c4da721.png" alt="imagen"></p><br><p>  Este complemento ya se ha optimizado anteriormente, así que mira el siguiente culpable obvio, <code>getByID</code> en la línea 252: <br>  (código) </p><br><p>  Parece que hay algún tipo de conflicto de bloqueo, y se pierde tiempo haciendo una búsqueda de mapa de dos niveles.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">La memoria caché para cada identificador</a> reduce significativamente este indicador. </p><br><p>  Vale la pena <code>Head.processWALSamples</code> segundo vistazo a <code>Head.processWALSamples</code> , y le sorprende la cantidad de tiempo que pasó en la línea 249. Volvamos un poco a la pregunta de cómo funciona la carga de WAL: se crea Head.processWALSamples <code>Head.processWALSamples</code> para cada CPU disponible, además de otro para leer y decodificando WAL desde el disco.  Las filas están segmentadas por estas gorutinas, por lo que la concurrencia puede ser una ventaja.  El método de implementación es el siguiente: todas las muestras se envían a la primera gorutina, que procesa los elementos que necesita.  Luego envía todas las muestras a la segunda gorutina, que procesa los elementos que necesita, y así sucesivamente, hasta que la última gorutina, <code>Head.processWALSamples</code> todos los datos a la gorutina de control. </p><br><p>  Mientras tanto, los complementos se distribuyen a través de los núcleos, que es lo que necesita, y se realizan muchas tareas duplicadas en cada gorutin, que debe procesar todas las muestras y calcular el módulo.  De hecho, cuantos más núcleos, más trabajo se duplica.  Realicé cambios para segmentar los datos en la gourutina del controlador, de modo que cada gorutina de <code>Head.processWALSamples</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">ahora solo obtenga las muestras que necesita</a> .  En mi computadora, 8 ejecutando gorutin, el tiempo de cálculo se ahorró un poco, pero el volumen de la CPU fue decente.  Para las computadoras con una gran cantidad de núcleos, los beneficios deberían ser más sustanciales. </p><br><p>  Y nuevamente volvemos a la pregunta: hora de borrar la memoria.  No podemos (generalmente) determinar esto a través de perfiles de CPU.  En su lugar, preste atención a los perfiles de memoria dinámica para encontrar los elementos que se destacan.  Esto requiere un poco de expansión de código al final del programa: </p><br><pre> <code class="plaintext hljs">runtime.GC() hf, err := os.Create("heap.prof") if err != nil { log.Fatal(err) } pprof.WriteHeapProfile(hf)</code> </pre> <br><p>  La limpieza formal de la memoria está asociada con cierta información en la memoria dinámica, cuya recolección y limpieza se lleva a cabo solo durante la limpieza de la memoria. </p><br><p>  Nuevamente usamos la misma herramienta, pero especificamos la etiqueta <code>-alloc_space</code> , ya que estamos interesados ​​en todas las operaciones de asignación de memoria, y no solo en las operaciones que usan memoria en un momento particular;  por lo tanto, ejecute <code>go tool pprof -alloc_space heap.prof</code> .  Si nos fijamos en el distribuidor superior, el culpable es obvio: </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/8ba/0ba/cbf/8ba0bacbf8231b7fdac52a657212ee22.png" alt="imagen"></p><br><p>  Echa un vistazo al código: </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/453/531/ca4/453531ca4cda944db146ce07c20edc2f.png" alt="imagen"></p><br><p>  La matriz de <code>samples</code> extensible parece ser un problema.  Si pudiéramos reutilizar la matriz al mismo tiempo que <code>RecordDecoder.Samples</code> a <code>RecordDecoder.Samples</code> , esto ahorraría una cantidad significativa de memoria.  Resulta que el código fue compuesto de esta manera, pero un pequeño error de codificación condujo al hecho de que no funcionó.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Si lo arregla</a> , la memoria se borra en 8 segundos de la CPU en lugar de 151 segundos. </p><br><p>  Los resultados generales son bastante tangibles: </p><br><pre> <code class="plaintext hljs">269.18user 10.69system 1:05.58elapsed 426%CPU (0avgtext+0avgdata 3529556maxresident)k 23174929inputs+70outputs (815major+1083172minor)pagefaults 0swap</code> </pre> <br><p>  No solo hemos reducido el tiempo de cálculo en 4 veces, y el tiempo de la CPU, en 6,5 veces, sino que también la cantidad de memoria ocupada se reduce en más de 2 GB. </p><br><p>  Parece que todo es simple, pero el truco es el siguiente: rebusqué decentemente en la base del código y analicé todo como si fuera en retrospectiva.  Al estudiar el código, llegué a un callejón sin <code>NumSamples</code> varias veces, por ejemplo, al eliminar una llamada <code>NumSamples</code> , leer y decodificar en subprocesos separados, así como de varias maneras para segmentar <code>processWALSamples</code> .  Estoy casi seguro de que al regular la cantidad de gorutinas, se puede lograr más, pero para esto las pruebas deben realizarse en máquinas más potentes que las mías, para que haya más núcleos.  Logré mi objetivo: la productividad aumentó, y me di cuenta de que era mejor no hacer que el registro del programa fuera demasiado grande, y por lo tanto decidí detenerme allí. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/es436922/">https://habr.com/ru/post/es436922/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es436912/index.html">Tendencias de CRM 2019: divertido de leer, peligroso de creer</a></li>
+<li><a href="../es436914/index.html">Problemas de crecimiento de inicio - Monitoreo</a></li>
+<li><a href="../es436916/index.html">VShard - escala horizontal en Tarantool</a></li>
+<li><a href="../es436918/index.html">Creando un juego para Game Boy, Parte 2</a></li>
+<li><a href="../es436920/index.html">Transpilador PAS2JS de Pascal a JavaScript: incompatible con Delphi y soluciones alternativas</a></li>
+<li><a href="../es436924/index.html">Algunas palabras sobre la organización de competiciones de robótica</a></li>
+<li><a href="../es436926/index.html">Héroes de la autenticación de dos factores, o cómo "caminar en la piel de los demás"</a></li>
+<li><a href="../es436928/index.html">WebRTC: aún más fácil (EasyRTC)</a></li>
+<li><a href="../es436934/index.html">Matemáticas ingenuas: el motor de Mendocino y el teorema de Earnshaw</a></li>
+<li><a href="../es436936/index.html">Depósito nuclear japonés en Primorye o el sitio de disposición de los submarinos nucleares de la Flota del Pacífico</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

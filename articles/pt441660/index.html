@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙊 🛵 🧗🏿 STM32F103C8T6 como unidade flash com sistema de arquivos FAT12 🎿 🐪 🧔🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Ao desenvolver dispositivos, geralmente é necessário armazenar configurações fora do programa de trabalho. É ainda melhor poder modificá-los sem usar ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>STM32F103C8T6 como unidade flash com sistema de arquivos FAT12</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/441660/"> Ao desenvolver dispositivos, geralmente é necessário armazenar configurações fora do programa de trabalho.  É ainda melhor poder modificá-los sem usar ferramentas especiais. <br><br>  Considere a opção de armazenamento talvez nos microcontroladores STM F103 mais comuns.  A conhecida placa de ensaio Blue Pill também contribuiu para a prevalência. <br><br><img src="https://habrastorage.org/webt/59/of/v3/59ofv3if6laponckzryro9ojnqa.jpeg" alt="imagem"><br>  O flash disponível nele permite não apenas armazenar e modificar as configurações usando o sistema de arquivos FAT12 no flash interno, mas também organizar uma atualização de firmware. <br><br>  De acordo com a documentação, o STM32F103C8T6 possui 64K de memória flash.  No entanto, em quase todos os STM32F103C8T6, 128K estão instalados.  Isso também é mencionado em várias fontes - eles costumam colocar 64K a mais.  Esse "recurso" permite que você use o microcontrolador como uma unidade flash com capacidade de 128K - 20K (o sistema precisa de FAT12) - o tamanho do firmware. <br><br>  Muitos entusiastas que tentaram usar este controlador como uma unidade flash encontraram o problema de seu uso no modo de sistema de arquivos FAT12.  Use para remover / preencher a imagem do disco exibida.  Mas, ao trabalhar como uma unidade de arquivo, os problemas começaram. <br><a name="habracut"></a><br>  Esse problema consiste em uma sequência diferente de acesso aos setores (blocos).  Quando uma imagem de disco é carregada, a gravação ocorre sequencialmente, por exemplo: <br><br>  - bloco de gravação número 1, <br>  - bloco de gravação número 2, <br>  - registre o número do bloco 3. <br><br>  Ao gravar dados FAT12, a gravação pode ocorrer arbitrariamente: <br><br>  - registre o bloco número 3, <br>  - bloco de gravação número 1, <br>  - registre o número do bloco 2. <br><br>  E, como gravar em flash requer apagar a página 1K inteira, ao usar setores de 512 bytes na unidade (e você não pode usar outros setores), se o acesso aleatório for usado, as informações no setor vizinho serão apagadas.  Para impedir que isso aconteça, o exemplo acima usa uma matriz de 512 bytes para armazenar o setor vizinho.  E a gravação deve ser a seguinte: <br><br>  - determine o endereço do início da página, <br>  - lembre-se do setor vizinho, <br>  - apague a página, <br>  - escreva um setor memorizado, <br>  - escreve dados. <br><br>  Para não me aprofundar na selva de ferro sem a necessidade necessária, preparei o projeto no CubeMX. <br><br>  Vou dar um exemplo de uma função para gravar em flash via HAL (usbd_storage_if.c) <br><br><pre><code class="plaintext hljs">//    flash void writeBuf (uint32_t page_addr, uint8_t *buf){ uint32_t erase_addr=get_erase_addr(page_addr); uint32_t buf_erase_addr; uint32_t buf32; if (page_addr != erase_addr) { buf_erase_addr=erase_addr; } else { buf_erase_addr=erase_addr+STORAGE_BLK_SIZ; } HAL_FLASH_Unlock(); //      set_buf_before_erase(buf_erase_addr); //       FLASH_EraseInitTypeDef EraseInitStruct; uint32_t PAGEError = 0; EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES; EraseInitStruct.PageAddress = erase_addr; EraseInitStruct.NbPages = 1; HAL_FLASHEx_Erase(&amp;EraseInitStruct,&amp;PAGEError); //    for (int i=0; i&lt;STORAGE_BLK_SIZ/4;i++) { HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD,buf_erase_addr,blk_buff[i]); buf_erase_addr+=4; } //   for (int i=0; i&lt;STORAGE_BLK_SIZ/4;i++) { buf32=*(uint32_t *)&amp;buf[i*4]; HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, page_addr,buf32); page_addr+=4; } HAL_FLASH_Lock(); }</code> </pre> <br>  O tamanho do arquivo binário que obtive em torno de 20K, portanto, minha página de memória de dados é definida com 0x08006000 (24K). <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Nós compilamos (o código fonte do exemplo pode ser obtido aqui).</a> <br><br>  Nós conectamos: <br><br><pre> <code class="plaintext hljs">[ 8193.499792] sd 4:0:0:0: Attached scsi generic sg2 type 0 [ 8193.502050] sd 4:0:0:0: [sdb] 128 512-byte logical blocks: (65.5 kB/64.0 KiB) [ 8193.502719] sd 4:0:0:0: [sdb] Write Protect is off [ 8193.502722] sd 4:0:0:0: [sdb] Mode Sense: 00 00 00 00 [ 8193.503439] sd 4:0:0:0: [sdb] Asking for cache data failed [ 8193.503445] sd 4:0:0:0: [sdb] Assuming drive cache: write through [ 8193.523812] sdb: [ 8193.526914] sd 4:0:0:0: [sdb] Attached SCSI removable disk</code> </pre> <br>  O disco está determinado, está tudo bem! <br><br>  Vamos começar a formar a partição e formatar o nosso disco. <br><br>  No Linux, isso é bastante simples na linha de comando: <br><br><pre> <code class="plaintext hljs">sudo fdisk /dev/sdb</code> </pre> <br><img src="https://habrastorage.org/webt/dz/hb/kw/dzhbkw8oy1iquunrkjjlm0lkg98.png"><br><br>  formato no FAT12: <br><br><pre> <code class="plaintext hljs">sudo mkfs.fat /dev/sdb -F 12</code> </pre> <br>  Copie o arquivo para o teste: <br><br><img src="https://habrastorage.org/webt/04/53/6a/04536a8w5yjlejtc92k_bykdumc.png"><br><br>  No entanto, não se deve esquecer que, de acordo com a documentação, o número de ciclos de reescrita do flash <br>  garantido apenas dentro de 100.000. Por exemplo, a formatação e gravação de um único arquivo 30K serão necessárias (de acordo com o log de depuração deste exemplo): <br><br><pre> <code class="plaintext hljs">00106 44 67 Write_FS blk_addr=003 0x08006600</code> </pre> <br>  106 reescrever ciclos. <br><br>  A questão permanece - como posso ler dados acessando arquivos FAT12 diretamente? <br>  Sobre isso no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">próximo artigo.</a> <br>  Obrigado pela atenção! </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt441660/">https://habr.com/ru/post/pt441660/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt441644/index.html">Como o Tinkoff.ru automatiza a análise com o Zeppelin</a></li>
+<li><a href="../pt441646/index.html">Como funciona a planta inteligente da General Electric</a></li>
+<li><a href="../pt441648/index.html">Apresentando o Microsoft HoloLens 2</a></li>
+<li><a href="../pt441650/index.html">Webinar Group-IB “Visão Forense sobre a Proteção de Objetos CII em 2019”</a></li>
+<li><a href="../pt441654/index.html">Como fazer um estágio em uma grande empresa de TI</a></li>
+<li><a href="../pt441664/index.html">Linus Torvalds não acredita que os servidores na arquitetura ARM substituam o x86. “Vendendo um modelo de 64 bits - idiotice”</a></li>
+<li><a href="../pt441668/index.html">STM32. Prática de perda de peso ou dieta para o controlador</a></li>
+<li><a href="../pt441674/index.html">Layout de teste? Fácil</a></li>
+<li><a href="../pt441676/index.html">Como fazer amigos PLUTO e HDSDR</a></li>
+<li><a href="../pt441678/index.html">Física dos tornados de jogos: como a aerodinâmica é implementada em Just Cause 4 (tráfego)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📺 🌛 👌🏻 Antipatterns PostgreSQL: estatísticas em torno da cabeça 🤞🏿 👨🏼‍💼 🗑️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="O PostgreSQL usa estatísticas acumuladas na distribuição de valores de dados nas tabelas de destino para selecionar o plano de execução de consulta ma...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Antipatterns PostgreSQL: estatísticas em torno da cabeça</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/479656/">  <a href="https://postgrespro.ru/docs/postgresql/12/planner-stats">O PostgreSQL usa estatísticas acumuladas</a> na distribuição de valores de dados nas tabelas de destino para selecionar o plano de execução de consulta mais eficiente. <br><br>  Ele é atualizado executando explicitamente os comandos <b>ANALYZE</b> e <b>VACUUM ANALYZE</b> ou em segundo plano pelo processo <i>autovacuum / autoanalyze</i> .  Mas se as estatísticas não tiverem tempo para serem atualizadas - poderão ocorrer problemas. <br><br>  Como detectar e corrigir esse problema? <br><a name="habracut"></a><br>  A principal opção quando essa situação pode acontecer é se o conjunto de dados mudou drasticamente na tabela.  Ou seja, <i>gerou um grande número de INSERT / UPDATE / DELETE ou simplesmente "derramou" os dados</i> em uma tabela vazia - por exemplo, <b>ao restaurar a partir de um backup</b> . <br><br>  A ajuda do <a href="https://postgrespro.ru/docs/postgresql/12/app-pgrestore">utilitário de recuperação</a> padrão <a href="https://postgrespro.ru/docs/postgresql/12/app-pgrestore">pg_restore</a> diz explicitamente: <br><blockquote>  Após a recuperação, faz sentido executar ANALYZE para cada tabela restaurada para que o otimizador receba estatísticas atualizadas. <br></blockquote>  Portanto, se você estiver fazendo algo semelhante com o banco de dados - não seja preguiçoso, execute imediatamente <a href="https://postgrespro.ru/docs/postgresql/12/sql-analyze">ANALYZE</a> para as tabelas mais "ousadas" ou para o banco de dados inteiro. <br><br><h3>  Determinamos a presença de um problema </h3><br>  Qual é a aparência da situação "todo ruim" exatamente por causa disso?  Geralmente algo como isto: <br><img src="https://habrastorage.org/webt/88/oq/j_/88oqj_7rh-kkdso8uxjkezopfga.png"><br><br>  A coluna de <b>proporção</b> mostra apenas a relação "às vezes" entre o número de registros planejados com base nas estatísticas e o número realmente lido: <br><br><pre><code class="plaintext hljs">Bitmap Heap Scan on ... (... rows=14831 ...) (actual ... rows=9 ...)</code> </pre> <br>  <b>Quanto maior esse valor, pior as</b> estatísticas refletem a situação real na sua tabela.  Normalmente, geralmente <i>não excede centenas</i> , neste exemplo, <i>mil e quinhentas vezes</i> . <br><br>  Isso leva à escolha de um plano ineficaz e, como resultado, à <u>carga mais selvagem da base</u> .  Para removê-lo rapidamente, basta ouvir as recomendações do manual e passar por <b>ANALYZE</b> nas tabelas principais. <br><br>  Aqui está a carga da CPU no servidor de banco de dados antes e depois desta operação, para o exemplo acima: <br><br><img src="https://habrastorage.org/webt/1d/z1/_t/1dz1_tjab_zmcwy-ir0ei2_tjte.png"><br><br><h3>  Tabela atualizada com freqüência </h3><br>  Mas e se a tabela realmente alterar um grande número de registros?  Por exemplo, esse é algum tipo de buffer ou fila de processamento em que novos registros são adicionados constantemente e antigos são excluídos. <br><br>  Nesse caso, os seguintes <a href="https://postgrespro.ru/docs/postgresql/12/runtime-config-autovacuum">parâmetros de configuração</a> nos ajudarão: <br><blockquote>  <b>autovacuum_naptime</b> (número inteiro) <br>  Define o atraso mínimo entre duas execuções de limpeza automática para um único banco de dados.  O daemon de limpeza automática varre o banco de dados no intervalo de tempo especificado e emite os comandos VACUUM e ANALYZE quando necessário para as tabelas nesse banco de dados.  Se esse valor for especificado sem unidades, será considerado definido em segundos.  Por padrão, o atraso é de um minuto (1min).  Este parâmetro pode ser definido apenas no postgresql.conf ou na linha de comandos quando o servidor iniciar. <br><br>  <b>autovacuum_analyze_threshold</b> (número inteiro) <br>  Define o número mínimo de tuplas adicionadas, modificadas ou excluídas nas quais o ANALYZE será executado para uma única tabela.  O valor padrão é 50 tuplas.  Este parâmetro pode ser definido apenas no postgresql.conf ou na linha de comandos quando o servidor iniciar.  No entanto, esse valor <u>pode ser substituído por tabelas selecionadas</u> alterando suas configurações de armazenamento. <br><br>  <b>autovacuum_analyze_scale_factor</b> (ponto flutuante) <br>  Especifica a porcentagem do tamanho da tabela que será adicionada ao autovacuum_analyze_threshold quando o limite do comando ANALYZE for selecionado.  O valor padrão é 0,1 (10% do tamanho da tabela).  Você pode definir esse parâmetro apenas no postgresql.conf ou na linha de comandos quando o servidor iniciar.  No entanto, esse valor <u>pode ser substituído por tabelas selecionadas</u> alterando suas configurações de armazenamento. </blockquote><br><h3>  SWSS </h3><br>  Às vezes, ao configurar um servidor, o <i>autovacuum_naptime é</i> " <i>compactado</i> " para "uma vez por dia" (1d), para <b>que os autoVACUUMs circulem pelo banco de dados com menos frequência</b> e <b>consumam</b> menos recursos. <br><br>  Às vezes, embora muito raramente, isso pode ser justificado - por exemplo, se você tiver <i>milhares de tabelas / seções</i> em um banco de dados (mesmo que elas estejam dispostas em padrões diferentes). <br><br>  Como a própria definição de quais tabelas específicas da lista inteira precisam ser processadas, durante a inicialização do processo de autovacuum, ela <b>pode ocupar um compartilhamento considerável de recursos e diminuir a velocidade do servidor</b> . <br><br>  Nesse caso, você terá problemas com uma tabela modificada com frequência. <br><br>  Aqui - defina um intervalo de inicialização mais adequado ou siga ANALYZE de acordo com essa tabela no modo “manual” por alguns motivos aplicados (por exemplo, um timer externo ou após o final do próximo estágio do processamento da fila). <br><br>  <i>Camarada, mantenha as estatísticas atualizadas!</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt479656/">https://habr.com/ru/post/pt479656/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt479636/index.html">Pilha de navegação própria. Melhor que ROS?</a></li>
+<li><a href="../pt479642/index.html">Como decisões estúpidas ao projetar uma aeronave da Segunda Guerra Mundial levaram à criação do Macintosh</a></li>
+<li><a href="../pt479646/index.html">Maus conselhos ou razões para continuar a aprender inglês após o Intermediário</a></li>
+<li><a href="../pt479650/index.html">Os 12 principais infográficos dinâmicos de TI mais interessantes</a></li>
+<li><a href="../pt479654/index.html">Django vue generator</a></li>
+<li><a href="../pt479660/index.html">3. Análise de malware usando o Check Point forense. Sandblast mobile</a></li>
+<li><a href="../pt479662/index.html">Como a Yandex ensinou inteligência artificial a encontrar erros nas notícias</a></li>
+<li><a href="../pt479664/index.html">Como os kubernetes gerenciados e o OpenShift gerenciado funcionam no IBM Cloud. Parte 1 - Arquitetura e Segurança</a></li>
+<li><a href="../pt479666/index.html">Golang: Em que um especialista Go se baseia em um mar de especialidades de TI?</a></li>
+<li><a href="../pt479668/index.html">Controle de qualidade para iniciantes: como testar um foguete ou avião?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

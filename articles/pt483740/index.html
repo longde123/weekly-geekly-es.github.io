@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏿‍💼 🥗 🃏 Configurando o roteamento dinâmico (em particular o BGP) sobre o túnel OpenVPN no Linux (e provavelmente * BSD) ⚖️ 📎 😾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Por que e sobre o que é este artigo? 
+
+
+ Se você pesquisar no tópico "openvpn bgp", poderá encontrar vários artigos interessantes e úteis de um ponto ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Configurando o roteamento dinâmico (em particular o BGP) sobre o túnel OpenVPN no Linux (e provavelmente * BSD)</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/483740/"><h4>  Por que e sobre o que é este artigo? </h4><br><p>  Se você pesquisar no tópico "openvpn bgp", poderá encontrar vários artigos interessantes e úteis de um ponto de vista prático (por exemplo, <a href="https://habr.com/ru/post/348360/">uma</a> ou <a href="https://habr.com/ru/post/354282/">duas vezes</a> ).  Mas começando a resolver o problema no título, por muitas razões, eu nem me preocupei em pesquisá-lo no Google.  A ideia surgiu de alguma forma por si só durante um longo trabalho com o OpenVPN em geral (no âmbito de tarefas bastante típicas, com um conjunto fixo de redes nos dois lados), trabalhando com a implementação do OpenVPN no sistema MikroTik RouterOS e encaixando os sistemas Linux e RouterOS entre si.  Na verdade, no processo de descobrir as razões para escrever nossa própria implementação do OpenVPN no RouterOS, surgiu o “insight” sobre como esse problema pode ser resolvido dentro da estrutura da edição OpenVPN, com equipe completa.  Depois, houve uma pequena verificação experimental, que mostrou a capacidade total de trabalho da idéia e o lançamento desta solução na operação "industrial". </p><br><p> Tendo em mente que esta situação é bastante típica para diferentes aplicações, e a solução descrita abaixo ainda não foi apresentada, decidi compartilhar a idéia com a comunidade. </p><br><a name="habracut"></a><br><h4>  A essência do problema ("quem é o culpado?") </h4><br><p>  Qual é a diferença entre a versão regular do OpenVPN e a que é implementada no RouterOS?  Provavelmente existem algumas diferenças, mas neste artigo consideraremos apenas uma coisa: o OpenVPN comum em outros sistemas que não o RouterOS (e possivelmente outros) é uma combinação que contém a parte de transporte (ou seja, a própria transmissão de pacotes, também é encaminhada, é também um plano de dados) ) e roteamento (ou seja, troca de informações sobre rotas, roteamento, também é um plano de controle) e, no RouterOS, o serviço OpenVPN é responsável <b>apenas pela</b> parte de <b>transporte</b> , e o roteamento é tratado por um processo de sistema diferente, que permite, por um lado, não duplicar a funcionalidade do roteamento sob  O sistema (além disso, não mantém várias tabelas de rotas idênticas em serviços diferentes e as sincroniza constantemente) e, por outro lado, permite a transferência transparente de tabelas de rotas sobre esses veículos e altera as tabelas de rotas de ambos os lados em tempo real. </p><br><p>  Além disso, a implementação regular do OpenVPN tem mais uma desvantagem: a transferência de rotas ocorre apenas em uma direção (do servidor para o cliente) e apenas no momento de estabelecer uma sessão (ou seja, elevar o túnel).  Não há uma maneira regular de adicionar uma rota à tabela de rotas OpenVPN interna em movimento durante a operação do túnel, bem como transferir rotas de um lado para o outro.  Além disso, nem mesmo é possível obter a própria tabela de rotas. </p><br><h4>  Solução para o problema ("O que fazer") </h4><br><p>  Analisando meus scripts que automatizam a atribuição de rotas a diferentes clientes, notei que o OpenVPN tem duas opções diferentes que especificam rotas: </p><br><ul><li> <code><b>i</b> route</code> - define as rotas <b>dentro</b> da tabela de roteamento do processo OpenVPN. </li><li>  <code>route</code> - define as rotas que o processo OpenVPN passa para a tabela de rotas do sistema (ou seja, adiciona rotas à tabela através de sua interface de túnel quando conectado e as exclui quando desconectadas). </li></ul><br><p>  Surgiu a pergunta óbvia: o que acontecerá se <code><b>i route</b></code> adicionar a rota 0.0.0.0/0 em ambos os lados usando a <code><b>i</b> route</code> e depois adicionar ou remover as rotas necessárias (incluindo aquelas que aparecem ou desaparecem dinamicamente) na própria interface do túnel, por exemplo, com um serviço de roteamento ( roteado, zebra / quagga, pássaro, etc.)? </p><br><p>  O experimento mostrou que esse esquema realmente funciona com um pequeno inconveniente de restrição: apenas um cliente pode ser conectado a um túnel do servidor.  O resto do circuito acabou sendo totalmente operacional. </p><br><p>  O esquema opera no modo TLS sobre TCP, ou seja, para configuração, você deve primeiro gerar chaves e certificados SSL. </p><br><p>  Abaixo, dou um exemplo de configuração do OpenVPN para o servidor e o lado do cliente. </p><br><p>  Configuração do lado do servidor (uma para cada cliente). </p><br><p>  Arquivo <code>server_dyn_rt.conf</code> (lado do servidor) </p><br><pre> <code class="plaintext hljs">daemon compress ping-timer-rem persist-tun persist-key tls-server proto tcp-server topology net30 mode server script-security 3 keepalive 15 45 tun-mtu 1500 remote-cert-tls client verify-x509-name &lt;CLIENT_DISTINGUISHED_NAME&gt; name auth &lt;TLS_AUTH_ALGORITHM&gt; cipher &lt;CIPHER_ALGORITHM&gt; local &lt;SERVER_PUBLIC_IP&gt; lport &lt;SERVER_PUBLIC_PORT&gt; dev-type tun dev &lt;TUNNEL_INTERFACE_NAME&gt; ifconfig &lt;TUNNEL_SERVER_SIDE_IP&gt; &lt;TUNNEL_CLIENT_SIDE_IP&gt; client-connect client_connect.sh push "route-gateway &lt;TUNNEL_SERVER_SIDE_IP&gt;" push "topology net30" push&amp;nbsp"persist-tun" push&amp;nbsp"persist-key" &lt;dh&gt; ... Diffie-Hellman data &lt;&lt;/dh&gt; &lt;ca&gt; ... Certificate Authority certificate data &lt;/ca&gt; &lt;cert&gt; ... Server certificate data &lt;/cert&gt; &lt;key&gt; ... Server Private Key data &lt;/key&gt;</code> </pre><br><p>  Arquivo <code>client_connect.sh</code> (lado do servidor) </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh echo 'ifconfig-push TUNNEL_CLIENT_SIDE_IP TUNNEL_SERVER_SIDE_IP' &gt;&gt; ${1} echo 'push "iroute 0.0.0.0 0.0.0.0"' &gt;&gt; ${1} echo 'iroute 0.0.0.0 0.0.0.0' &gt;&gt; ${1} exit 0</span></span></code> </pre><br><p>  Arquivo <code>client_dyn_rt.conf</code> (lado do cliente) </p><br><pre> <code class="plaintext hljs">daemon compress tls-client auth &lt;TLS_AUTH_ALGORITHM&gt; cipher &lt;CIPHER_ALGORITHM&gt; client dev-type tun dev &lt;TUNNEL_INTERFACE_NAME&gt; script-security 3 remote-cert-tls server verify-x509-name &lt;SERVER_DISTINGUISHED_NAME&gt; name remote &lt;SERVER_PUBLIC_IP&gt; &lt;SERVER_PUBLIC_PORT&gt; tcp &lt;ca&gt; ... Certificate Authority certificate data &lt;/ca&gt; &lt;cert&gt; ... Client certificate data &lt;/cert&gt; &lt;key&gt; ... Client Private Key data &lt;/key&gt;</code> </pre><br><p>  Não cito as configurações de pacotes e protocolos de roteamento, seja por causa da variedade de pacotes ou por causa da variedade de configurações em si (na verdade, como fonte de exemplos de configuração, você pode usar o segundo dos artigos, links para os quais são fornecidos no início do artigo).  Eu só quero observar que a configuração acima permite que você use BGP em particular (que eu pessoalmente gosto tanto por sua “controlabilidade” quanto pela capacidade de transmitir rotas de vários protocolos dentro da mesma sessão).  No caso do BGP, o endereço &lt;TUNNEL_CLIENT_SIDE_IP&gt; deve ser usado como o endereço do vizinho no lado "servidor" e o endereço &lt;TUNNEL_SERVER_SIDE_IP&gt; ou os endereços "internos" das respectivas partes devem ser usados ​​no lado do cliente, mas você precisa adicionar as rotas correspondentes à configuração servidor e / ou cliente. </p><br><br><h4>  Prós e contras da solução acima </h4><br><p>  <b>Contras:</b> <br><br></p><ol><li>  Deve haver exatamente um cliente por servidor, portanto, para vários clientes, você precisará manter vários processos OpenVPN ativos.  Como resultado - alguma memória está cheia e tudo mais. </li><li>  Você não pode usar o modo de chave pré-compartilhada no OpenVPN, pois nesse modo é proibida a transferência dinâmica de parâmetros do servidor para o cliente (push / pull).  Por isso, é necessária uma configuração mais complexa, incluindo a geração de um conjunto de chaves e certificados, bem como um script para gerar um pedaço de configuração do cliente no servidor (que, no entanto, pode ser substituído por um diretório de arquivos estáticos, substituindo a opção <code>client-connect /path/to/script</code> opção <code>client-connect /path/to/script</code> <code>client-connect-dir /path/to/config/dir</code> , o que aumenta o nível de segurança do lado do servidor. </li></ol><br><p>  <b>Prós:</b> <br><br></p><ol><li>  Diferentemente de protocolos como o GRE / IPIP, os túneis OpenVPN podem ter uma MTU de 1500 bytes (porque o processo OpenVPN oculta toda a fragmentação / desfragmentação "oculta", enviando pacotes completos para a interface do túnel).  Isso facilita a configuração de todos os tipos de túneis secundários no túnel OpenVPN. </li><li>  O túnel OpenVPN suporta simultaneamente a transmissão de IPv4 e IPv6, o que reduz o número de túneis entre pares de nós, o custo de sua configuração e administração, além de transmitir rotas IPv6 na mesma sessão BGP que as rotas IPv4. </li><li>  Todas as vantagens do protocolo OpenVPN, como a facilidade de configuração de equipamentos de rede intermediários (ou a completa falta de necessidade), a capacidade de mascarar o tráfego sob HTTPS, a presença de uma implementação para a maioria das plataformas, etc. </li></ol><br><p>  Espero que alguém ache o guia acima útil. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt483740/">https://habr.com/ru/post/pt483740/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt483726/index.html">JavaScript e HTML de baunilha. Sem estruturas. Sem bibliotecas. Não tem problema</a></li>
+<li><a href="../pt483730/index.html">Programadores Union 2: Chinelos pararam de rir e ficaram pensativos</a></li>
+<li><a href="../pt483732/index.html">Leia o firmware seguro do flash STM32F1xx usando o ChipWhisperer</a></li>
+<li><a href="../pt483734/index.html">Que preço pagamos pelo uso de assíncrono / aguardar em JS / C # / Rust</a></li>
+<li><a href="../pt483736/index.html">Pesquisa reversa de imagens: Um guia da Agência de detetives Bellingcat</a></li>
+<li><a href="../pt483742/index.html">Procure bugs como um modo de vida</a></li>
+<li><a href="../pt483744/index.html">Venda de Ano Novo</a></li>
+<li><a href="../pt483746/index.html">Estação de entrada: passagem para a linha lunar, acesso à estação marciana</a></li>
+<li><a href="../pt483748/index.html">O descuido dos usuários do PayPal, permitindo que eles roubem sua conta e dinheiro [Fixo]</a></li>
+<li><a href="../pt483750/index.html">Tradução do livro de Andrew Un, Passion for Machine Learning, Capítulos 30 - 32</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

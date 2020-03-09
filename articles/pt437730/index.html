@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔂 🐝 🛩️ Como resolvemos o problema de memória no PostgreSQL sem adicionar um byte 🚎 📷 🏆</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Uma breve história sobre a solicitação "pesada" e a solução elegante para o problema 
+
+
+ Recentemente, à noite, os alertas começaram a nos acordar: nã...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Como resolvemos o problema de memória no PostgreSQL sem adicionar um byte</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/437730/"><p><img src="https://habrastorage.org/webt/bd/vf/bj/bdvfbjzxvmt2ijnwu5zjqnz3e1e.jpeg"></p><br><p>  Uma breve história sobre a solicitação "pesada" e a solução elegante para o problema </p><br><p>  Recentemente, à noite, os alertas começaram a nos acordar: não havia espaço em disco suficiente.  Logo descobrimos que o problema está nas tarefas de ETL. </p><br><p>  A tarefa ETL foi executada em uma tabela na qual os registros e despejos binários são armazenados.  Todas as noites, essa tarefa era remover despejos duplicados e liberar espaço. </p><a name="habracut"></a><br><p>  Para procurar dumps duplicados, usamos esta consulta: </p><br><pre><code class="plaintext hljs">id, MIN(id) OVER (PARTITION BY blob ORDER BY id) FROM dumps</code> </pre> <br><p>  A consulta combina os mesmos despejos pelo campo BLOB.  Usando a função window, obtemos o identificador da primeira aparência de cada despejo.  Então, com essa solicitação, excluímos todos os dumps duplicados. </p><br><p>  A solicitação foi executada por algum tempo e, como pode ser visto nos logs, consumiu muita memória.  O gráfico mostra como ele obteve espaço livre em disco todas as noites: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/v2/sn/ye/v2snyevasqsmvjjzpc7lbjs4mpe.png"></a> </p><br><p>  Com o tempo, a solicitação exigiu mais memória, as falhas se aprofundaram.  E, olhando o plano de execução, vimos imediatamente onde tudo vai: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Sort (cost=69547.50..70790.83 rows=497332 width=36) (actual time=107.607..127.485 rows=39160) Sort Key: blob, id Sort Method: external merge Disk: 30456kB Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Seq Scan on dumps (cost=0..8889.32 rows=497332 width=36) (actual time=0.022..8.747 rows=39160) Buffers: shared hit=3916 Execution time: 159.960 ms</code> </pre> <br><p>  <strong>A classificação ocupa muita memória.</strong>  Em termos de execução, a classificação requer aproximadamente 30 MB de memória de um conjunto de dados de teste. </p><br><h3 id="pochemu-tak">  Porque </h3><br><p>  O PostgreSQL aloca memória para hash e classificação.  A quantidade de memória é controlada pelo parâmetro <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><code>work_mem</code></a> .  O tamanho padrão de work_mem é 4 MB.  Se forem necessários mais de 4 MB para hash ou classificação, o PostgreSQL consome temporariamente espaço em disco. </p><br><p>  Nossa consulta consome claramente mais de 4 MB, portanto, o banco de dados usa muita memória.  Decidimos: não nos apressaremos e não aumentamos o parâmetro e expandimos o armazenamento.  É melhor procurar outra maneira de <strong>aparar a memória para classificação</strong> . </p><br><h3 id="ekonomnaya-sortirovka">  Classificação econômica </h3><br><p>  "A quantidade de classificação consumida depende do tamanho do conjunto de dados e da chave de classificação. Você não pode reduzir o conjunto de dados, mas o <strong>tamanho</strong> da <strong>chave é possível</strong> . </p><br><p>  Para o ponto de referência, usamos o tamanho médio da chave de classificação: </p><br><pre> <code class="plaintext hljs"> avg ---------- 780</code> </pre> <br><p>  Cada chave pesa 780. Para reduzir a chave binária, ela pode ser hash.  No PostgreSQL, há <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">md5</a> para isso (sim, não segurança, mas, para o nosso propósito, ele fará).  Vamos ver quanto pesa o BLOB com o MD5: </p><br><pre> <code class="plaintext hljs"> avg ----------- 36</code> </pre> <br><p>  O tamanho da chave com hash no md5 é de 36 bytes.  <strong>Uma chave com hash pesa apenas 4% da opção original</strong> . </p><br><p>  Em seguida, lançamos a solicitação original com uma chave de hash: </p><br><pre> <code class="plaintext hljs"> id, MIN(id) OVER ( PARTITION BY md5(array_to_string(blob, '') ) ORDER BY id) FROM dumps;</code> </pre> <br><p>  E o plano de implementação: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916 -&gt; Sort (cost=7490.74..7588.64 rows=39160 width=36) (actual time=349.383..353.045 rows=39160) Sort Key: (md5(array_to_string(blob, ''::text))), id Sort Method: quicksort Memory: 4005kB Buffers: shared hit=3916 -&gt; Seq Scan on dumps (cost=0..4503.40 rows=39160 width=36) (actual time=0.055..292.070 rows=39160) Buffers: shared hit=3916 Execution time: 374.125 ms</code> </pre> <br><p>  Com uma chave com hash, a solicitação consome apenas 4 megabytes extras, ou seja, pouco mais de 10% dos 30 MB anteriores.  <strong>Portanto, o tamanho da chave de classificação afeta bastante a quantidade de memória que a classificação consome</strong> . </p><br><h3 id="dalshe--bolshe">  Ainda mais </h3><br><p>  Neste exemplo, fizemos o hash do BLOB usando o <code>md5</code> .  Hashes criados com o MD5 devem pesar 16 bytes.  E nós temos mais: </p><br><pre> <code class="plaintext hljs">md5_size ------------- 32</code> </pre> <br><p>  Nosso hash tinha exatamente o dobro do tamanho, porque o <code>md5</code> produz um hash na forma de texto hexadecimal. </p><br><p>  No PostgreSQL, você pode usar o MD5 para fazer hash com a extensão <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><code>pgcrypto</code></a> .  <code>pgcrypto</code> cria MD5 do tipo <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><code>bytea</code> (em binário)</a> : </p><br><pre> <code class="plaintext hljs">select pg_column_size( digest('foo', 'md5') ) as crypto_md5_size crypto_md5_size --------------- 20</code> </pre> <br><p>  O hash ainda é 4 bytes a mais do que deveria.  Só que o tipo <code>bytea</code> usa esses 4 bytes para armazenar o comprimento do valor, mas não o deixaremos assim. </p><br><p>  Acontece que o tipo de <code>uuid</code> no PostgreSQL pesa exatamente 16 bytes e suporta qualquer valor arbitrário, então nos livramos dos quatro bytes restantes: </p><br><pre> <code class="plaintext hljs">uuid_size --------------- 16</code> </pre> <br><p>  Isso é tudo.  32 bytes com <code>md5</code> transformam em 16 com <code>uuid</code> . </p><br><p>  Eu verifiquei os efeitos da mudança usando um conjunto de dados maior.  Os dados em si não podem ser mostrados, mas compartilharei os resultados: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/rt/g4/v6/rtg4v65zaqxezkmjkh9cspgh2bo.jpeg"></a> </p><br><p>  Como você pode ver na tabela, a solicitação problemática original pesava 300 MB (e nos acordou no meio da noite).  Com a chave <code>uuid</code> , a classificação levou apenas 7 MB. </p><br><h3 id="soobrazheniya-vdogonku">  Considerações de acompanhamento </h3><br><p>  Uma solicitação com uma chave de classificação de memória com hash consome menos, mas funciona muito mais devagar: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/b0/cv/vp/b0cvvpozbm_myvxy0-esybfu7gi.jpeg"></a> </p><br><p>  O hash usa mais CPU; portanto, uma solicitação com um hash é mais lenta.  Mas tentamos resolver o problema com espaço em disco; além disso, a tarefa é realizada à noite, para que o tempo não seja um problema.  Comprometemo-nos a economizar memória. </p><br><p>  Este é um ótimo exemplo do fato de que você <strong>nem sempre precisa tentar acelerar as consultas ao banco de dados</strong> .  É melhor usar o que é equilibrado e extrair o máximo de um mínimo de recursos. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt437730/">https://habr.com/ru/post/pt437730/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt437716/index.html">Três maneiras relativamente honestas de criar um projeto Flutter</a></li>
+<li><a href="../pt437720/index.html">A luta por soluções de qualidade na Erlang / Elixir</a></li>
+<li><a href="../pt437722/index.html">Consequências cósmicas da destruição americana</a></li>
+<li><a href="../pt437724/index.html">OpenSceneGraph: Animação processual de atributos de geometria e estado</a></li>
+<li><a href="../pt437726/index.html">Serializando o Kotlin com o Kotlinx.Serialization</a></li>
+<li><a href="../pt437732/index.html">Visão geral da impressora MakeX M-One Pro 70 DLP</a></li>
+<li><a href="../pt437734/index.html">Configurando IPTV da Rostelecom nos roteadores MikroTik</a></li>
+<li><a href="../pt437736/index.html">Como automatizamos o lançamento dos testes de selênio através do Moon e do OpenShift</a></li>
+<li><a href="../pt437738/index.html">Notas de um fitoquímico. A batata. Parte Dois Uma história sobre a gordura da batata ou "Dia do comedor de alimentos crus"</a></li>
+<li><a href="../pt437740/index.html">Haxe: O Grande Segredo do Desenvolvimento Entre Plataformas</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

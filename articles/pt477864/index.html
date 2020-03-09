@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏥 🤳🏿 👶🏾 TabPy para trabalhar com dados no ClickHouse do Tableau 🧦 🍒 👈</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Construir comunicações entre marcas e pessoas é o que fazemos na Dentsu Aegis Network todos os dias, e a análise de dados é parte integrante deste tra...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>TabPy para trabalhar com dados no ClickHouse do Tableau</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/dentsuaegisnetworkrussia/blog/477864/">  Construir comunicações entre marcas e pessoas é o que fazemos na Dentsu Aegis Network todos os dias, e a análise de dados é parte integrante deste trabalho.  Em alguns casos, esse processo não requer ciência de dados (embora tenhamos uma), então usamos a plataforma <a href="https://en.wikipedia.org/wiki/Tableau_Software">Tableau</a> BI.  Seu principal objetivo é oferecer a nossos funcionários e clientes uma interface conveniente para o consumo de dados sem escrever scripts, consultas SQL, etc. <br><br>  Neste artigo, descreveremos como conseguimos resolver o problema da interação do Tableau com o <a href="https://ru.wikipedia.org/wiki/ClickHouse">ClickHouse</a> . <br><a name="habracut"></a><br><h3>  Declaração geral do problema </h3><br>  Enfrentamos um desafio clássico.  Nós temos pessoas.  Eles amam frutas.  Algumas pessoas gostam de uma fruta, outras gostam de todas as frutas, e o resto pode amar qualquer combinação de frutas. <br><img src="https://habrastorage.org/webt/lb/wp/om/lbwpomzrluk4hed_uihmxiko_xy.png" alt="imagem"><br>  Portanto, é necessário permitir que o usuário no painel construído no Tableau selecione arbitrariamente várias frutas e veja quantas pessoas amam pelo menos uma fruta do conjunto.  É claro que não tínhamos frutas, mas as pessoas eram reais, apenas nas "frutas" é mais fácil entender o problema. <br><br>  A quantidade de dados no nosso caso é bastante grande.  Havia 13 mil “frutas” diferentes.  A "fruta" mais popular tinha quase 34 milhões de fãs.  Em média, 450 mil pessoas amam cada "fruta".  Total de amantes de frutas - 282 milhões. <br><br><h3>  Primeira solução na testa </h3><br>  Aconteceu que os dados para esta tarefa tínhamos no <a href="https://ru.wikipedia.org/wiki/PostgreSQL">PostgreSQL</a> (PG) e no ClickHouse (CH).  No PG havia uma tabela de referência sobre “frutas”, na CH - uma tabela grande com uma estrutura: o identificador da “fruta” e o identificador da pessoa que ama essa “fruta”.  Não há conector nativo para CH no Tableau, e eu ainda não queria transferir os dados para algum lugar, porque isso exigiria uma reformulação séria do sistema existente. <br><br>  Tentamos conectar o Tableau ao CH usando o driver ODBC e ver o que acontece. <br><br><ul><li>  Nem todos os drivers ODBC são igualmente úteis.  Precisamos de uma certa versão na qual a parte necessária da funcionalidade funcione, mas não há garantia de que o restante funcione se você precisar dela de repente. </li><li>  Não foi possível extrair todos os dados no extrato do Tableau, pois são 13.000 * 450.000 = 5.850.000.000 registros. </li></ul><br>  Em seguida, decidimos usar a amostragem dentro da consulta no banco de dados CH, ou seja, para estimar o número de amantes da combinação selecionada de “frutas” não em todas as pessoas, mas em uma amostra de cinco por cento para diminuir o extrato.  Além disso, imediatamente fizemos uma busca de junção interna do CH com um diretório PG "fruit" para obter os nomes "fruit".  Ajudou - nosso extrato foi capaz de ser gerado em 5 horas. <br><br>  Precisávamos atualizar os dados no painel uma vez por dia, portanto, 5 horas de atualização da extração parecem boas - atualizaremos à noite.  Mas, no futuro, precisaríamos de capacidades adicionais: deveria haver mais “frutos”; portanto, o número e o tamanho de grupos de pessoas cuja interseção que precisávamos calcular também deveria aumentar.  Portanto, uma longa atualização do extrato não é de todo nossa opção. <br><br>  Além disso, houve outro problema devido à amostragem.  Aconteceu que em diferentes partes do painel os números, que supostamente deveriam coincidir, eram diferentes em nosso país.  Isso ocorreu devido ao fato de que em um lugar contamos o número de amantes de uma fruta com precisão, e em parte com uma combinação de frutas - imprecisa.  Nem nós nem nossos usuários gostamos desse resultado. <br><br>  Então decidimos não criar o extrato.  Para evitar o carregamento de uma quantidade enorme de dados, dividimos os conjuntos de dados e usamos a conexão ao vivo para CH.  Entre conjuntos de dados, uma conexão foi estabelecida usando a funcionalidade de relacionamento interna do Tableau Edit.  A fonte de dados PG foi tornada primária e vinculada ao CH como secundária, usando o identificador "fruit" que estava nas duas tabelas. <br><br>  Assim, conseguimos filtrar a fonte de dados secundária usando a primária (mistura de dados).  Mas não tivemos êxito porque, depois de lançar o filtro de uma fonte de dados para outra, tivemos que usar a função de contar pessoas no subconjunto resultante (COUNTD), e a mistura de dados possui uma limitação que simplesmente não permite que isso seja feito.  Essa função diretamente com essa conexão de dados não funciona em princípio. <br><br>  Existe uma solução alternativa que ajuda a contornar essa limitação do Tableau, mas pode ser usada em conjuntos de dados relativamente pequenos, o que claramente não é o caso no nosso caso. <br><br>  Depois disso, tentamos outra opção.  Os conjuntos de dados ainda estavam divididos e usavam conexão ao vivo para CH.  Aqui, um filtro de um conjunto de dados com uma descrição de "frutas" para um conjunto de dados com fãs de "frutas" foi lançado no Tableau usando a ação definida.  Mas essa opção não se encaixou devido à interface do usuário inconveniente.  Em vez do filtro familiar ao usuário, o usuário teria que olhar para a lista inteira e selecionar “frutas” via cntrl + click, enquanto a função aplicar estava ausente quando todos os valores selecionados são aplicados de uma só vez. <br><br>  Como resultado, depois de todas as nossas tentativas, tivemos que voltar à opção com extração e amostragem, terrivelmente lenta e fornecendo apenas uma resposta aproximada. <br><br><img src="https://habrastorage.org/webt/uh/5a/ie/uh5aiemfrjzz8f1wmeu54eg-flm.png" alt="imagem"><br><br><h3>  Solução encontrada </h3><br>  Obviamente, não precisamos extrair todos os dados para a extração do Tableau.  O usuário fica desconfortável ao ver todos os dados de uma só vez - o número de pessoas que amam todos os "frutos".  Ele precisa de um conjunto de uma média de 10 "frutas".  É uma pena que o Tableau não saiba como fazer isso. <br><br>  Existem caras em nossa equipe que escrevem em Python.  Portanto, em nossa pesquisa, decidimos avançar nessa direção e encontramos o <a href="https://github.com/tableau/TabPy">TabPy</a> . <br><br>  O TabPy é um serviço da Web que permite obter o resultado da execução de scripts Python dentro dos custos no Tableau. <br><br>  Como funciona: <br><br><ol><li>  O Tableau interage com o TabPy e, por sua vez, com o Python, usando as chamadas Funções de Script.  As funções de script contêm o próprio script Python, o tipo de dados necessário do resultado e os argumentos que passamos para essa função.  No nosso caso, os argumentos foram identificadores de “frutos”, cujo número de amantes queríamos contar. </li><li>  O TabPy converte o texto das Funções de script recebidas em um script e o passa para o intérprete.  A conexão com a base CH foi registrada por nós dentro do script. </li><li>  Em seguida, o TabPy retorna o resultado do script executado de volta ao Tableau. </li></ol><br><br><img src="https://habrastorage.org/webt/a9/me/qi/a9meqia3hjlrx1niaje_fb5lfww.png" alt="imagem"><br><br>  Nas funções de script, os argumentos são sempre passados ​​como matrizes, o resultado também é retornado por uma matriz. <br><br>  Nem tudo funcionou imediatamente.  O principal que entendemos: escrever um script Python diretamente em um campo calculado no Tableau não é uma boa ideia.  Por duas razões: <br><br><ol><li>  Nas funções de script internas, às vezes é difícil usar a sintaxe familiar do Python.  Por exemplo, várias cotações não são aceitas. </li><li>  Pensando no suporte futuro para o painel, percebemos que, se precisarmos alterar o script de alguma forma, sempre que precisarmos alterá-lo no próprio livro do Tableau.  E essa claramente não é a melhor maneira, porque estamos fazendo o possível para evitar o suporte manual para painéis. </li></ol><br>  Portanto, usamos outra coisa - o <a href="">TabPy Client</a> . <br><br>  O TabPy Client é uma biblioteca que permite publicar scripts Python no servidor TabPy e depois chamá-los no Tableau.  Ao usá-lo, em vez de escrever um script no Tableau, chamamos o arquivo .py localizado no servidor TabPy usando os parâmetros especificados nele, passamos argumentos para ele e o executamos. <br><br>  Essa abordagem resolveu nossos problemas usando o TabPy e o Tableau.  O script é escrito e testado no ambiente de desenvolvimento familiar e armazenado separadamente do livro, que agora não requer suporte manual. <br><br>  Para resolver nosso problema específico, tivemos que fazer o seguinte. <br>  Inicialmente, tentamos resolvê-lo sem usar o TabPy Client.  Nesse caso, um campo Cálculo do seguinte formulário foi criado no Tableau: <br><div class="scrollable-table"><table><tbody><tr><td>  SE PRIMEIRO () == 0 <br>  ENTÃO <br>  SCRIPT_INT (" <br>  do cliente de importação clickhouse_driver <br>  cliente = cliente (host = nome do host, banco de dados = nome do banco de dados, usuário = nome do usuário, senha = senha) <br><br>  ----- script_text ----- <br><br>  ", SUM ([pessoas]), ATTR ([fruits_id])) <br>  Fim </td></tr></tbody></table></div>  Funcionou, mas houve problemas que foram descritos acima.  Quando descobrimos o TabPy Client, percebemos que, dividindo o campo Cálculo e o próprio script, obtemos um sistema mais conveniente e correto.  É assim que o campo Cálculo e o arquivo .py com o script se parecem: <br><div class="scrollable-table"><table><tbody><tr><td>  Campo de cálculo </td><td>  SCRIPT_INT (" <br>  retornar tabpy.query ('teste_de_contagem_de_ pessoas', _ arg1, _arg2) ['resposta'] <br>  ", SUM ([pessoas]), ATTR ([fruits_id])) </td></tr><tr><td>  Arquivo .Py </td><td>  do cliente de importação clickhouse_driver <br>  import tabpy_client <br>  connection = tabpy_client.Client ('http: // localhost: 9004 /') <br>  def unique_people_count (people, fruit_id): <br>  cliente = cliente (host = nome do host, banco de dados = nome do banco de dados, usuário = nome do usuário, senha = senha) <br><br>  ----- script_text ----- <br><br>  connection.deploy ('people_count_test', unique_people_count, 'comment', override = True) </td></tr></tbody></table></div>  Aqui você pode ver que 'people_count_test' é o identificador do TabPy Client, graças ao qual fica claro qual script executar neste campo Cálculo. <br><br>  E, no final, foi essa abordagem que nos satisfez completamente. <br><br><img src="https://habrastorage.org/webt/ef/_k/g3/ef_kg3lc57jwo3zktnbxivckhro.png" alt="imagem"><br><br><h3>  Sumário </h3><br>  Os usuários estão satisfeitos porque podem escolher arbitrariamente uma combinação de "frutas" e obter rapidamente o número de fãs de pelo menos um deles, e os números em diferentes partes do painel são os mesmos. <br><br>  Os desenvolvedores de BI têm o prazer de poder trabalhar com o ClickHouse do Tableau, sem precisar se conectar diretamente a ele. <br><br>  Nosso Tableau Server tem o prazer de não precisar fazer uma extração enorme à noite. <br><br>  Em geral, o TabPy oferece aos desenvolvedores de BI mais liberdade para trabalhar com dados quando o Tableau não possui uma solução adequada pronta para uso.  Por exemplo, para incorporar modelos de ciência de dados diretamente no Tableau, mas isso é outra história ... <br><br>  O artigo foi escrito em conjunto com meus colegas Dimitri Shcherbenko ( <a href="https://habr.com/ru/users/dima_vs/" class="user_link">dima_vs</a> ) e Sukhoveev Ivan ( <a href="https://habr.com/ru/users/suho_v/" class="user_link">suho_v</a> ) P&amp;D Dentsu Aegis Network Russia. <br></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt477864/">https://habr.com/ru/post/pt477864/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt477854/index.html">O que acontece ao conectar dentro e fora de um túnel VPN</a></li>
+<li><a href="../pt477856/index.html">Aceleradores de flash PCI-E de 800 GB a 6,4 TB: do amanhecer à vida em um PC / servidor comum</a></li>
+<li><a href="../pt477858/index.html">Trabalho fora da mesa: que projetos realmente surgiram após a pré-aceleração?</a></li>
+<li><a href="../pt477860/index.html">Como os serviços de banco de dados gerenciados são organizados no Yandex.</a></li>
+<li><a href="../pt477862/index.html">E assim foi possível? Ciência e TI em uma conferência</a></li>
+<li><a href="../pt477866/index.html">Seminário: Soluções de TI híbridas para negócios. 5 de dezembro, São Petersburgo</a></li>
+<li><a href="../pt477872/index.html">c.tech: Data Sense nº 4, lançamento de ano novo</a></li>
+<li><a href="../pt477874/index.html">CDN dinâmico para streaming WebRTC com baixa latência e transcodificação</a></li>
+<li><a href="../pt477876/index.html">CDN dinâmico para fluxo WebRTC de baixa latência com transcodificação</a></li>
+<li><a href="../pt477878/index.html">Como os jogos competitivos ajudam você a trabalhar melhor</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

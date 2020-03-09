@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙎🏾 🕒 👲🏽 Coletando métricas de aplicativos .NET usando Telegraf 🙌🏾 🦑 ⛹🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Uma das tarefas mais importantes no design de sistemas é a organização do monitoramento do status de todos os nós, incluindo um grande número de servi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Coletando métricas de aplicativos .NET usando Telegraf</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/458310/"><p>  Uma das tarefas mais importantes no design de sistemas é a organização do monitoramento do status de todos os nós, incluindo um grande número de serviços.  Em condições em que forças e fundos adicionais não são alocados para isso, é necessário usar soluções prontas ao máximo. </p><br><p>  Eu acho que para muitas pessoas a imagem no projeto é algo como isto: </p><br><p><img src="https://im0-tub-ru.yandex.net/i?id=4d2bad3c3f78d3b51b20e110d1e8bc5e&amp;n=13" alt="imagem"></p><br><p>  Algo está sendo enviado para algum lugar, de alguma forma processado e mantido em uma unha.  A tarefa era coletar estatísticas de processamento de dados de todos os pontos e colocá-las em um só lugar, depois construir gráficos e escrever relatórios. </p><a name="habracut"></a><br><p>  Graças ao <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">artigo, a</a> escolha recaiu sobre um monte de Telegraf-Elasticsearch-Grafana.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">O Telegraf se</a> encaixou perfeitamente no projeto de organização do monitoramento do estado dos softwares de ferro e de terceiros disponíveis publicamente, mas discutirei separadamente a questão de medir a carga em meus próprios serviços.  Nesse caso, estamos falando de serviços .NET em execução em contêineres de docker no Linux.  Todos os serviços formam vários estágios de processamento de informações recebidas, e eu precisava medir o número de pacotes processados ​​e rejeitados com sucesso com rótulos adicionais para o estágio de processamento, origem, etc., para a possibilidade de processamento estatístico subsequente. </p><br><p>  Omitirei o processo de instalação e prosseguirei imediatamente para a configuração.  Assim, o Telegraf pode receber mensagens com métricas nos canais tcp, udp e também através do unixsocket: </p><br><pre><code class="plaintext hljs">[[inputs.socket_listener]] #service_address = "unixgram:///tmp/telegraf.sock" service_address = "udp4://:14230" data_format = "json" json_name_key = "name" namepass = ["query_pass"] tag_keys = ["appname","fromip"]</code> </pre> <br><p>  Os serviços enviarão mensagens sempre que o próximo pacote for processado, portanto, configuraremos adicionalmente a agregação.  Um intervalo de 10 segundos é suficiente, dependendo da carga de um sistema específico. </p><br><pre> <code class="plaintext hljs">[[aggregators.basicstats]] period = "10s" drop_original = true stats = ["sum"] namepass = ["query_pass"] fieldpass = ["pass","fail"]</code> </pre> <br><p>  Vamos <em>analisar</em> os parâmetros: <em>query_pass</em> - o nome da métrica que combina medições futuras, <em>aprovação</em> - processamento bem-sucedido, <em>falha</em> - não.  Além disso, as métricas serão marcadas com as tags <em>appname</em> e <em>fromip</em> . </p><br><p>  Agora um pequeno código.  Gosto de enviar métricas via udp e unixsocket, embora outras opções possam funcionar para você. </p><br><pre> <code class="cs hljs">UdpClient udpClient = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> UdpClient(<span class="hljs-string"><span class="hljs-string">"127.0.0.1"</span></span>, <span class="hljs-number"><span class="hljs-number">14230</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">byte</span></span>[] datagramBytes= Encoding.UTF8.GetBytes(<span class="hljs-string"><span class="hljs-string">"{\"name\":\"query_pass\",\"pass\":1,\"fromip\":\"127.0.0.1\",\"appname\":\"application\"}"</span></span>); udpClient.Send(datagramBytes, datagramBytes.Length); datagramBytes= Encoding.UTF8.GetBytes(<span class="hljs-string"><span class="hljs-string">"{\"name\":\"query_pass\",\"fail\":1,\"fromip\":\"127.0.0.1\",\"appname\":\"application\"}"</span></span>); udpClient.Send(datagramBytes, datagramBytes.Length);</code> </pre> <br><p>  Tudo isso é perfeitamente resumido e adicionado ao banco de dados; no meu caso, é elasticsearch ( <a href="">captura de tela</a> ). </p><br><pre> <code class="plaintext hljs">[[outputs.elasticsearch]] urls = [ "http://localhost:9200" ] # required. timeout = "5s" health_check_interval = "5s" index_name = "telegraf-%Y.%m.%d" # required. manage_template = true template_name = "tp_telegraf" overwrite_template = true</code> </pre> <br><p>  Todos os gatos </p><br><p>  PS: aqui está o <a href="">projeto final</a> para o envio de métricas sob net.core </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt458310/">https://habr.com/ru/post/pt458310/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt458300/index.html">Evolução da ferramenta mais popular de todos os desenvolvedores (no Visual Studio)</a></li>
+<li><a href="../pt458302/index.html">Frontend Weekly Digest (24 a 30 de junho de 2019)</a></li>
+<li><a href="../pt458304/index.html">Pesadelo do "cavaleiro": uma história instrutiva sobre DevOps</a></li>
+<li><a href="../pt458306/index.html">O resumo de materiais frescos do mundo do front-end da última semana n ° 371 (24 a 30 de junho de 2019)</a></li>
+<li><a href="../pt458308/index.html">Visão geral: Qual será o futuro da Tesla e quais fatores o afetarão</a></li>
+<li><a href="../pt458312/index.html">Academia Android em Moscou: curso avançado</a></li>
+<li><a href="../pt458316/index.html">Yandex Retro Games Battle 2019 - desenvolvimento de jogos para o ZX Spectrum</a></li>
+<li><a href="../pt458324/index.html">Tudo o que você precisa para começar a usar o Vue.js</a></li>
+<li><a href="../pt458326/index.html">Yandex abre conjuntos de dados Toloka para pesquisadores</a></li>
+<li><a href="../pt458328/index.html">Como duplicar metas do Yandex.Metrica no Google Analytics</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

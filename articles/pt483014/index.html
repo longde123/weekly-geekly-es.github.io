@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>↕️ ❇️ 👨🏿‍🤝‍👨🏽 Filas de mensagens do PostgreSQL usando PgQ 🔡 🎵 ♻️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="As filas de mensagens são usadas para executar: operações pendentes, interação entre serviços, "processamento em lote", etc. Existem soluções especial...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Filas de mensagens do PostgreSQL usando PgQ</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/483014/"><img src="https://habrastorage.org/webt/g4/5g/b1/g45gb1ef-etyywuggdsyiyr-lyk.jpeg"><br><br>  As filas de mensagens são usadas para executar: operações pendentes, interação entre serviços, "processamento em lote", etc.  Existem soluções especializadas para organizar essas filas, como: RabbitMQ, ActiveMQ, ZeroMQ, etc., mas muitas vezes acontece que elas não são de grande necessidade, e sua instalação e suporte causarão mais dor e sofrimento do que benefícios.  Suponha que você tenha um serviço ao se registrar, no qual um email é enviado ao usuário para confirmação e, se você usa o Postgres, está com sorte - no Postgres, quase pronto, existe uma extensão PgQ que fará todo o trabalho sujo para você. <br><br>  Neste artigo, falarei sobre enfileiramento de mensagens (tarefas) no PostgreSQL usando a extensão PgQ.  Este artigo será útil se você não tiver usado o PgQ ou estiver usando filas auto-escritas no Postgres. <br><br>  Por que você precisa do PgQ, se você pode apenas criar um tablet e escrever tarefas lá?  Parece possível, mas você precisará levar em consideração o acesso paralelo às tarefas, possíveis erros (o que acontecerá se o processo que processa a tarefa cair?), Além do desempenho (o PgQ é muito rápido e as soluções auto-escritas geralmente não são, especialmente se a transação estiver em andamento). o banco de dados não fecha durante toda a execução da tarefa), mas a razão mais importante pela qual, na minha opinião, é necessário usar o PgQ é que o PgQ já está escrito e funciona, e a solução auto-escrita ainda precisa ser escrita (UPD: sobre por que não vale a pena usar filas auto-escritas) , você pode ler, por exemplo, <a href="https://habr.com/ru/company/oleg-bunin/blog/455248/">aqui</a> ). <br>  (UPD: como o PgQ é executado no Postgres, todas as delícias das transações também podem ser usadas) <br><br>  Mas o PgQ tem um grande ponto negativo - a falta de documentação, tento compensar essa falha com este artigo. <br><a name="habracut"></a><br><h4>  Dispositivo </h4><br>  O PgQ consiste em partes (pelo menos 2): 1 - a extensão pgq para o postgres, 2 - o daemon pgqd (sobre como instalá-los um pouco mais tarde). <br><br>  Toda interação com a fila é realizada usando funções dentro do Postgres. <br><br>  Por exemplo, para criar uma fila, você deve executar <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.create_queue({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br>  Após a criação da fila, você pode adicionar mensagens a ela. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.insert_event({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, {  } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br>  Agora precisamos aprender a receber mensagens gravadas.  Para isso, existe uma entidade como "consumidor" (escreverei um consumidor), que recebe não mensagens (eventos), mas "lote" (lote).  Um bach é um grupo de mensagens consecutivas, os baches são criados usando o pgqd.  Periodicamente (o parâmetro “ticker_period” no arquivo de configuração), o pgqd pega todas as mensagens acumuladas e grava em um novo bach.  <b>É importante</b> que o pgqd não funcione e, em seguida, novos bachs não sejam criados, o que significa que os consumidores não têm nada para ler; também, se o pgqd não funcionar por um longo período de tempo e depois ligado, ele criará um grande bach a partir das mensagens acumuladas durante esse período; portanto, o pgqd não deve ser apenas desligue-o. <br><br>  Registro de um consumidor ( <b>Importante! Um</b> consumidor receberá eventos registrados somente <b>após</b> seu registro, portanto, você deve primeiro criar um consumidor e, em seguida, gravar eventos): <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.register_consumer({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br>  <i>(semelhante a pgq.unregister_consumer)</i> <br>  Cada consumidor receberá <b>absolutamente todos os eventos</b> que ocorreram após sua criação (mesmo processados ​​por outro consumidor), o que significa que provavelmente você precisará de apenas um consumidor por um turno.  Em seguida, mostrarei como dividir a carga em vários servidores. <br><br>  Para obter um bach, primeiro você precisa descobrir seu ID: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.next_batch({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br>  A função pode retornar NULL se o consumidor tiver processado todos os bachs.  Nesse caso, você só precisa esperar até o pgqd criar um novo bach. <br><br>  Nesse caso, enquanto o bach não for processado, essa função retornará o mesmo valor. <br>  Você pode obter todos os eventos do lote usando: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.get_batch_events({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>);</code> </pre> <br>  (O bach pode estar vazio.) <br><br>  Se ocorreu um erro ao processar um deles, você pode tentar processar este evento posteriormente: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.event_retry({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>, {<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>, {   } <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>);</code> </pre> <br>  Para informar sobre o final do bach e ter a oportunidade de iniciar um novo, ele é usado <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.finish_batch({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>);</code> </pre> <br>  Obviamente, essas não são todas as funções da extensão, recomendo a leitura de <a href="https://pgq.github.io/extension/pgq/files/external-sql.html" rel="nofollow">pgq.github.io/extension/pgq/files/external-sql.html</a> e <a href="https://github.com/pgq/pgq/tree/master/functions" rel="nofollow">github.com/pgq/pgq/pgq/tree/master/functions</a> (cada arquivo contém uma definição e descrição função correspondente). <br><br><h4>  Compartilhamento de carga </h4><br>  Para lidar com eventos simultaneamente por vários manipuladores, existe a extensão pgq_coop, que funciona como pgq e adiciona uma nova entidade chamada "sub consumidor", que receberá todos os eventos a partir do momento do registro do consumidor pai, é claro, exceto os que já foram processados. <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.register_subconsumer({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.next_batch({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.next_batch({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, {        ,      } <span class="hljs-built_in"><span class="hljs-built_in">interval</span></span>);</code> </pre> <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.finish_batch({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>);</code> </pre> <br>  Leia sobre todos os recursos <a href="https://github.com/pgq/pgq-coop/tree/master/functions" rel="nofollow">aqui</a> . <br><br><h4>  Instalação </h4><br>  A extensão pgq e o daemon pgqd estão incluídos nos repositórios PGDG e são instalados de maneira muito simples na maioria das distribuições, por exemplo, no Debian: <br><br>  <code>sudo apt install postgresql-XX-pgq3 pgqd</code> (XX é o número da versão). <br><br>  O pgqd é um pequeno programa que pode ser descoberto sobre o uso do <code>pgqd --help</code> , não se esqueça de adicioná-lo à execução automática ( <code>sudo systemctl enable pgqd.service</code> , e a configuração padrão é <code>/etc/pgqd.ini</code> ). <br><br>  Para começar a usar o PgQ, no banco de dados você só precisa conectar a extensão: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> extension <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-keyword"><span class="hljs-keyword">exists</span></span> pgq;</code> </pre> <br><br>  Com o pgq_coop, tudo é um pouco mais complicado, não está no repositório, mas não é difícil compilá-lo a partir dos fontes (exemplo para o Debian): <br><br><pre> <code class="plaintext hljs">sudo apt install postgresql-server-dev-XX git clone https://github.com/pgq/pgq-coop.git cd pgq-coop sudo make install</code> </pre><br>  e conecte a extensão usando <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> extension <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-keyword"><span class="hljs-keyword">exists</span></span> pgq_coop;</code> </pre> <br><h4>  Links úteis </h4><br>  <a href="https://pgq.github.io/extension/pgq/files/external-sql.html" rel="nofollow">Documentação pgq</a> <br>  <a href="https://github.com/pgq/pgq/tree/master/functions" rel="nofollow">Funções pgq</a> <br>  <a href="https://github.com/pgq/pgq-coop/tree/master/functions" rel="nofollow">Funções Pgq_coop</a> <br>  <a href="https://github.com/pgq/pgqd" rel="nofollow">Código fonte do Pgqd</a> <br>  <a href="https://github.com/pgq" rel="nofollow">conta do github com todos os projetos relacionados</a> <br>  <a href="https://wiki.postgresql.org/wiki/PGQ_Tutorial" rel="nofollow">Postgres da Wiki</a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt483014/">https://habr.com/ru/post/pt483014/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt482998/index.html">Notícias do mundo do OpenStreetMap nº 492 (17/12/2019 - 23/12/2019)</a></li>
+<li><a href="../pt483000/index.html">A posição oficial do Telegram sobre o blockchain TON</a></li>
+<li><a href="../pt483004/index.html">Efeito Kuleshov no Disco Elysium: como o contexto cria significado</a></li>
+<li><a href="../pt483008/index.html">Outro futuro - uma divisão da humanidade</a></li>
+<li><a href="../pt483012/index.html">Antiguidades: Roland MT-32, um som alternativo para jogos DOS</a></li>
+<li><a href="../pt483016/index.html">Uma Breve História dos Microprocessadores Espaciais, Parte Dois</a></li>
+<li><a href="../pt483018/index.html">Mask-R CNN do iniciante ao profissional</a></li>
+<li><a href="../pt483024/index.html">“O que as empresas fizeram com sua privacidade?”, Arthur Khachuyan (Tazeros Global)</a></li>
+<li><a href="../pt483026/index.html">Java / Spring: Como gerar completamente uma API RUD CRUD usando Speedment</a></li>
+<li><a href="../pt483030/index.html">API que faz você chorar</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

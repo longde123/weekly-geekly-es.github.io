@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏁 🤚🏾 🗺️ Autenticação no Kubernetes com GitHub OAuth e Dex 😷 👖 ☃️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Apresento a você o tutorial para gerar acesso ao cluster Kubernetes usando Dex, dex-k8s-authenticator e GitHub. 
+
+
+ Meme local do chat em língua russa...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Autenticação no Kubernetes com GitHub OAuth e Dex</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/436238/">  Apresento a você o tutorial para gerar acesso ao cluster Kubernetes usando Dex, dex-k8s-authenticator e GitHub. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/h8/uw/rg/h8uwrgvmlknxik99srgsgiokrbu.png" alt="imagem"></div><br>  <i>Meme local do chat em língua russa Kubernetes no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Telegram</a></i> <br><a name="habracut"></a><br><h3>  1. Introdução </h3><br>  Usamos o Kubernetes para criar ambientes dinâmicos para a equipe de desenvolvimento e o controle de qualidade.  Portanto, queremos dar a eles acesso ao cluster para os painéis e o kubectl.  Ao contrário do OpenShift, o Kubernetes de baunilha não possui autenticação nativa; portanto, usamos ferramentas de terceiros para isso. <br><br>  Nesta configuração, usamos: <br><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">dex-k8s-authenticator</a> - aplicativo da web para gerar a configuração do kubectl </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Dex</a> - Fornecedor do OpenID Connect </li><li>  GitHub - simplesmente porque usamos o GitHub em nossa empresa </li></ul><br>  Tentamos usar o Google OIDC, mas, infelizmente, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">não conseguimos</a> encontrá-los em grupos; portanto, a integração com o GitHub foi muito bem conosco.  Sem o mapeamento de grupo, você não pode criar políticas RBAC baseadas em grupo. <br><br>  Então, como nosso processo de autorização no Kubernetes funciona em uma representação visual: <br><br><img src="https://habrastorage.org/webt/4w/r4/tm/4wr4tmnconxmm4jctqba0cugq3u.png" alt="imagem"><br>  <i>Processo de autorização</i> <br><br>  Um pouco mais de detalhes e pontos: <br><br><ol><li> O usuário efetua login no dex-k8s-authenticator ( <code>login.k8s.example.com</code> ) </li><li>  O dex-k8s-authenticator redireciona a solicitação para o Dex ( <code>dex.k8s.example.com</code> ) </li><li>  Dex redireciona para a página de login do GitHub </li><li>  O GitHub gera as informações de autorização necessárias e as retorna ao Dex </li><li>  Dex passa as informações recebidas para dex-k8s-authenticator </li><li>  Usuário obtém token OIDC do GitHub </li><li>  dex-k8s-authenticator adiciona um token ao kubeconfig </li><li>  O kubectl passa o token para o KubeAPIServer </li><li>  O KubeAPIServer baseado no token transferido retorna acessos no kubectl </li><li>  O usuário obtém acesso do kubectl </li></ol><br><h3>  Atividades preparatórias </h3><br>  Obviamente, já temos um cluster <code>k8s.example.com</code> ( <code>k8s.example.com</code> ) instalado, além do HELM.  Também temos uma organização no GitHub (super-org). <br>  Se você não possui o HELM, é <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">muito fácil de</a> instalar. <br><br>  Primeiro, precisamos configurar o GitHub. <br><br>  Vá para a página de configurações da organização ( <code>https://github.com/organizations/super-org/settings/applications</code> ) e crie um novo aplicativo (aplicativo autorizado do OAuth): <br><img src="https://habrastorage.org/webt/9r/yo/5a/9ryo5atriau2yxzbetbzisdkawc.png" alt="imagem"><br>  <i>Criando um novo aplicativo no GitHub</i> <br><br>  Preencha os campos com os URLs necessários, por exemplo: <br><br><ul><li>  URL da página inicial: <code>https://dex.k8s.example.com</code> </li><li>  URL de retorno de chamada de autorização: <code>https://dex.k8s.example.com/callback</code> </li></ul><br>  <i>Cuidado com os links, pois é importante não perder barras.</i> <br><br>  Em resposta ao formulário preenchido, o GitHub irá gerar o <code>Client ID</code> do <code>Client ID</code> e o <code>Client secret</code> , salvando-os em um local seguro, eles serão úteis para nós (por exemplo, usamos o <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Vault</a> para armazenar segredos): <br><br><pre> <code class="plaintext hljs">Client ID: 1ab2c3d4e5f6g7h8 Client secret: 98z76y54x32w1</code> </pre> <br>  Prepare registros DNS para os subdomínios <code>login.k8s.example.com</code> e <code>dex.k8s.example.com</code> , bem como certificados SSL para entradas. <br><br>  Crie certificados SSL: <br><br><pre> <code class="plaintext hljs">cat &lt;&lt;EOF | kubectl create -f - apiVersion: certmanager.k8s.io/v1alpha1 kind: Certificate metadata: name: cert-auth-dex namespace: kube-system spec: secretName: cert-auth-dex dnsNames: - dex.k8s.example.com acme: config: - http01: ingressClass: nginx domains: - dex.k8s.example.com issuerRef: name: le-clusterissuer kind: ClusterIssuer --- apiVersion: certmanager.k8s.io/v1alpha1 kind: Certificate metadata: name: cert-auth-login namespace: kube-system spec: secretName: cert-auth-login dnsNames: - login.k8s.example.com acme: config: - http01: ingressClass: nginx domains: - login.k8s.example.com issuerRef: name: le-clusterissuer kind: ClusterIssuer EOF kubectl describe certificates cert-auth-dex -n kube-system kubectl describe certificates cert-auth-login -n kube-system</code> </pre> <br>  Um ClusterIssuer com o nome <code>le-clusterissuer</code> já deve existir, caso contrário, crie-o usando HELM: <br><br><pre> <code class="plaintext hljs">helm install --namespace kube-system -n cert-manager stable/cert-manager cat &lt;&lt; EOF | kubectl create -f - apiVersion: certmanager.k8s.io/v1alpha1 kind: ClusterIssuer metadata: name: le-clusterissuer namespace: kube-system spec: acme: server: https://acme-v02.api.letsencrypt.org/directory email: k8s-admin@example.com privateKeySecretRef: name: le-clusterissuer http01: {} EOF</code> </pre> <br><h3>  Configuração do KubeAPIServer </h3><br>  Para que o kubeAPIServer funcione, você deve configurar o OIDC e atualizar o cluster: <br><br><pre> <code class="plaintext hljs">kops edit cluster ... kubeAPIServer: anonymousAuth: false authorizationMode: RBAC oidcClientID: dex-k8s-authenticator oidcGroupsClaim: groups oidcIssuerURL: https://dex.k8s.example.com/ oidcUsernameClaim: email kops update cluster --yes kops rolling-update cluster --yes</code> </pre> <br>  Usamos o <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">kops</a> para implantar clusters, mas funciona da mesma forma para <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">outros gerenciadores de cluster</a> . <br><br><h3>  Configuração de dex e dex-k8s-authenticator </h3><br>  Para que Dex funcione, você deve ter um certificado e uma chave do mestre do Kubernetes, retirando-o de lá: <br><br><pre> <code class="plaintext hljs">sudo cat /srv/kubernetes/ca.{crt,key} -----BEGIN CERTIFICATE----- AAAAAAAAAAABBBBBBBBBBCCCCCC -----END CERTIFICATE----- -----BEGIN RSA PRIVATE KEY----- DDDDDDDDDDDEEEEEEEEEEFFFFFF -----END RSA PRIVATE KEY-----</code> </pre> <br>  Clone o repositório dex-k8s-authenticator: <br><br><pre> <code class="plaintext hljs">git clone git@github.com:mintel/dex-k8s-authenticator.git cd dex-k8s-authenticator/</code> </pre> <br>  Usando arquivos de valores, podemos definir variáveis ​​de forma flexível para nossos <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">gráficos HELM</a> . <br><br>  Vamos descrever a configuração do Dex: <br><br><pre> <code class="plaintext hljs">cat &lt;&lt; \EOF &gt; values-dex.yml global: deployEnv: prod tls: certificate: |- -----BEGIN CERTIFICATE----- AAAAAAAAAAABBBBBBBBBBCCCCCC -----END CERTIFICATE----- key: |- -----BEGIN RSA PRIVATE KEY----- DDDDDDDDDDDEEEEEEEEEEFFFFFF -----END RSA PRIVATE KEY----- ingress: enabled: true annotations: kubernetes.io/ingress.class: nginx kubernetes.io/tls-acme: "true" path: / hosts: - dex.k8s.example.com tls: - secretName: cert-auth-dex hosts: - dex.k8s.example.com serviceAccount: create: true name: dex-auth-sa config: | issuer: https://dex.k8s.example.com/ storage: # https://github.com/dexidp/dex/issues/798 type: sqlite3 config: file: /var/dex.db web: http: 0.0.0.0:5556 frontend: theme: "coreos" issuer: "Example Co" issuerUrl: "https://example.com" logoUrl: https://example.com/images/logo-250x25.png expiry: signingKeys: "6h" idTokens: "24h" logger: level: debug format: json oauth2: responseTypes: ["code", "token", "id_token"] skipApprovalScreen: true connectors: - type: github id: github name: GitHub config: clientID: $GITHUB_CLIENT_ID clientSecret: $GITHUB_CLIENT_SECRET redirectURI: https://dex.k8s.example.com/callback orgs: - name: super-org teams: - team-red staticClients: - id: dex-k8s-authenticator name: dex-k8s-authenticator secret: generatedLongRandomPhrase redirectURIs: - https://login.k8s.example.com/callback/ envSecrets: GITHUB_CLIENT_ID: "1ab2c3d4e5f6g7h8" GITHUB_CLIENT_SECRET: "98z76y54x32w1" EOF</code> </pre><br>  E para o dex-k8s-authenticator: <br><pre> <code class="plaintext hljs">cat &lt;&lt; EOF &gt; values-auth.yml global: deployEnv: prod dexK8sAuthenticator: clusters: - name: k8s.example.com short_description: "k8s cluster" description: "Kubernetes cluster" issuer: https://dex.k8s.example.com/ k8s_master_uri: https://api.k8s.example.com client_id: dex-k8s-authenticator client_secret: generatedLongRandomPhrase redirect_uri: https://login.k8s.example.com/callback/ k8s_ca_pem: | -----BEGIN CERTIFICATE----- AAAAAAAAAAABBBBBBBBBBCCCCCC -----END CERTIFICATE----- ingress: enabled: true annotations: kubernetes.io/ingress.class: nginx kubernetes.io/tls-acme: "true" path: / hosts: - login.k8s.example.com tls: - secretName: cert-auth-login hosts: - login.k8s.example.com EOF</code> </pre> <br>  Instale Dex e dex-k8s-authenticator: <br><br><pre> <code class="plaintext hljs">helm install -n dex --namespace kube-system --values values-dex.yml charts/dex helm install -n dex-auth --namespace kube-system --values values-auth.yml charts/dex-k8s-authenticator</code> </pre> <br>  Vamos verificar a capacidade de manutenção dos serviços (o Dex deve retornar o código 400 e o dex-k8s-authenticator - o código 200): <br><br><pre> <code class="plaintext hljs">curl -sI https://dex.k8s.example.com/callback | head -1 HTTP/2 400 curl -sI https://login.k8s.example.com/ | head -1 HTTP/2 200</code> </pre> <br><h3>  Configuração RBAC </h3><br>  Criamos o ClusterRole para o grupo, no nosso caso com acessos somente leitura: <br><br><pre> <code class="plaintext hljs">cat &lt;&lt; EOF | kubectl create -f - apiVersion: rbac.authorization.k8s.io/v1 kind: ClusterRole metadata: name: cluster-read-all rules: - apiGroups: - "" - apps - autoscaling - batch - extensions - policy - rbac.authorization.k8s.io - storage.k8s.io resources: - componentstatuses - configmaps - cronjobs - daemonsets - deployments - events - endpoints - horizontalpodautoscalers - ingress - ingresses - jobs - limitranges - namespaces - nodes - pods - pods/log - pods/exec - persistentvolumes - persistentvolumeclaims - resourcequotas - replicasets - replicationcontrollers - serviceaccounts - services - statefulsets - storageclasses - clusterroles - roles verbs: - get - watch - list - nonResourceURLs: ["*"] verbs: - get - watch - list - apiGroups: [""] resources: ["pods/exec"] verbs: ["create"] EOF</code> </pre> <br>  Crie uma configuração para ClusterRoleBinding: <br><br><pre> <code class="plaintext hljs">cat &lt;&lt;EOF | kubectl create -f - apiVersion: rbac.authorization.k8s.io/v1beta1 kind: ClusterRoleBinding metadata: name: dex-cluster-auth namespace: kube-system roleRef: apiGroup: rbac.authorization.k8s.io kind: ClusterRole name: cluster-read-all subjects: kind: Group name: "super-org:team-red" EOF</code> </pre> <br>  Agora estamos prontos para o teste. <br><br><h3>  Testes </h3><br>  Vamos para a página de login ( <code>https://login.k8s.example.com</code> ) e efetuamos login usando a conta do GitHub: <br><br><img src="https://habrastorage.org/webt/ub/vc/hi/ubvchi3ybq1vqhebfqyd3m13tzq.png" alt="imagem"><br>  <i>Página de login</i> <br><br><img src="https://habrastorage.org/webt/9s/dv/pd/9sdvpdy1r7up9fyzhhow1cak0ru.png" alt="imagem"><br>  <i>Página de login redirecionada para o GitHub</i> <br><br><img src="https://habrastorage.org/webt/vx/s9/io/vxs9iotjf-be36hfwpr46dbhqfa.png" alt="imagem"><br>  <i>Siga as instruções geradas para acesso</i> <br><br>  Após copiar e colar da página da web, podemos usar o kubectl para gerenciar os recursos do nosso cluster: <br><br><pre> <code class="plaintext hljs">kubectl get po NAME READY STATUS RESTARTS AGE mypod 1/1 Running 0 3d kubectl delete po mypod Error from server (Forbidden): pods "mypod" is forbidden: User "amet@example.com" cannot delete pods in the namespace "default"</code> </pre> <br>  E funciona: todos os usuários do GitHub em nossa organização podem ver recursos e inserir pods, mas eles não têm o direito de alterá-los. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt436238/">https://habr.com/ru/post/pt436238/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt436228/index.html">Desenvolvimento de uma equipe para consulta de dados do banco de dados</a></li>
+<li><a href="../pt436230/index.html">Como assumir o controle de sua infraestrutura de rede. CAPÍTULO TRÊS Segurança de rede. Parte dois</a></li>
+<li><a href="../pt436232/index.html">Estratégia de Telepatia</a></li>
+<li><a href="../pt436234/index.html">Analisadores aplicáveis ​​de Haskell</a></li>
+<li><a href="../pt436236/index.html">Usamos ciência de dados para determinar o ciclo de vida de um cliente</a></li>
+<li><a href="../pt436240/index.html">Automação VS Caos</a></li>
+<li><a href="../pt436242/index.html">YOLO e outras metodologias soltas</a></li>
+<li><a href="../pt436244/index.html">O novo cérebro do professor Lawrence</a></li>
+<li><a href="../pt436246/index.html">Engenharia automotiva moderna - 02. Muito tese sobre OS</a></li>
+<li><a href="../pt436248/index.html">Kalman Filter</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

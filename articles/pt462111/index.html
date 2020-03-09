@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏷️ 😑 📟 Como testamos vários bancos de dados de séries temporais 🧚🏻 💈 🧔🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nos últimos anos, os bancos de dados de séries temporais evoluíram de uma coisa curiosa (altamente especializada em sistemas de monitoramento abertos ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Como testamos vários bancos de dados de séries temporais</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/itsumma/blog/462111/"><img src="https://habrastorage.org/webt/u_/ty/r0/u_tyr0djrlkmaz-swo9flhddymo.jpeg"><br><br>  Nos últimos anos, os bancos de dados de séries temporais evoluíram de uma coisa curiosa (altamente especializada em sistemas de monitoramento abertos (e vinculados a soluções específicas) ou em projetos de Big Data) em "bens de consumo".  No território da Federação Russa, agradecimentos especiais à Yandex e ClickHouse por isso.  Até o momento, se você precisava salvar uma grande quantidade de dados de séries temporais, era necessário aceitar a necessidade de criar uma pilha monstruosa do Hadoop e acompanhá-la, ou comunicar-se com protocolos específicos para cada sistema. <br><br>  Pode parecer que em 2019, um artigo sobre o qual o TSDB deva ser usado consistirá em apenas uma frase: "basta usar o ClickHouse".  Mas ... existem nuances. <br><br>  De fato, o ClickHouse está se desenvolvendo ativamente, a base de usuários está crescendo e o suporte está sendo muito ativo, mas nos tornamos reféns do sucesso público do ClickHouse, que ofusca outras soluções possivelmente mais eficazes / confiáveis? <br><br>  No início do ano passado, começamos a processar nosso próprio sistema de monitoramento, durante o qual surgiu a questão de escolher a base apropriada para o armazenamento de dados.  Eu quero contar sobre a história dessa escolha aqui. <br><a name="habracut"></a><br><h4>  Declaração do problema </h4><br>  Primeiro de tudo, o prefácio necessário.  Por que precisamos de nosso próprio sistema de monitoramento e como foi organizado? <br><br>  Começamos a fornecer serviços de suporte em 2008 e, em 2010, ficou claro que era difícil agregar dados sobre processos que ocorrem na infraestrutura do cliente com as soluções existentes naquele momento (estamos falando, Deus me perdoe, Cacti, Zabbix e o nascente Grafite). <br><br>  Nossos principais requisitos foram: <br><br><ul><li>  suporte (na época - dezenas e no futuro - centenas) de clientes dentro do mesmo sistema e ao mesmo tempo a presença de um sistema centralizado de gerenciamento de alertas; </li><li>  flexibilidade no gerenciamento do sistema de alerta (encaminhamento de alertas entre atendentes, contabilidade de cronograma, base de conhecimento); </li><li>  a possibilidade de detalhes detalhados dos gráficos (o Zabbix naquela época estava desenhando gráficos na forma de figuras); </li><li>  armazenamento de longo prazo de uma grande quantidade de dados (um ano ou mais) e a capacidade de selecioná-los rapidamente. </li></ul><br>  Neste artigo, estamos interessados ​​no último ponto. <br><br>  Falando em armazenamento, os requisitos foram os seguintes: <br><br><ul><li>  o sistema deve funcionar rapidamente; </li><li>  é desejável que o sistema tenha uma interface SQL; </li><li> o sistema deve ser estável e ter uma base de usuários e suporte ativos (uma vez que enfrentamos a necessidade de oferecer suporte a sistemas como, por exemplo, o MemcacheDB, que paramos de desenvolver, ou o armazenamento distribuído MooseFS, cujo rastreador de erros foi realizado em chinês: repetindo esta história para o nosso projeto não quis); </li><li>  Correspondência para o teorema da PAC: Consitência (necessária) - os dados devem ser relevantes, não queremos que o sistema de gerenciamento de notificações não receba novos dados e cuspa alertas sobre a não chegada de dados para todos os projetos;  Tolerância de partição (necessário) - não queremos obter sistemas de cérebro dividido;  Disponibilidade (não crítica, no caso de uma réplica ativa) - podemos mudar para o sistema de backup em caso de acidente, com um código. </li></ul><br>  Curiosamente, naquela época o MySQL era a solução perfeita para nós.  Nossa estrutura de dados era extremamente simples: identificação do servidor, contador, carimbo de data e hora e valor;  a amostragem rápida de dados quentes foi fornecida por um grande buffer pool e a amostragem de dados históricos foi fornecida pelo SSD. <br><br><img src="https://habrastorage.org/webt/ii/cd/es/iicdesd_tmiqwygfha8r4bepjgg.png"><br><br>  Assim, obtivemos uma amostragem de dados frescos de duas semanas, detalhando até um segundo de 200 ms antes que os dados fossem completamente renderizados e vivemos nesse sistema por algum tempo. <br><br>  Enquanto isso, o tempo passou e a quantidade de dados aumentou.  Em 2016, os volumes de dados atingiram dezenas de terabytes, o que em termos de armazenamento SSD alugado era uma despesa significativa. <br><br>  Nesse ponto, os bancos de dados colunares estavam se espalhando ativamente, sobre os quais começamos a pensar ativamente: nos bancos de dados colunares, os dados são armazenados, como pode ser entendido, em colunas, e se você olhar para os nossos dados, é fácil ver um grande número de duplicatas que poderiam ser Se estiver usando um banco de dados de coluna, comprima com a compactação. <br><br><img src="https://habrastorage.org/webt/zm/gu/x3/zmgux307lo7r3i7s9uykpgozadm.png"><br><br>  No entanto, o sistema principal do trabalho da empresa continuava funcionando de maneira estável, e eu não queria experimentar a transição para outra coisa. <br><br>  Em 2017, na conferência Percona Live em San Jose, provavelmente a primeira vez que os desenvolvedores da Clickhouse se anunciaram.  À primeira vista, o sistema estava pronto para produção (bem, o Yandex.Metrica é uma produção dura), o suporte era rápido e simples e, o mais importante, a operação era simples.  Desde 2018, iniciamos o processo de transição.  Mas, naquela época, havia muitos sistemas TSDB "adultos" e testados pelo tempo, e decidimos alocar um tempo considerável e comparar alternativas para garantir que não houvesse soluções alternativas da Clickhouse, de acordo com nossos requisitos. <br><br>  Além dos requisitos de armazenamento já indicados, surgiram novos: <br><br><ul><li>  o novo sistema deve fornecer pelo menos o mesmo desempenho que o MySQL, na mesma quantidade de ferro; </li><li>  o armazenamento do novo sistema deve ocupar significativamente menos espaço; </li><li>  O DBMS ainda deve ser fácil de gerenciar; </li><li>  Eu queria minimizar o aplicativo ao alterar o DBMS. </li></ul><br><h4>  Quais sistemas começamos a considerar </h4><br>  <b><u>Apache Hive / Apache Impala</u></b> <br>  Pilha de Hadoop agredida velha.  De fato, essa é uma interface SQL criada com base no armazenamento de dados em formatos nativos no HDFS. <br><br>  Pros. <br><br><ul><li>  Com operação estável, é muito fácil dimensionar os dados. </li><li>  Existem soluções de coluna para armazenamento de dados (menos espaço). </li><li>  Execução muito rápida de tarefas paralelas na presença de recursos. </li></ul><br>  Contras <br><br><ul><li>  Este é um Hadoop e é difícil de operar.  Se não estamos prontos para tomar uma solução pronta na nuvem (e não estamos prontos para o custo), toda a pilha terá que ser montada e suportada pelos administradores, mas eu realmente não quero isso. </li><li>  Os dados são agregados <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">muito rapidamente</a> . </li></ul><br>  No entanto: <br><br><img src="https://habrastorage.org/webt/zi/nv/qx/zinvqxvmxc43df-hd4xjqwprtmi.png"><br><br>  A velocidade é alcançada escalando o número de servidores de computação.  Simplificando, se somos uma grande empresa envolvida em análises e negócios, é extremamente importante agregar informações o mais rápido possível (mesmo ao custo de usar um grande número de recursos de computação) - essa pode ser a nossa escolha.  Mas não estávamos prontos para multiplicar o parque de ferro para acelerar as tarefas. <br><br>  <b><u>Druida / pinot</u></b> <br><br>  Já há muito mais sobre o TSDB especificamente, mas novamente - Hadoop-stack. <br><br>  Há um <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">ótimo artigo comparando os prós e contras de Druid e Pinot em comparação ao ClickHouse</a> . <br><br>  Em poucas palavras: Druid / Pinot parece melhor que Clickhouse nos casos em que: <br><br><ul><li>  Você tem uma natureza heterogênea dos dados (no nosso caso, registramos apenas séries temporais de métricas de servidor e, de fato, essa é uma tabela. Mas pode haver outros casos: séries temporais de equipamentos, séries econômicas etc. - cada um com sua própria estrutura, que devem ser agregados e processados). </li><li>  Além disso, existem muitos desses dados. </li><li>  As tabelas e os dados com séries temporais aparecem e desaparecem (ou seja, algum tipo de conjunto de dados entrou, foi analisado e excluído). </li><li>  Não há um critério claro pelo qual os dados possam ser particionados. </li></ul><br>  Em casos opostos, o ClickHouse se mostra melhor, e esse é o nosso caso. <br><br>  <b><u>Clickhouse</u></b> <br><br><ul><li>  Como SQL. </li><li>  Fácil de gerenciar. </li><li>  As pessoas dizem que isso funciona. </li></ul><br>  Ele se enquadra na lista restrita de testes. <br><br>  <b><u>Influxdb</u></b> <br><br>  Alternativa estrangeira ao ClickHouse.  Das desvantagens: a alta disponibilidade está presente apenas na versão comercial, mas deve ser comparada. <br><br>  Ele se enquadra na lista restrita de testes. <br><br>  <b><u>Cassandra</u></b> <br><br>  Por um lado, sabemos que é usado para armazenar séries temporais métricas por sistemas de monitoramento como, por exemplo, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">SignalFX</a> ou OkMeter.  No entanto, existem detalhes. <br><br>  Cassandra não é um banco de dados de colunas no sentido usual.  Parece mais uma letra minúscula, mas cada linha pode ter um número diferente de colunas, devido ao qual é fácil organizar uma representação de coluna.  Nesse sentido, é claro que, com um limite de 2 bilhões de colunas, é possível armazenar alguns dados nas colunas (sim, a mesma série temporal).  Por exemplo, no MySQL, há um limite para 4096 colunas e é fácil encontrar um erro com o código 1117 se você tentar fazer o mesmo. <br><br>  O mecanismo Cassandra está focado em armazenar grandes quantidades de dados em um sistema distribuído sem um assistente, e no teorema do CAP mencionado acima, Cassandra é mais sobre AP, ou seja, sobre acessibilidade de dados e resistência ao particionamento.  Portanto, essa ferramenta pode ser ótima se você precisar apenas gravar neste banco de dados e raramente ler a partir dele.  E aqui é lógico usar o Cassandra como um armazenamento "frio".  Ou seja, como um local confiável a longo prazo para armazenar grandes quantidades de dados históricos que raramente são necessários, mas que podem ser obtidos se necessário.  No entanto, por uma questão de integridade, vamos testá-lo.  Mas, como eu disse anteriormente, não há desejo de reescrever ativamente o código da solução de banco de dados selecionada, portanto, vamos testá-lo um pouco limitado - sem adaptar a estrutura do banco de dados às especificações do Cassandra. <br><br>  <b><u>Prometeu</u></b> <br><br>  Bem, e sem interesse, decidimos testar o desempenho da loja Prometheus - apenas para entender se somos mais rápidos do que as soluções atuais ou mais lentos e quanto. <br><br><h4>  Metodologia e Resultados dos Testes </h4><br>  Portanto, testamos 5 bancos de dados nas 6 configurações a seguir: ClickHouse (1 nó), ClickHouse (tabela distribuída de 3 nós), InfluxDB, Mysql 8, Cassandra (3 nós) e Prometheus.  O plano de teste é o seguinte: <br><br><ol><li>  preencher os dados históricos da semana (840 milhões de valores por dia; 208 mil métricas); </li><li>  gerar uma carga de gravação (foram considerados 6 modos de carga, veja abaixo); </li><li>  paralelamente à gravação, periodicamente fazemos amostras, simulando as solicitações de um usuário que trabalha com gráficos.  Para não complicar muito as coisas, selecionamos os dados em 10 métricas (da mesma forma que no gráfico da CPU) por semana. </li></ol><br>  Carregamos emulando o comportamento do nosso agente de monitoramento, que envia valores para cada métrica a cada 15 segundos.  Nesse caso, estamos interessados ​​em variar: <br><br><ul><li>  número total de métricas nas quais os dados são gravados; </li><li>  intervalo de envio de valores em uma métrica; </li><li>  tamanho do lote. </li></ul><br>  Sobre o tamanho do lote.  Como quase todas as nossas bases experimentais não são recomendadas para serem carregadas com inserções únicas, precisaremos de um relé que colete as métricas recebidas e as agrupe o máximo possível e as grave no banco de dados com uma inserção de pacote. <br><br>  Além disso, para entender melhor como interpretar os dados recebidos posteriormente, imagine que não estamos apenas enviando várias métricas, mas as métricas são organizadas em servidores - 125 métricas por servidor.  Aqui, o servidor é apenas uma entidade virtual - apenas para entender que, por exemplo, 10.000 métricas correspondem a aproximadamente 80 servidores. <br><br>  E assim, levando tudo isso em consideração, nossos 6 modos de carregamento de gravação da base: <br><br><img src="https://habrastorage.org/webt/lr/li/oo/lrlioosoevoybfuw4--rsftdugi.jpeg"><br><br>  Existem dois pontos.  Em primeiro lugar, para cassandra tais tamanhos de lotes eram muito grandes, foram utilizados valores de 50 ou 100. Em segundo lugar, uma vez que o prometeus funciona estritamente no modo pull, ou seja,  ele caminha e coleta dados de fontes métricas (e mesmo o pushgateway, apesar do nome, não altera fundamentalmente a situação), as cargas correspondentes foram implementadas usando uma combinação de configurações estáticas. <br><br>  Os resultados do teste são os seguintes: <br><br><img src="https://habrastorage.org/webt/0r/sz/vc/0rszvcd_aeoiqwlrixsgw0tauti.jpeg"><br><br><img src="https://habrastorage.org/webt/3r/gy/2g/3rgy2guskcodctly7nevknbygss.jpeg"><br><br><img src="https://habrastorage.org/webt/v8/mg/tm/v8mgtm0ytjkjkneal1mjcvw5n8w.jpeg"><br><br>  <b>O que vale a pena notar</b> : amostras fantasticamente rápidas de Prometheus, amostras terrivelmente lentas de Cassandra, amostras inaceitavelmente lentas de InfluxDB;  O ClickHouse venceu em termos de velocidade de gravação e o Prometheus não participa da competição, porque insere dentro de si e não medimos nada. <br><br>  <u><b>Como resultado</b></u> : o ClickHouse e o InfluxDB se mostraram o melhor de todos, mas um cluster do Influx só pode ser construído com base na versão Enterprise, que custa dinheiro, e o ClickHouse não custa nada e é fabricado na Rússia.  É lógico que, nos EUA, a escolha provavelmente seja a favor do inInfluxDB e, no nosso caso, a favor do ClickHouse. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt462111/">https://habr.com/ru/post/pt462111/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt462095/index.html">Trabalhar com luz e óptica: como iniciar uma carreira na universidade - a experiência de graduados em quatro programas de mestrado especializados</a></li>
+<li><a href="../pt462097/index.html">Passeio verde claro</a></li>
+<li><a href="../pt462101/index.html">Relatório do Java Virtual Machine Language Summit 2019</a></li>
+<li><a href="../pt462107/index.html">Maratona grátis “Big Data e super-heróis: sua primeira experiência em análise de dados”</a></li>
+<li><a href="../pt462109/index.html">Veja quase invisível, também em cores: uma técnica para visualizar objetos através de um difusor</a></li>
+<li><a href="../pt462113/index.html">Ambiente irrepreensível: ninguém deve escrever um código de qualidade</a></li>
+<li><a href="../pt462115/index.html">Ajuste o céu estrelado no WebGL em 1009 bytes de JavaScript</a></li>
+<li><a href="../pt462117/index.html">Como maximizar o valor da preparação do backlog do produto?</a></li>
+<li><a href="../pt462119/index.html">Delta Smart City Solutions: Você já se perguntou como o cinema pode ser ecológico?</a></li>
+<li><a href="../pt462121/index.html">Swift funcional</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

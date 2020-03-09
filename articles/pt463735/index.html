@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌏 👵🏽 👶🏼 Sistema de entrega de configuração de rede de filtragem Qrator 🤸🏾 😯 👨🏽‍🌾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="TL; DR : arquitetura cliente-servidor de nossa ferramenta de gerenciamento de configuração interna, QControl. 
+ No seu porão, há um protocolo de trans...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Sistema de entrega de configuração de rede de filtragem Qrator</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/qrator/blog/463735/"><img src="https://habrastorage.org/webt/m2/ak/w7/m2akw7igwdnpnlkl-wtyczkznlc.jpeg"><br><br>  <b>TL; DR</b> : arquitetura cliente-servidor de nossa ferramenta de gerenciamento de configuração interna, QControl. <br>  No seu porão, há um protocolo de transporte de duas camadas que trabalha com mensagens compactadas com gzip sem descompressão entre os pontos de extremidade.  Roteadores distribuídos e pontos de extremidade recebem as atualizações de configuração, e o próprio protocolo possibilita a instalação de relés localizados intermediários.  Ele é baseado em um design de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">backup diferencial</a> (“recente-estável”, explicado mais adiante) e emprega a linguagem de consulta JMESpath e o modelo Jinja para renderização da configuração. <br><br>  O Qrator Labs opera e mantém uma rede de mitigação distribuída globalmente.  Nossa rede é anycast, com base no anúncio de nossas sub-redes via BGP.  Ser uma rede anycast BGP localizada fisicamente em várias regiões da Terra nos permite processar e filtrar o tráfego ilegítimo mais próximo do backbone da Internet - operadores de nível 1. <br><br>  Por outro lado, ser uma rede geograficamente distribuída tem suas dificuldades.  A comunicação entre os pontos de presença da rede (PoP) é essencial para um provedor de segurança ter uma configuração coerente para todos os nós da rede e atualizá-la de maneira oportuna e coesa.  Portanto, para oferecer o melhor serviço possível aos clientes, tivemos que encontrar uma maneira de sincronizar os dados de configuração entre diferentes continentes de maneira confiável. <br><blockquote>  No começo, havia a Palavra ... que rapidamente se tornou o protocolo de comunicação que precisava de uma atualização. </blockquote><a name="habracut"></a><br>  O ponto principal da existência do QControl e a principal razão para gastar muito tempo e esforço na construção de um protocolo nosso é a necessidade de obter uma fonte autorizada da configuração e, eventualmente, sincronizar nossos PoPs com ela.  O armazenamento foi apenas um dos vários recursos necessários do desenvolvimento do QControl.  Além disso, também precisamos de integração com a periferia existente e futura, validações de dados inteligentes (e personalizáveis) e diferenciação de acesso.  Além disso, queríamos que este sistema gerisse coisas através de comandos, não através de modificações manuais nos arquivos.  Antes do QControl, os dados eram enviados para os pontos de presença mais ou menos manualmente.  Se algum PoP estava indisponível no momento e esquecemos de atualizá-lo mais tarde, a configuração foi dessincronizada e foi necessária uma solução de problemas demorada para trazê-lo de volta à sincronização. <br><br>  Aqui está o sistema que criamos: <br><img src="https://habrastorage.org/getpro/habr/post_images/ee1/a25/5c0/ee1a255c01c5119a0f59191782817efb.png" alt="imagem"><br>  O servidor de configuração é responsável pela validação e armazenamento de dados;  o roteador possui pontos de extremidade diferentes para receber e retransmitir atualizações de configuração dos clientes e da equipe de suporte ao servidor e do servidor aos PoPs. <br><br>  A qualidade da conexão à Internet ainda é bastante diversificada em todo o mundo - para ilustrar isso, vamos visualizar um traceroute simples de Praga, República Tcheca a Cingapura e Hong Kong. <br><br> <a href=""><img src="https://habrastorage.org/webt/ob/pl/vc/obplvcdpqlc8as-nra_jnpv4hbc.png" alt="imagem"></a> <br>  MTR de Praga para Singapura <br><br> <a href=""><img src="https://habrastorage.org/webt/4z/xo/7s/4zxo7sr_qqrg6cdlipwwvujohto.png" alt="imagem"></a> <br>  Mesma segunda captura de tela com traceroute para Hong Kong <br><br>  Números de alta latência significam baixa velocidade.  Além disso, há uma alta perda de pacotes.  Os números de largura de banda não compensam esse problema, que sempre deve ser levado em consideração ao criar redes descentralizadas. <br><br>  A configuração completa do PoP é uma porção de dados bastante significativa e precisa ser transferida para muitos receptores diferentes através de conexões não confiáveis.  Felizmente, embora a configuração mude com frequência, ela muda em pequenos incrementos. <br><br><h3>  Projeto estável recente </h3><br>  É uma decisão bastante direta construir uma rede distribuída com base em atualizações incrementais.  Embora existam alguns problemas com os diffs, eles são difíceis de criar corretamente: precisamos salvar todos os diffs entre os pontos de referência em algum lugar, para poder reenviá-los se alguém perder alguma coisa.  Todo destino deve aplicá-los de forma coerente.  Caso haja vários destinos, isso pode levar muito tempo em toda a rede.  O destinatário também deve poder solicitar peças ausentes e, é claro, a parte central deve responder a essa solicitação com precisão, enviando apenas os dados ausentes. <br><br>  O que construímos no final é uma coisa - temos apenas uma camada de referência, a fixa "estável" e apenas uma diff, "recente".  Todo recente é baseado no último estábulo e é suficiente para reconstruir os dados de configuração.  Quando um novo recente chega ao destino, o antigo é descartável. <br><br>  Às vezes, nos é necessário enviar uma nova configuração estável, porque as recentes crescem muito.  Além disso, uma observação importante aqui é que podemos fazer tudo isso transmitindo / transmitindo multicast atualizações, sem nos preocupar com a capacidade de receber destinos para montar as peças.  Depois de verificarmos que todos têm o estábulo certo, todos são alimentados apenas com o recente recente.  Devemos dizer que funciona?  Faz.  Os estábulos são armazenados em cache no servidor de configuração e nos receptores, sendo os recentes recriados quando necessário. <br><br><h3>  Arquitetura de transporte em duas camadas </h3><br>  Por que exatamente construímos nosso transporte com duas camadas?  A resposta é bem simples: queríamos dividir o roteamento do aplicativo, inspirando-nos no modelo OSI com suas camadas de transporte e aplicativo.  Portanto, separamos o protocolo de transporte (Thrift) do formato de serialização de comando de alto nível (msgpack).  É por isso que um roteador (que faz multicast / broadcast / retransmissão) nem olha dentro do msgpack, nem extrai ou comprime a carga útil e faz apenas a transmissão. <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Wiki</a> Thrift: <br>  <i>O Apache Thrift permite definir tipos de dados e interfaces de serviço em um arquivo de definição simples.</i>  <i>Tomando esse arquivo como entrada, o compilador gera código a ser usado para criar facilmente clientes e servidores RPC que se comunicam sem interrupções nas linguagens de programação.</i>  <i>Em vez de escrever uma carga de código padrão para serializar e transportar seus objetos e chamar métodos remotos.</i> <br><br>  Adotamos a estrutura Thrift por causa de seu RPC e suporte a vários idiomas ao mesmo tempo.  Como sempre, as partes fáceis são fáceis de construir: o cliente e o servidor.  No entanto, o roteador era muito difícil de quebrar, em parte devido à ausência de uma solução pronta para uso no momento. <br><br><img src="https://habrastorage.org/webt/l8/so/6v/l8so6vrzh0u_feb60p6ehjbubs0.png" align="left">  Existem outras opções, como o protobuf / gRPC, mas quando começamos o projeto, o gRPC era imaturo e hesitamos em usá-lo. <br><br>  Obviamente, nós poderíamos (e deveríamos!) Criar nossa própria roda.  Seria mais fácil criar um protocolo personalizado para o que precisamos, juntamente com o roteador, porque o cliente-servidor é mais simples de programar do que criar um roteador funcional com o Thrift.  No entanto, há uma negatividade tradicional em relação a protocolos e implementações personalizadas de bibliotecas populares, e sempre há o "como podemos portá-lo posteriormente para outros idiomas".  Por isso, decidimos abandonar as ideias indecorosas. <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Descrição do</a> Msgpack: <br>  <i>MessagePack é um formato eficiente de serialização binária.</i>  <i>Permite trocar dados entre vários idiomas, como JSON.</i>  <i>Mas é mais rápido e menor.</i>  <i>Inteiros pequenos são codificados em um único byte, e cadeias curtas típicas requerem apenas um byte extra, além das próprias cadeias.</i> <br><br>  Na primeira camada, temos um Thrift com as informações mínimas necessárias para o roteador enviar uma mensagem.  Na segunda camada, nós compactamos as estruturas do msgpack. <br>  Votamos no msgpack porque é mais rápido e mais compacto em comparação com o JSON.  No entanto, o que é ainda mais importante é que ele suporta tipos de dados personalizados, permitindo alguns recursos interessantes, como "apagões" e transferência de dados binários brutos. <br><br>  <b>Jmespath</b> <br>  <i>JMESPath é uma linguagem de consulta para JSON.</i> <br>  Essa é a única descrição que obtemos da documentação oficial do JMESPath, mas, na verdade, é muito mais do que isso.  O JMESPath permite pesquisar e filtrar estruturas arbitrárias do tipo árvore e até aplicar transformações de dados em tempo real.  Usamos essa linguagem de consulta para obter informações relevantes do grande blob de configuração. <br>  Embora toda a configuração tenha uma estrutura semelhante a uma árvore, extraímos as subárvores relevantes para diferentes destinos de configuração. <br><br>  Também é flexível o suficiente para alterar a subárvore, independentemente de um modelo de configuração ou de outros plugins de configuração.  Para torná-lo ainda melhor, o JMES Path é facilmente extensível e permite gravar filtros personalizados e rotinas de transformação de dados.  No entanto, ele precisa de algum poder intelectual para compreender. <br><br>  <b>Jinja</b> <br>  Para alguns destinos, precisamos renderizar a configuração em arquivos; portanto, precisamos de um mecanismo de modelo, onde o Jinja é uma escolha óbvia.  O Jinja está gerando um arquivo de configuração a partir do modelo e dos dados recebidos no ponto de destino. <br><br>  Para renderizar o arquivo de configuração, precisamos de uma solicitação jmespath, modelo para o caminho e arquivo de destino, modelo para a própria configuração.  Além disso, neste momento, é bom especificar os direitos de acesso ao arquivo.  Felizmente, tudo isso foi combinado em um arquivo - antes do modelo de configuração, colocamos um cabeçalho YAML, descrevendo o restante.  Por exemplo: <br> <code>--- <br> selector: "[@][?@.fft._meta.version == `42`] | items([0].fft_config || `{}`)" <br> destination_filename: "fft/{{ match[0] }}.json" <br> file_mode: 0644 <br> reload_daemons: [fft] <br> ... <br> {{ dict(match[1]) | json(indent=2, sort_keys=True) }} <br></code> <br>  Para fazer a configuração de uma nova periferia, adicionamos um novo arquivo de modelo, nenhuma alteração no código fonte e atualizações de software PoP são necessárias. <br><br>  O que mudou após a implementação da ferramenta de gerenciamento de configuração QControl? <br>  Em primeiro lugar, recebemos atualizações de configuração coerentes e confiáveis ​​em toda a nossa rede. <br>  Segundo, colocamos uma ferramenta poderosa para validação de configuração e alterações nas mãos de nossa equipe de suporte e de nossos clientes. <br><br>  Conseguimos isso empregando um design estável recente para simplificar a comunicação entre o servidor de configuração e os destinatários da configuração, usando o protocolo de comunicação de duas camadas para oferecer suporte a roteadores independentes de carga útil e implementando o mecanismo de renderização de configuração baseado em Jinja para suportar uma grande variedade de arquivos de configuração para nossa periferia diversificada. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt463735/">https://habr.com/ru/post/pt463735/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt463719/index.html">Ferramentas do método de gerenciamento de projetos (parte 2)</a></li>
+<li><a href="../pt463725/index.html">Petty little joy # 9: aplicativos de console com rosto humano</a></li>
+<li><a href="../pt463727/index.html">Como entrar no topo do Google na UE / EUA no nicho de desenvolvimento e encontrar clientes com grandes orçamentos</a></li>
+<li><a href="../pt463729/index.html">Encontro com o fundador do NSTR Viktor Chernikov</a></li>
+<li><a href="../pt463733/index.html">Mesh VS WiFi: o que escolher para wireless?</a></li>
+<li><a href="../pt463737/index.html">Resolução de problemas com pwnable.kr 21 - horcuxes. Programação orientada a retorno e cadeias ROP</a></li>
+<li><a href="../pt463739/index.html">Sistema de Gerenciamento de Configuração de Rede Qrator Filter</a></li>
+<li><a href="../pt463741/index.html">Firefox (já corrigido) e Chrome permitem usar o cabeçalho Alt-Svc para verificar portas da intranet</a></li>
+<li><a href="../pt463745/index.html">Complicar C ++ é inevitável. E não apenas C ++</a></li>
+<li><a href="../pt463747/index.html">Acessar propriedades dentro do campo Jsonb para Npgsql</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

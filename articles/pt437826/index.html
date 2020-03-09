@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏽‍🤝‍👩🏻 ♑️ 🀄️ Como migramos o banco de dados do Redis e do Riak KV para o PostgreSQL. Parte 1: o processo 🥛 🏵️ 👩🏿‍🍳</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Esta é a primeira parte do artigo em que falarei sobre como construímos o processo de trabalhar em um grande projeto de migração de banco de dados: so...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Como migramos o banco de dados do Redis e do Riak KV para o PostgreSQL. Parte 1: o processo</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/miro/blog/437826/">  Esta é a primeira parte do artigo em que falarei sobre como construímos o processo de trabalhar em um grande projeto de migração de banco de dados: sobre experiências seguras, planejamento de equipe e interação entre equipes.  Nos artigos a seguir, falarei mais detalhadamente sobre os problemas técnicos que resolvemos: sobre dimensionamento e tolerância a falhas do PostgreSQL e testes de carga. <br><br><img src="https://habrastorage.org/webt/h3/cq/xn/h3cqxnvyiw1x3frzzx_tzfwlxzw.png"><br><br>  Por um longo tempo, o banco de dados principal no Miro (ex-RealtimeBoard) foi o Redis.  Armazenamos nele todas as informações básicas: dados sobre usuários, contas, placas etc.  Tudo funcionou rapidamente, mas tivemos vários problemas. <br><br>  <b>Problemas com Redis</b> <br><br><ol><li>  Dependência da latência da rede.  Agora, na nossa nuvem, são cerca de 20 horas em Moscou, mas quando você a aumenta, o aplicativo começa a funcionar muito lentamente. </li><li>  A falta de índices que precisamos no nível da lógica de negócios.  Sua implementação independente pode complicar a lógica de negócios e levar à inconsistência dos dados. </li><li>  A complexidade do código também dificulta a manutenção da consistência dos dados. </li><li>  Intensidade de recurso de consultas com seleções. </li></ol><br>  Esses problemas, juntamente com um aumento na quantidade de dados nos servidores, causaram a migração do banco de dados. <br><a name="habracut"></a><br><h2>  Declaração do problema </h2><br>  A decisão sobre a migração foi tomada.  O próximo passo é entender qual banco de dados é adequado para o nosso modelo de dados. <br><br>  Realizamos um estudo para selecionar o banco de dados ideal para nós e resolvemos o PostgreSQL.  Nosso modelo de dados se encaixa bem com um banco de dados relacional: o PostgreSQL possui ferramentas internas para garantir a consistência dos dados, existe um tipo JSONB e a capacidade de indexar certos campos no JSONB.  Isso nos convém. <br><br>  A arquitetura simplificada de nosso aplicativo tinha a seguinte aparência: existem servidores de aplicativos que acessam Redis e RiakKV através da camada de dados. <br><br>  Nosso Application Server é um aplicativo Java monolítico.  A lógica de negócios é escrita em uma estrutura adaptada ao NoSQL.  O aplicativo possui seu próprio sistema transacional, que permite fornecer vários usuários em qualquer uma de nossas placas. <br><br>  Usamos o RiakKV para armazenar dados de painéis de arquivo que não foram abertos por 7 dias. <br><br>  Adicione o PostgreSQL a este esquema.  Fazemos os servidores de aplicativos trabalharem com o novo banco de dados.  Copie dados do Redis e RiakKV para o PostgreSQL.  O problema está resolvido! <br><br>  <b>Nada complicado, mas existem nuances:</b> <br><br><ul><li>  Temos 2,2 milhões de usuários registrados.  Todos os dias, o Miro emprega 50 mil usuários, o pico de carga é de até 14 mil ao mesmo tempo.  Os usuários não devem encontrar erros devido ao nosso trabalho, eles geralmente não devem perceber o momento de mudar para uma nova base. </li><li>  1 TB de dados no banco de dados ou 410 milhões de objetos. </li><li>  Lançamento contínuo de novos recursos por outras equipes, cujo trabalho não devemos interferir. </li></ul><br><h2>  Opções para resolver o problema </h2><br>  Enfrentamos uma escolha de duas opções para migração de dados: <br><br><ol><li>  Interrompa o desenvolvimento do serviço → reescreva o código no servidor → teste a funcionalidade → inicie uma nova versão. </li><li>  Execute uma migração suave: transfira gradualmente partes do produto para um novo banco de dados, suportando o PostgreSQL e o Redis e sem interromper o desenvolvimento de novos recursos. </li></ol><br>  Interromper o desenvolvimento de um serviço é uma perda de tempo que poderíamos usar para o crescimento, o que significa perda de usuários e participação de mercado.  Isso é fundamental para nós, por isso escolhemos a opção com migração suave.  Apesar do fato de que, em complexidade, esse processo pode ser comparado à substituição de rodas em um carro enquanto estiver dirigindo. <br><br><iframe width="560" height="315" src="https://www.youtube.com/embed/Rrjgk1PksgU" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>  Ao avaliar o trabalho, dividimos nosso produto em blocos principais: usuários, contas, quadros etc.  Separadamente, foi realizado o trabalho para criar a infraestrutura do PostgreSQL.  E eles colocam riscos na avaliação caso algo dê errado (do jeito que aconteceu). <br><br><h2>  Sprints e objetivos </h2><br>  O próximo passo é formar uma equipe de cinco pessoas para que todos se movam na velocidade certa para um objetivo comum. <br><br>  Temos dois pontos: o início do trabalho na tarefa e o objetivo final.  Ideal quando estamos caminhando em direção ao objetivo de maneira direta.  Mas muitas vezes acontece que queremos seguir o caminho certo, mas acontece assim: <br><br><img src="https://habrastorage.org/webt/td/ab/5p/tdab5prpw4exyylbudctzzzcp8s.png"><br><br>  Por exemplo, devido a dificuldades e problemas que não podiam ser previstos com antecedência. <br><br>  É possível uma situação em que não atingiremos a meta.  Por exemplo, se formos refatorar profundamente ou reescrever o aplicativo inteiro. <br><br><img src="https://habrastorage.org/webt/9v/ef/66/9vef66oubzjo89rj7rtedo2a89u.png"><br><br>  Dividimos a tarefa em sprints semanais para minimizar as dificuldades descritas acima.  Se a equipe repentinamente sair para o lado, ela poderá voltar rapidamente com perdas mínimas para o projeto, pois iterações curtas não permitem que você vá longe demais "de maneira errada". <br><br>  Cada iteração tem seu próprio objetivo, que move a equipe para o grande resultado final. <br><br><img src="https://habrastorage.org/webt/ci/lv/z6/cilvz6zsakszbtskmwkc9ipt-w8.png"><br><br>  Se uma nova tarefa aparecer durante o sprint, avaliaremos se sua implementação nos aproxima do objetivo.  Sim - faça o próximo sprint ou altere as prioridades do atual, se não - não faça.  Se aparecerem erros, damos a eles alta prioridade e os corrigimos rapidamente. <br><br>  Acontece que os desenvolvedores dentro de um sprint devem executar tarefas em uma sequência estritamente definida.  Ou, por exemplo, o desenvolvedor entrega a tarefa finalizada ao engenheiro de controle de qualidade para testes urgentes.  No estágio de planejamento, tentamos criar relacionamentos semelhantes entre as tarefas para cada membro da equipe.  Isso permite que toda a equipe veja quem fará o quê e quando, sem esquecer a dependência dos outros. <br><br>  A equipe tem sincronizações diárias e semanais.  Todas as manhãs, discutimos quem, o que e em que prioridade fará hoje.  Após cada sprint, sincronizamos um com o outro para garantir que todos estejam se movendo na direção certa.  Certifique-se de planejar lançamentos grandes ou complexos.  Designamos desenvolvedores de plantão que, se necessário, estão presentes durante o lançamento e monitoramos se tudo está em ordem. <br><br>  O planejamento e a sincronização dentro da equipe permitem envolver todos os participantes em todas as etapas do projeto.  Planos e avaliações não nos chegam de cima, nós mesmos os fazemos.  Isso aumenta a responsabilidade e o interesse da equipe em concluir as tarefas. <br><br>  Este é um dos nossos sprints.  Nós carregamos tudo no quadro Miro: <br><br><img src="https://habrastorage.org/webt/fq/uz/l2/fquzl2taefgfyi0ge6w4q8x52qm.png"><br><br><h2>  Modos e experiências seguras </h2><br>  Durante a migração, tivemos que garantir a operação estável do serviço em condições de combate.  Para fazer isso, você precisa ter certeza de que tudo foi testado e não há erros em lugar algum.  Para atingir esse objetivo, decidimos tornar nossa migração suave ainda mais suave. <br><br>  A idéia era mudar gradualmente os blocos de produtos para um novo banco de dados.  Para fazer isso, criamos uma sequência de modos. <br><br>  <b>No primeiro modo “Redis Read / Write”,</b> somente o banco de dados antigo, Redis, funciona. <br><br><img src="https://habrastorage.org/webt/aq/zs/rc/aqzsrc1smjopt9khha7zrkxfg_c.png"><br><br>  <b>No segundo modo "Gravação passiva do PostgreSQL",</b> podemos garantir que a gravação no novo banco de dados esteja correta e que os bancos de dados sejam consistentes. <br><br><img src="https://habrastorage.org/webt/rl/gj/2v/rlgj2vmdvm2efjihl-dfccsmitq.png"><br><br>  <b>O terceiro modo “Leitura / Gravação do PostgreSQL, Redis Passive Write”</b> permite verificar a correção da leitura dos dados do PostgreSQL e ver como o novo banco de dados se comporta em condições de combate.  Ao mesmo tempo, o Redis continua sendo a base principal, o que nos permitiu encontrar casos específicos de trabalho com placas que poderiam levar a erros. <br><br><img src="https://habrastorage.org/webt/0n/77/23/0n7723633vpttzrti6pp6kajjui.png"><br><br>  <b>No último modo "Leitura / Gravação do PostgreSQL",</b> apenas o novo banco de dados está em execução. <br><br><img src="https://habrastorage.org/webt/p4/c7/go/p4c7gokfrrvxrn-c-ltg7fhtvts.png"><br><br>  O trabalho de migração pode afetar as principais funções do produto, por isso tínhamos 100% de certeza de que não quebraríamos nada e que o novo banco de dados funcionaria pelo menos tão lentamente quanto o antigo.  Portanto, começamos a realizar experimentos seguros com os modos de comutação. <br><br>  Começamos a alternar os modos em nossa conta corporativa, que usamos diariamente no trabalho.  Depois de termos certeza de que não havia erros, começamos a alternar os modos em uma pequena seleção de usuários externos. <br><br>  A linha do tempo das experiências de lançamento com os modos é a seguinte: <br><br><ul><li>  Janeiro-fevereiro: Redis leitura / gravação </li><li>  Março-abril: gravação passiva do PostgreSQL </li><li>  Maio-junho: leitura / gravação do PostgreSQL, banco de dados principal - Redis </li><li>  Julho-agosto: leitura / gravação do PostgreSQL </li><li>  Setembro-dezembro: migração completa. </li></ul><br>  Se ocorrerem erros, tivemos a oportunidade de corrigi-los rapidamente, porque nós mesmos poderíamos fazer lançamentos em servidores nos quais os usuários que participavam do experimento trabalhavam.  Como não dependíamos da versão principal, corrigimos os erros rapidamente e a qualquer momento. <br><br><h2>  Colaboração entre equipes </h2><br>  Durante a migração, geralmente nos cruzamos com equipes que lançavam novos recursos.  Temos uma única base de código e, como parte de seu trabalho, as equipes podem alterar as estruturas existentes em um novo banco de dados ou criar novas.  Ao mesmo tempo, podem ocorrer interseções de equipes para o desenvolvimento e retirada de novos recursos.  Por exemplo, uma das equipes de produtos prometeu à equipe de marketing o lançamento de um novo recurso em uma data específica;  a equipe de marketing planejou uma campanha publicitária para este período;  Uma equipe de vendas está esperando por um recurso e uma campanha para começar a se comunicar com novos clientes.  Acontece que todos dependem um do outro, e atrasar os prazos de uma equipe interrompe os planos da outra. <br><br>  Para evitar tais situações, nós, juntamente com outras equipes, compilamos um único roteiro de compras, que foi sincronizado várias vezes por trimestre e com algumas equipes semanalmente. <br><br><h2>  Conclusões </h2><br>  O que aprendemos durante este projeto: <br><br><ol><li>  Não tenha medo de assumir projetos complexos.  Após a decomposição, avaliação e desenvolvimento de abordagens para o trabalho, projetos complexos deixam de parecer impossíveis. </li><li>  Não poupe tempo e esforço em estimativas preliminares, decomposição e planejamento.  Isso ajuda a entender o problema mais profundamente antes de começar a trabalhar nele e a entender o volume e a complexidade do trabalho. </li><li>  Coloque riscos em projetos técnicos e organizacionais difíceis.  No processo de trabalho, você certamente encontrará um problema que não foi levado em consideração no planejamento. </li><li>  Não migre, a menos que seja necessário. </li></ol><br>  Nos artigos a seguir, falarei mais sobre os problemas técnicos que resolvemos durante a migração. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt437826/">https://habr.com/ru/post/pt437826/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt437814/index.html">Xcode 10.2, macOS Mojave 10.14.4, iOS 12.1 e outras versões beta</a></li>
+<li><a href="../pt437816/index.html">MPLS está em todo lugar. Como é a infraestrutura de rede Yandex.Cloud</a></li>
+<li><a href="../pt437818/index.html">Ensinamos um computador a distinguir sons: conhecendo o concurso DCASE e montando seu classificador de áudio em 30 minutos</a></li>
+<li><a href="../pt437820/index.html">50 tons de segurança Drupal</a></li>
+<li><a href="../pt437824/index.html">Extensão Universal 1C para o Planilhas Google e o Google Docs - use e use</a></li>
+<li><a href="../pt437828/index.html">Abra o webinar "SELECT ordem de execução da consulta e plano de consulta no MS SQL Server"</a></li>
+<li><a href="../pt437830/index.html">Programação confiável por idioma - revisão noob. Parte 1</a></li>
+<li><a href="../pt437832/index.html">Código aberto: humor de código, truques de código, código NÃO</a></li>
+<li><a href="../pt437834/index.html">Duas histórias sobre como os eventos de programação ocorreram em Ecaterimburgo</a></li>
+<li><a href="../pt437836/index.html">Sob o capô Screeps - virtualização na caixa de areia MMO para programadores</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

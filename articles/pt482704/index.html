@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎋 🖐️ 👩🏾‍⚖️ Sincronização de cache Redis para o serviço Go 🐀 🌪️ 👨‍👩‍👧</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="1. Introdução 
+
+
+ Durante o refinamento de um projeto, tornou-se necessário armazenar em cache os dados solicitados com freqüência. A implementação do...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Sincronização de cache Redis para o serviço Go</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/482704/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/wd/5c/31/wd5c31_fbcdgecl9nmma5flqsoy.png" width="300"></div><br><h2 id="vvedenie">  1. Introdução </h2><br><p>  Durante o refinamento de um projeto, tornou-se necessário armazenar em cache os dados solicitados com freqüência.  A implementação do cache é possível de diferentes maneiras, mas eu queria implementá-lo com alterações mínimas no projeto original.  O resultado, seus prós e contras estão descritos abaixo. </p><a name="habracut"></a><br><h2 id="kak-vsyo-bylo">  Como foi tudo </h2><br><p>  Inicialmente, para cada consulta que contém o identificador do objeto solicitado, uma consulta foi executada no banco de dados PostgreSQL (DB).  Mais precisamente, várias consultas, uma vez que, para formar uma resposta completa, era necessário aplicar a várias tabelas do banco de dados.  Como resultado do processamento de solicitações, um objeto bastante complexo foi formado, alguns dos campos representados por interfaces.  Na memória, esse objeto ocupa cerca de 250 kB. </p><br><p>  O desempenho com esta implementação não foi ótimo, não mais que 3500 RPS (solicitação por segundo) ao solicitar os mesmos dados com 1000 threads concorrentes. </p><br><p>  A questão surgiu imediatamente, mas como aumentar o RPS: mudar o roteador, otimizar o banco de dados, armazenar em cache os dados?  O roteador foi usado muito bem ( <a href="httprouter" rel="nofollow">github.com/julienschmidt/httprouter</a> ), e a substituição do roteador em um projeto grande levará muito tempo e há um alto risco de algo quebrar.  Para otimizar o trabalho com o banco de dados, você também precisará reescrever uma parte substancial do código (agora <a href="http://github.com/jmoiron/sqlx" rel="nofollow">github.com/jmoiron/sqlx</a> é usado).  Obviamente, o cache é a maneira mais ideal de aumentar o RPS. </p><br><h2 id="prostoe-reshenie">  Solução simples </h2><br><p>  A coisa mais simples que vem à mente é o uso de um cache na memória.  Ao usar esse cache, foram obtidos cerca de 20.000 RPS.  O desempenho do cache na memória é excelente, mas você não pode usá-lo com muitas instâncias de serviço.  Você nunca sabe para qual instância do serviço uma solicitação será direcionada e pode haver solicitações não apenas para recebimento de dados, mas também para exclusão / atualização. </p><br><p>  O desempenho obtido com o cache na memória foi tomado como padrão em uma busca adicional por uma solução. </p><br><h2 id="ideya-plohaya-ideya">  Idéia, má ideia </h2><br><p>  É possível colocar o resultado da consulta no banco de dados NoSQL Redis?  Essa é uma solução típica para armazenar em cache solicitações de resposta.  Os dados são armazenados na memória. Ao usar várias instâncias do serviço, todos eles podem usar um cache comum.  Esta solução foi implementada rapidamente.  E os testes mostraram ... E os testes mostraram que o desempenho não aumentou muito. <br>  Pesquisas posteriores mostraram que as principais perdas de desempenho estão associadas ao empacotamento e descompactação.  A conversão de uma estrutura para JSON e vice-versa requer o uso de reflexão, que é extremamente caro em desempenho.  É impossível recusar empacotamento / desempacotamento, pois é necessário obter um objeto completo do cache com a capacidade de chamar métodos de estruturas e não apenas obter os valores de campos individuais.  O uso de várias bibliotecas com otimização de empacotamento / desempacotamento também não salvou, houve crescimento, mas o cache na memória estava muito distante.  Portanto, foi decidido não fazer amizade com o "ouriço e cobra" e fazer um cache híbrido. </p><br><h2 id="gibrid-uzha-i-ezha">  Híbrido "cobra e ouriço" </h2><br><p>  Você não pode chamá-lo de híbrido completo (consulte a Fig.). Na verdade, ele resultou em um cache na memória, mas com sincronização através do Redis (a biblioteca <a href="http://github.com/go-redis/redis" rel="nofollow">github.com/go-redis/redis foi usada</a> ).  Somente o identificador exclusivo do objeto solicitado no banco de dados (objeto de ID) será armazenado no Redis.  Ele será adicionado ao Redis durante o processamento de uma solicitação para criar um objeto ou uma solicitação para obter um objeto existente no banco de dados.  O ID do objeto servirá como a chave para o valor em Redis, e o valor será o UUID gerado (identificador universalmente exclusivo, identificador exclusivo universal ”).  O UUID será gerado apenas quando o objeto for adicionado ao Redis.  Por que esse UUID é necessário, será descrito mais adiante. </p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/jh/nr/x7/jhnrx7d01qxmgll-s4jtcz4cc7g.jpeg"></div><br><p>  <b>Diagrama de blocos da interação de componentes para sincronização de cache através do Redis</b> </p><br><p>  O cache da memória é implementado com base no sync.Map.  Para itens de cache híbrido, TTL (tempo de vida útil, vida útil) é definido e, se o Redis limpar itens "sujos", o cache na memória será limpo pelo timer (time.AfterFunc).  Ele passa por todos os elementos do cache e verifica se o elemento está "podre".  Se um elemento de cache for acessado, sua vida útil será estendida; uma operação semelhante será executada com as chaves no Redis. </p><br><p>  Então, agora de acordo com o algoritmo.  Se uma solicitação chegar e precisarmos extrair o objeto, a seguinte sequência de ações será executada: </p><br><ol><li>  Examinamos se há um objeto com um determinado objeto de ID no Redis; se houver, podemos pegar o cache da instância de serviço da memória: <br><ol><li>  Se o objeto não estiver no cache da memória, nós o retiramos do banco de dados e adicionamos o cache com o UUID do Redis ao cache da memória e atualizamos o TTL da chave no Redis. </li><li>  Se o objeto estiver no cache da memória, nós o retiramos do cache, verificamos se o UUID no cache e no Redis corresponde e, nesse caso, atualize o TTL no cache e no Redis.  Se o UUID não corresponder, exclua o objeto do cache da memória, retire-o do banco de dados, adicione o cache com o UUID do Redis à memória. </li></ol></li><li>  Se o objeto não estiver no Redis, se o objeto estiver no cache, remova-o do cache.  Pegue um objeto do banco de dados e adicione-o ao cache e ao Redis.  Para eliminar a situação em que a atualização / exclusão de uma entrada é mais rápida que a adição ao cache ( <a href="https://habr.com/ru/post/482704/">comentário andreyverbin</a> ), adicione um objeto com um UUID zero ao cache.  Então, no primeiro acesso ao cache, a diferença de UUID com Redis será revelada e os dados do banco de dados serão solicitados novamente. </li></ol><br><p>  Se uma solicitação para excluir um objeto chegar, ela será imediatamente excluída do banco de dados e, em seguida, operações de cache: </p><br><ol><li>  Exclua o objeto no Redis. </li><li>  Exclua o objeto no cache da memória. </li></ol><br><p>  Agora, se uma solicitação semelhante chegar em outra instância do serviço, embora o objeto ainda possa estar no cache da memória, ele não será usado. </p><br><p>  Atualização do objeto, após a atualização no banco de dados: </p><br><ol><li>  Exclua o objeto no Redis. </li><li>  Exclua o objeto no cache da memória. </li></ol><br><p>  Quando você solicita um objeto em outra instância do serviço, será revelado que ele não está no Redis, portanto, é necessário retirá-lo do banco de dados.  Se houver outra instância do serviço, e a solicitação voou para ele após atualizar o objeto e depois de adicioná-lo pela segunda instância no Redis, então, ao verificar o UUID, uma diferença será revelada e a terceira instância do serviço também pegará o objeto do banco de dados. </p><br><p>  I.e.  de fato, em qualquer situação incompreensível, acreditamos que nosso cache está incorreto e precisamos coletar dados do banco de dados. </p><br><h2 id="zaklyuchenie">  Conclusão </h2><br><p>  A solução desenvolvida tem prós e contras. </p><br><h3 id="plyusy">  Prós </h3><br><ul><li>  O esquema de cache desenvolvido tornou possível obter cerca de 19000 RPS, o que é quase equivalente a testes com cache na memória. </li><li>  O código do projeto original tem um número mínimo de alterações. </li></ul><br><h3 id="minusy">  Contras </h3><br><ul><li>  Se o Redis travar, o serviço diminuirá drasticamente o desempenho e dependerá do trabalho com o banco de dados. </li><li>  Cada instância do serviço exigirá mais memória porque possui seu próprio cache na memória. </li></ul><br><p>  Como o alto desempenho era mais importante, não considero os menos críticos.  No futuro, existe uma idéia para escrever uma biblioteca para simplificar a implementação do cache híbrido, pois é necessário usar o cache semelhante em outros projetos. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt482704/">https://habr.com/ru/post/pt482704/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt482686/index.html">Cientistas automatizam pesquisa de comportamento animal para decodificar a função cerebral</a></li>
+<li><a href="../pt482690/index.html">Crie seu editor em Combine</a></li>
+<li><a href="../pt482698/index.html">[Ensaio] Dedicado ao plâncton do Office. Eu não sou inspirado pelo meu trabalho</a></li>
+<li><a href="../pt482700/index.html">Como "foder" o Google e o Yandex: promoção de sites em preto e branco de SEO. Shestakov Pessoas PRO # 74</a></li>
+<li><a href="../pt482702/index.html">Realmente precisamos do TypeScript em 2020?</a></li>
+<li><a href="../pt482706/index.html">Recomendações para a implementação do RAS contábil paralelo + IFRS na plataforma 1C</a></li>
+<li><a href="../pt482708/index.html">Um recurso da cultura corporativa necessário para o bem-estar da base de código</a></li>
+<li><a href="../pt482712/index.html">Antiguidades: Sony MZ-1 ou a história de um protótipo que entrou em produção</a></li>
+<li><a href="../pt482714/index.html">A coluna de rádio na Internet mais simples "Kodi" ou o resgate do tijolo "Raspberry"</a></li>
+<li><a href="../pt482716/index.html">Desenvolvimento de uma placa de depuração para K1986BE1QI (air)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎅🏼 🆘 🏪 /etc/resolv.conf para os pods do Kubernetes, opção ndots: 5, pois isso pode afetar adversamente o desempenho do aplicativo 🐮 👨🏾‍🍳 🤾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Há pouco tempo, lançamos o Kubernetes 1.9 na AWS usando o Kops. Ontem, enquanto lançava um novo tráfego sem problemas para o maior de nossos clusters ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>/etc/resolv.conf para os pods do Kubernetes, opção ndots: 5, pois isso pode afetar adversamente o desempenho do aplicativo</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/nixys/blog/464371/"><p><img src="https://habrastorage.org/webt/og/sh/ky/ogshkyh7cdbhytp_zt9_c40qufm.png"></p><br><p>  Há pouco tempo, lançamos o Kubernetes 1.9 na AWS usando o Kops.  Ontem, enquanto lançava um novo tráfego sem problemas para o maior de nossos clusters Kubernetes, comecei a perceber erros incomuns de resolução de nomes DNS registrados pelo nosso aplicativo. </p><a name="habracut"></a><br><p> O GitHub <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">falou</a> sobre isso por um bom tempo, então eu também decidi descobrir.  No final, percebi que, no nosso caso, isso se deve ao aumento da carga no <code>kube-dns</code> e no <code>dnsmasq</code> .  O mais interessante e novo para mim foi o motivo de um aumento significativo no tráfego de consultas DNS.  Sobre isso e o que fazer com isso, meu post. </p><br><p>  A resolução do DNS dentro do contêiner - como em qualquer sistema Linux - é determinada pelo arquivo de configuração <code>/etc/resolv.conf</code> .  Por padrão, o Kubernetes <code>dnsPolicy</code> é <code>ClusterFirst</code> , o que significa que qualquer consulta DNS será redirecionada para o <code>dnsmasq</code> em execução na <code>kube-dns</code> dentro do cluster, que, por sua vez, redirecionará a consulta para o aplicativo <code>kube-dns</code> se o nome terminar com um sufixo do cluster ou caso contrário, para um servidor DNS de nível superior. </p><br><p>  O arquivo <code>/etc/resolv.conf</code> dentro de cada container terá a seguinte aparência por padrão: </p><br><pre> <code class="plaintext hljs">nameserver 100.64.0.10 search namespace.svc.cluster.local svc.cluster.local cluster.local eu-west-1.compute.internal options ndots:5</code> </pre> <br><p>  Como você pode ver, existem três diretivas: </p><br><ol><li>  O servidor de nomes é o serviço IP do <code>kube-dns</code> </li><li>  4 domínios de pesquisa local especificados </li><li>  Há uma opção <code>ndots:5</code> </li></ol><br><p>  Uma parte interessante dessa configuração é como os domínios e <code>ndots:5</code> pesquisa local <code>ndots:5</code> configurações se dão bem.  Para entender isso, você precisa entender como a resolução DNS funciona para nomes parciais. </p><br><h3 id="chto-takoe-polnoe-imya">  Qual é o nome completo? </h3><br><p>  Um nome totalmente qualificado é um nome para o qual nenhuma pesquisa local será realizada e o nome será considerado absoluto durante a resolução do nome.  Por convenção, o software DNS considera um nome totalmente qualificado se terminar com um ponto (.). E não é totalmente definido de outra forma.  Esse é o <code>google.com.</code>  totalmente definido, mas <code>google.com</code> não. </p><br><h3 id="kak-obrabatyvaetsya-nepolnoe-imya">  Como é tratado um nome incompleto? </h3><br><p>  Quando um aplicativo se conecta ao host remoto especificado no nome, a resolução de nomes DNS geralmente é feita usando uma chamada do sistema, por exemplo, <code>getaddrinfo()</code> .  Mas se o nome estiver incompleto (não termina com.), Pergunto-me se a chamada do sistema tentará resolver o nome como absoluto primeiro ou se passará pelos domínios de pesquisa local primeiro?  Depende da opção <code>ndots</code> . </p><br><p>  Do manual no <code>resolv.conf</code> : </p><br><pre> <code class="plaintext hljs">ndots:n     ,     ,       .     n  1,  ,      - ,       ,       -   .</code> </pre> <br><p>  Isso significa que, se <code>ndots</code> estiver definido como 5 e o nome contiver menos de 5 pontos, a chamada do sistema tentará resolvê-lo sequencialmente, primeiro percorrendo todos os domínios de pesquisa local e, se malsucedido, acabará por resolvê-lo como um nome absoluto. </p><br><h3 id="pochemu-zhe-ndots5-mozhet-negativno-skazatsya-na-proizvoditelnost-prilozheniya">  Por que os <code>ndots:5</code> podem afetar adversamente o desempenho do aplicativo? </h3><br><p>  Como você entende, se o seu aplicativo usar muito tráfego externo, para cada conexão TCP estabelecida (ou, mais precisamente, para cada nome resolvido), ele emitirá 5 consultas DNS antes que o nome seja resolvido corretamente, pois passará por 4 primeiro domínio de pesquisa local e, no final, emitirá uma solicitação de resolução de nome absoluta. </p><br><p>  O diagrama a seguir mostra o tráfego total em nossos 3 módulos kube-dns antes e depois da troca de vários nomes de host configurados em nosso aplicativo para nomes totalmente definidos. </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/a42/2d7/84d/a422d784da46831b34013bb54924544d.png" alt="imagem"></p><br><p>  O diagrama a seguir mostra o atraso do aplicativo antes e depois da troca de vários nomes de host configurados em nosso aplicativo (a linha azul vertical é a implantação): </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/8a0/746/a24/8a0746a248f511891483ac622adc9374.png" alt="imagem"></p><br><h3 id="reshenie-1---ispolzovat-polnostyu-opredelennye-imena">  Solução 1 - use nomes totalmente qualificados </h3><br><p>  Se você tiver poucos nomes externos estáticos (ou seja, definidos na configuração do aplicativo) aos quais você cria um grande número de conexões, talvez a solução mais simples seja trocá-los por nomes totalmente definidos, simplesmente adicionando-os.  no final. </p><br><p>  Esta não é uma decisão final, mas ajuda a melhorar rapidamente, embora não de forma limpa, a situação.  Aplicamos esse patch para resolver nosso problema, cujos resultados foram mostrados nas capturas de tela acima. </p><br><h3 id="reshenie-2---kastomizaciya-ndots-v-dnsconfig">  Solução # 2 - personalizando <code>ndots</code> no <code>dnsConfig</code> </h3><br><p>  No Kubernetes 1.9, um recurso apareceu no modo alfa (versão beta v1.10), que permite um melhor controle dos parâmetros DNS através da propriedade pod no <code>dnsConfig</code> .  Entre outras coisas, permite ajustar o valor de <code>ndots</code> para uma lareira específica, ou seja, </p><br><pre> <code class="plaintext hljs">apiVersion: v1 kind: Pod metadata: namespace: default name: dns-example spec: containers: - name: test image: nginx dnsConfig: options: - name: ndots value: "1"</code> </pre> <br><h3 id="istochniki">  Fontes </h3><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">O que é a qualificação de nome DNS</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Kubernetes: DNS para serviços e pods</a> </li></ul><br><h3 id="takzhe-chitayte-drugie-stati-v-nashem-bloge">  Leia também outros artigos em nosso blog: </h3><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Compreendendo o pacote de contexto em Golang</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Três truques simples para reduzir as imagens do docker</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Backups com estado em Kubernetes</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Fazendo backup de um grande número de projetos da web heterogêneos</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Bot de telegrama para Redmine.</a>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Como simplificar a vida para si e para as pessoas</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt464371/">https://habr.com/ru/post/pt464371/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt464359/index.html">Recursos de teste de aplicativos da Web móveis</a></li>
+<li><a href="../pt464361/index.html">Intel Quartz Canyon - NUC para profissionais</a></li>
+<li><a href="../pt464365/index.html">Semana 34 de segurança: vulnerabilidades extraordinárias no Windows</a></li>
+<li><a href="../pt464367/index.html">E outro escalonamento de privilégios locais no cliente Windows Steam 0 dia</a></li>
+<li><a href="../pt464369/index.html">Qual bloqueador você usa? Resultados</a></li>
+<li><a href="../pt464373/index.html">Edge-to-edge no Android: fazendo certo</a></li>
+<li><a href="../pt464375/index.html">Como os mecanismos de pesquisa funcionam</a></li>
+<li><a href="../pt464377/index.html">Montador sujo hacks 6502</a></li>
+<li><a href="../pt464381/index.html">Viagem ao Alasca ou KDD'19 através dos olhos de uma testemunha ocular</a></li>
+<li><a href="../pt464383/index.html">Como eu coloco as coisas em ordem em um projeto em que há uma floresta de mãos diretas (configurações tslint, mais bonitas, etc.)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

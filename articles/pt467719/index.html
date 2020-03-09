@@ -1,0 +1,165 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌬️ 👶🏾 🐭 Uma maneira de obter o histórico de bloqueios no PostgreSQL 🏿 👩‍⚕️ 🎢</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Continuação do artigo " Tentando criar um análogo de ASH para PostgreSQL ". 
+
+ O artigo será considerado e mostrado em consultas e exemplos específico...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Uma maneira de obter o histórico de bloqueios no PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/467719/"> Continuação do artigo " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Tentando criar um análogo de ASH para PostgreSQL</a> ". <br><br>  O artigo será considerado e mostrado em consultas e exemplos específicos - que informações úteis podem ser obtidas usando o histórico da visualização pg_locks. <br><blockquote>  Advertência <br>  Devido à novidade do tópico e ao período de teste incompleto, o artigo pode conter erros.  Críticas e comentários são fortemente incentivados e esperados. </blockquote><a name="habracut"></a><h2>  Dados de entrada </h2><br><h3>  Histórico de envios de Pg_locks </h3><br><div class="spoiler">  <b class="spoiler_title">archive_locking</b> <div class="spoiler_text"><pre><code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> archive_locking ( timepoint <span class="hljs-type"><span class="hljs-type">timestamp</span></span> <span class="hljs-type"><span class="hljs-type">without time zone</span></span> , locktype <span class="hljs-type"><span class="hljs-type">text</span></span> , relation <span class="hljs-type"><span class="hljs-type">oid</span></span> , mode <span class="hljs-type"><span class="hljs-type">text</span></span> , tid xid , vtid <span class="hljs-type"><span class="hljs-type">text</span></span> , pid <span class="hljs-type"><span class="hljs-type">integer</span></span> , blocking_pids <span class="hljs-type"><span class="hljs-type">integer</span></span>[] , granted <span class="hljs-type"><span class="hljs-type">boolean</span></span> , queryid <span class="hljs-type"><span class="hljs-type">bigint</span></span> );</code> </pre> </div></div><br>  De fato, a tabela é semelhante à tabela <b>archive_pg_stat_activity</b> descrita em mais detalhes aqui - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">pg_stat_statements + pg_stat_activity + loq_query = pg_ash?</a>  e aqui - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Uma tentativa de criar um análogo do ASH para o PostgreSQL.</a> <br><br>  Para preencher a coluna <b>queryid,</b> use a função <br><br><div class="spoiler">  <b class="spoiler_title">update_history_locking_by_queryid</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">--update_history_locking_by_queryid.sql CREATE OR REPLACE FUNCTION update_history_locking_by_queryid() RETURNS boolean AS $$ DECLARE result boolean ; current_minute double precision ; start_minute integer ; finish_minute integer ; start_period timestamp without time zone ; finish_period timestamp without time zone ; lock_rec record ; endpoint_rec record ; current_hour_diff double precision ; BEGIN RAISE NOTICE '***update_history_locking_by_queryid'; result = TRUE ; current_minute = extract ( minute from now() ); SELECT * FROM endpoint WHERE is_need_monitoring INTO endpoint_rec ; current_hour_diff = endpoint_rec.hour_diff ; IF current_minute &lt; 5 THEN RAISE NOTICE 'Current time is less than 5 minute.'; start_period = date_trunc('hour',now()) + (current_hour_diff * interval '1 hour'); finish_period = start_period - interval '5 minute' ; ELSE finish_minute = extract ( minute from now() ) / 5 ; start_minute = finish_minute - 1 ; start_period = date_trunc('hour',now()) + interval '1 minute'*start_minute*5+(current_hour_diff * interval '1 hour'); finish_period = date_trunc('hour',now()) + interval '1 minute'*finish_minute*5+(current_hour_diff * interval '1 hour') ; END IF ; RAISE NOTICE 'start_period = %', start_period; RAISE NOTICE 'finish_period = %', finish_period; FOR lock_rec IN WITH act_queryid AS ( SELECT pid , timepoint , query_start AS started , MAX(timepoint) OVER (PARTITION BY pid , query_start ) AS finished , queryid FROM activity_hist.history_pg_stat_activity WHERE timepoint BETWEEN start_period and finish_period GROUP BY pid , timepoint , query_start , queryid ), lock_pids AS ( SELECT hl.pid , hl.locktype , hl.mode , hl.timepoint , MIN ( timepoint ) OVER (PARTITION BY pid , locktype ,mode ) as started FROM activity_hist.history_locking hl WHERE hl.timepoint between start_period and finish_period GROUP BY hl.pid , hl.locktype , hl.mode , hl.timepoint ) SELECT lp.pid , lp.locktype , lp.mode , lp.timepoint , aq.queryid FROM lock_pids lp LEFT OUTER JOIN act_queryid aq ON ( lp.pid = aq.pid AND lp.started BETWEEN aq.started AND aq.finished ) WHERE aq.queryid IS NOT NULL GROUP BY lp.pid , lp.locktype , lp.mode , lp.timepoint , aq.queryid LOOP UPDATE activity_hist.history_locking SET queryid = lock_rec.queryid WHERE pid = lock_rec.pid AND locktype = lock_rec.locktype AND mode = lock_rec.mode AND timepoint = lock_rec.timepoint ; END LOOP; RETURN result ; END $$ LANGUAGE plpgsql;</span></span></code> </pre> </div></div><br>  <b>Explicação: o</b> valor da coluna queryid é atualizado na tabela history_locking e, ao criar uma nova seção para a tabela archive_locking, o valor será salvo em valores históricos. <br><br><h2>  Impressão </h2><br>  Informações gerais sobre os processos como um todo. <br><br><h3>  ESPERANDO FECHAMENTOS POR LOCKTYPES </h3><br><div class="spoiler">  <b class="spoiler_title">Pedido</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , count(*) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> total <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> locktype , mode ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , total * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">3</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Exemplo</b> <div class="spoiler_text"><pre>  |  AGUARDANDO FECHAMENTOS POR LOCKTYPES
+ + -------------------- + ---------------------------- - + --------------------
+ |  tipo de bloqueio |  modo |  duração
+ + -------------------- + ---------------------------- - + --------------------
+ |  transactionid |  Sharelock  19:39:26
+ |  tupla |  AccessExclusiveLock |  00:03:35
+ + -------------------- + ---------------------------- - + --------------------
+</pre></div></div><br><h3>  TOMADAS DE FECHAMENTOS POR LOCKTYPES </h3><br><div class="spoiler">  <b class="spoiler_title">Pedido</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , count(*) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> total <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> locktype , mode ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , total * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">3</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Exemplo</b> <div class="spoiler_text"><pre>  |  TOMADAS DE FECHAMENTOS POR LOCKTYPES
+ + -------------------- + ---------------------------- - + --------------------
+ |  tipo de bloqueio |  modo |  duração
+ + -------------------- + ---------------------------- - + --------------------
+ |  relação |  RowExclusiveLock |  51:11:10
+ |  virtualxid |  ExclusiveLock |  48:10:43
+ |  transactionid |  ExclusiveLock |  44:24:53
+ |  relação |  AccessShareLock |  20:06:13
+ |  tupla |  AccessExclusiveLock |  17:58:47
+ |  tupla |  ExclusiveLock |  01:40:41
+ |  relação |  ShareUpdateExclusiveLock |  00:26:41
+ |  objeto |  RowExclusiveLock |  00:00:01
+ |  transactionid |  Sharelock  00:00:01
+ |  estender |  ExclusiveLock |  00:00:01
+ + -------------------- + ---------------------------- - + --------------------
+</pre></div></div><br>  Informações detalhadas sobre consultas específicas de consultas <br><br><h3>  AGUARDANDO FECHAMENTOS POR LOCKTYPES POR QUERYID </h3><br><div class="spoiler">  <b class="spoiler_title">Pedido</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids , MIN ( timepoint ) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype ,mode ) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> started <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> queryid <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids , COUNT(*) * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">4</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Exemplo</b> <div class="spoiler_text"><pre>  |  AGUARDANDO FECHAMENTOS POR LOCKTYPES QUERYID
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ -
+ |  pid |  tipo de bloqueio |  modo |  iniciado |  queryid |  blocking_pids |  duração
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ -
+ |  11288  transactionid |  Sharelock  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11626  transactionid |  Sharelock  2019-09-17 10: 00: 21.380921 |  389015618226997618 |  {12380} |  00:00:29
+ |  11626  transactionid |  Sharelock  2019-09-17 10: 00: 21.380921 |  389015618226997618 |  {11092} |  00:03:25
+ |  11626  transactionid |  Sharelock  2019-09-17 10: 00: 21.380921 |  389015618226997618 |  {12213} |  00:01:55
+ |  11626  transactionid |  Sharelock  2019-09-17 10: 00: 21.380921 |  389015618226997618 |  {12751} |  00:00:01
+ |  11629  transactionid |  Sharelock  2019-09-17 10: 00: 24.331935 |  389015618226997618 |  {11092} |  00:03:22
+ |  11629  transactionid |  Sharelock  2019-09-17 10: 00: 24.331935 |  389015618226997618 |  {12007} |  00:00:01
+ |  12007  transactionid |  Sharelock  2019-09-17 10: 05: 03.327933 |  389015618226997618 |  {11629} |  00:00:13
+ |  12007  transactionid |  Sharelock  2019-09-17 10: 05: 03.327933 |  389015618226997618 |  {11092} |  00:01:10
+ |  12007  transactionid |  Sharelock  2019-09-17 10: 05: 03.327933 |  389015618226997618 |  {11288} |  00:00:05
+ |  12213  transactionid |  Sharelock  2019-09-17 10: 06: 07.328019 |  389015618226997618 |  {12007} |  00:00:10 </pre></div></div><br><h3>  TOMANDO FECHAMENTOS POR LOCKTYPES POR QUERYID </h3><br><div class="spoiler">  <b class="spoiler_title">Pedido</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids , MIN ( timepoint ) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype ,mode ) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> started <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> queryid <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids , COUNT(*) * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">4</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Exemplo</b> <div class="spoiler_text"><pre>  |  TOMANDO FECHAMENTOS POR LOCKTYPES POR QUERYID
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ -
+ |  pid |  tipo de bloqueio |  modo |  iniciado |  queryid |  blocking_pids |  duração
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ -
+ |  11288  relação |  RowExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11092  transactionid |  ExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {}  00:03:34
+ |  11288  relação |  RowExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {}  00:00:10
+ |  11092  relação |  RowExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {}  00:03:34
+ |  11092  virtualxid |  ExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {}  00:03:34
+ |  11288  virtualxid |  ExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11288  transactionid |  ExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11288  tupla |  AccessExclusiveLock |  2019-09-17 10: 00: 00.302936 |  389015618226997618 |  {11092} |  00:03:34 </pre></div></div><br>  <b>Usando o histórico de bloqueios ao analisar incidentes de desempenho.</b> <br><br><ol><li>  Uma solicitação com queryid = 389015618226997618 executada por um processo com pid = 11288 bloqueio esperado de 17/09/2019 às 10:00:00 por 3 minutos. </li><li>  O bloqueio foi realizado por um processo com pid = 11092 </li><li>  Um processo com pid = 11092 executando uma consulta com queryid = 389015618226997618 a partir de 17/09/2019 às 10:00:00 reteve o bloqueio por 3 minutos. </li></ol><br><h2>  Sumário </h2><br>  Agora, espero, comece o mais interessante e útil - coletar estatísticas e analisar casos sobre o histórico de expectativas e bloqueios. <br><br>  No futuro, quero acreditar, será um conjunto de algum tipo de nota (semelhante ao Oracle Metalink). <br><br>  Em geral, é por esse motivo que a técnica utilizada é exibida o mais rápido possível para a familiarização geral. <br><br>  Em um futuro próximo, tentarei colocar o projeto no github. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt467719/">https://habr.com/ru/post/pt467719/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt467701/index.html">Categorias em vez de diretórios. Uma ferramenta para armazenamento conveniente de arquivos</a></li>
+<li><a href="../pt467703/index.html">IT Africa: As empresas e startups de tecnologia mais interessantes do continente</a></li>
+<li><a href="../pt467705/index.html">Paramagnons e magnons: energia do calor</a></li>
+<li><a href="../pt467707/index.html">Como configurar o Linux para entrar no domínio usando os algoritmos GOST</a></li>
+<li><a href="../pt467711/index.html">IoT, nevoeiro e nuvens: fale sobre tecnologia?</a></li>
+<li><a href="../pt467723/index.html">Verifique o ponto Gaia R80.40. O que será novo?</a></li>
+<li><a href="../pt467727/index.html">Olá SaaS | 2019 SaaS Trends por Blissfully</a></li>
+<li><a href="../pt467729/index.html">Batatas fritas ou carona? Pequenas coisas únicas em smartphones</a></li>
+<li><a href="../pt467733/index.html">Como desenvolvedor, nunca conheço meu próprio valor, porque não existe. Mas todo o sistema é construído como se fosse</a></li>
+<li><a href="../pt467735/index.html">Desafios para adultos</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

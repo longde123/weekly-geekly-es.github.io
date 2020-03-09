@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧑🏻‍🤝‍🧑🏻 ♿️ 👶🏿 Mecanismo de tuplas somente de heap no PostgreSQL ♑️ 😬 📸</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="O Postgresql difere de outros DBMSs, pois durante a operação UPDATE, as alterações na linha existente não ocorrem e, em vez disso, é feita uma cópia d...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Mecanismo de tuplas somente de heap no PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/475642/"><p>  O Postgresql difere de outros DBMSs, pois durante a operação UPDATE, as alterações na linha existente não ocorrem e, em vez disso, é feita uma cópia da linha que difere do original com os valores das colunas afetadas pela atualização - eles são antigos no original e alterados na cópia.  Essa abordagem, por um lado, permite evitar bloqueios durante a execução de solicitações de leitura e gravação e, por outro lado, cria a necessidade de limpar constantemente versões antigas de linhas que ninguém nunca lerá.  Em conexão com esse recurso de arquitetura, geralmente surge a pergunta sobre o que acontecerá se você precisar armazenar no banco de dados algo como a hora do último acesso aos dados que, caso contrário, não será alterado.  Ele responderá ao desempenho?  Isso levará a uma constante reestruturação dos índices? </p><br><p>  Em resumo, sim, o Copy On Write não irá a lugar algum, mas em muitos casos os índices não podem ser reconstruídos, graças ao HOT. </p><a name="habracut"></a><br><p>  As tuplas de heap only, também conhecidas como HOT, são uma otimização usada pelo Postgres para reduzir a quantidade de E / S necessária para atualizações.  Devido ao MVCC, uma atualização no Postgres consiste em encontrar uma linha para a atualização e inserir novas versões da linha no banco de dados.  A principal desvantagem deste procedimento é a necessidade de adicionar novamente uma linha a cada índice. <br>  Isso requer muito mais E / S porque a linha precisa ser reinserida em cada índice da tabela.  A necessidade de reinserir surge porque a posição física da nova versão de uma linha no disco é diferente da posição física da versão antiga. </p><br><p>  Para reduzir a quantidade de E / S necessária para UPDATE, a equipe do Postgres adicionou HOT ao Postgres.  A ideia por trás do HOT é relativamente simples.  Ao atualizar a linha, se possível, o Postgres colocará uma nova cópia da linha imediatamente após a cópia antiga da linha.  Além disso, na cópia antiga da string, um rótulo especial é afixado para que o Postgres saiba que a nova cópia da string é imediatamente após a antiga.  Portanto, a atualização de todos os índices não é necessária. </p><br><p>  Durante a varredura por índice para a qual uma nova cópia da sequência passa, o filtro do Postgres encontrará a cópia antiga da sequência.  Como existe uma etiqueta especial na cópia antiga da linha, o Postgres entenderá que a nova cópia da linha está localizada imediatamente após a antiga e encontrará a nova versão e a utilizará.  Acontece que o Postgres nesses casos pode se comportar como se todos os índices apontassem para uma nova cópia da string e eles não precisassem ser reconstruídos. </p><br><p>  Agora, o HOT está envolvido apenas quando apenas colunas não indexáveis ​​estão envolvidas na atualização.  Se pelo menos uma coluna participante da atualização estiver incluída no índice, o HOT não poderá ser aplicado.  Nesse caso, há vários problemas com o uso do HOT.  Por exemplo, quando o índice na coluna que precisa ser atualizado é indexado por uma varredura e a cópia antiga da linha cai no predicado da varredura, mas a nova não.  Nessa situação, o Postgres tentará usar o índice para encontrar rapidamente todas as linhas adequadas ao predicado de consulta e, no caso de colunas que foram atualizadas usando o HOT, produzirá uma nova cópia da linha que não corresponde ao predicado de consulta.  Devido a essa limitação (que o HOT não funciona quando as colunas indexáveis ​​estão incluídas na atualização), o Postgres pode garantir que, quando ele tentar encontrar linhas adequadas ao predicado pelo qual o índice é passado, se o predicado corresponder à versão antiga da linha, a nova versão da linha também combina com ele e vice-versa. </p><br><p>  Atualmente em desenvolvimento, há uma extensão HOT denominada WARM, que também funciona ao atualizar colunas nas quais os índices são criados.  A idéia por trás do WARM é colocar uma nova linha imediatamente após a antiga e atualizar a linha para índices que mudaram de coluna.  Isso complica bastante a situação descrita, porque agora o Postgres precisa de uma maneira de determinar se a linha passa no filtro para o índice ou não. </p><br><p>  <strong>PS</strong> No artigo original, o mecanismo HOT é descrito, mas aqui temos em mente o mecanismo no qual heap apenas tuplas estão envolvidas, e o próprio termo tem um significado separado. </p><br><p>  A tupla somente da pilha é apenas uma nova versão da linha.  Por mais estranho que pareça, um Heap é uma tabela, e Heap significa apenas que essa linha só pode ser encontrada pela cadeia que leva da versão mais antiga da linha chamada raiz. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt475642/">https://habr.com/ru/post/pt475642/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt475624/index.html">PHP-Watcher: uma ferramenta que simplifica o desenvolvimento de aplicativos de longa duração</a></li>
+<li><a href="../pt475626/index.html">Os autotestes podem substituir uma pessoa em busca de vulnerabilidades: entrevista com Alexandra Svatikova</a></li>
+<li><a href="../pt475630/index.html">Knative - uma plataforma baseada em k8s como um serviço com suporte sem servidor</a></li>
+<li><a href="../pt475636/index.html">Elementos do vetor de incremento</a></li>
+<li><a href="../pt475640/index.html">Se você estiver criando algo, evite a programação do gerente.</a></li>
+<li><a href="../pt475646/index.html">Yuri Ryabtsev: "A primeira intercepção de um míssil balístico é um evento aproximadamente igual ao voo de Gagarin"</a></li>
+<li><a href="../pt475652/index.html">Como desenvolvemos um aplicativo móvel no sistema operacional Aurora (Sailfish Mobile OS RUS)</a></li>
+<li><a href="../pt475654/index.html">“No primeiro mês, três homens saudáveis ​​tiveram medo de ligar a turbina” - como Alexei Statsenko constrói um jetpack a partir do zero</a></li>
+<li><a href="../pt475656/index.html">Uma análise da atividade de vírus para dispositivos móveis em outubro de 2019</a></li>
+<li><a href="../pt475658/index.html">Por que ir para o DevOpsDays? E por que essa não é outra conferência do DevOps</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

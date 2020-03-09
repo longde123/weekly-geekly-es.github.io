@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👧🏿 🔤 ✡️ Escrevendo um blog sobre microsserviços - Parte 2 do API Gateway 🕞 🕠 🚵🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Na primeira parte de nossa série de artigos "Escrevendo um blog sobre microsserviços" , descrevemos uma abordagem geral para resolver o problema. 
+
+ A...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Escrevendo um blog sobre microsserviços - Parte 2 do API Gateway</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/X5RetailGroup/blog/473516/">  Na <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">primeira parte de nossa série de artigos "Escrevendo um blog sobre microsserviços"</a> , descrevemos uma abordagem geral para resolver o problema. <br><br>  Agora é a vez do API Gateway ou GW API. <br><br>  Em nossa API GW c <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" class="user_link">ptimofeev</a> , implementamos as seguintes funções: <br><br><ul><li>  Convertendo solicitações REST em solicitações de gRPC e vice-versa. </li><li>  Solicitar log. </li><li>  Solicitar autenticação </li><li>  Designação de um ID de Rastreio para cada solicitação para posterior transferência entre microsserviços ao longo de toda a cadeia de execução da solicitação. </li></ul><a name="habracut"></a><br>  Então vamos lá ... <br><br>  Para implementar a função de conversão REST / gRPC, usaremos a biblioteca gosh <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">grpc-gateway</a> . <br><br>  Além disso, no protofile de cada microsserviço que queremos publicar no REST, você precisa adicionar uma descrição da opção na seção de descrição das interfaces de serviço.  Na verdade, ele especifica o caminho e o método pelo qual o acesso REST será executado. <br><br><pre><code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">//  Category service CategoryService { //  rpc Create (CreateCategoryRequest) returns (CreateCategoryResponse) { option (google.api.http) = { post: "/api/v1/category" }; } }</span></span></code> </pre> <br>  Com base nessas informações, o script de geração de código (./bin/protogen.sh) criará o código do servidor gRPC (no diretório microservice), o cliente gRPC (no diretório api-gw) e gerará a documentação mais recente da API (no formato {{service name}}. swagger.json) <br><br>  Em seguida, precisamos escrever o código HTTP Proxy, que por um lado será um servidor HTTP (para processar solicitações REST) ​​e, por outro, será um cliente gRPC para nossos microsserviços (servidores gRPC). <br><br>  Colocaremos esse código no arquivo ./services/api-gw/main.go. <br><br>  Primeiro, na seção de importação, conectamos bibliotecas clientes aos nossos microsserviços <br>  (protogen.sh os gerou para nós): <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> ( … userService <span class="hljs-string"><span class="hljs-string">"./services/user/protobuf"</span></span> postService <span class="hljs-string"><span class="hljs-string">"./services/post/protobuf"</span></span> commentService <span class="hljs-string"><span class="hljs-string">"./services/comment/protobuf"</span></span> categoryService <span class="hljs-string"><span class="hljs-string">"./services/category/protobuf"</span></span> …</code> </pre><br>  A seguir, indicamos os endereços e portas nas quais nossos serviços gRPC “travam” (pegamos os valores das variáveis ​​de ambiente): <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> ( <span class="hljs-comment"><span class="hljs-comment">// gRPC services userServerAdress=fmt.Sprintf("%s:%s",os.Getenv("USER_HOST"),os.Getenv("USER_PORT")) postServerAdress=fmt.Sprintf("%s:%s",os.Getenv("POST_HOST"),os.Getenv("POST_PORT")) commentServerAdress=fmt.Sprintf("%s:%s",os.Getenv("COMMENT_HOST"),os.Getenv("COMMENT_PORT")) categoryServerAdress=fmt.Sprintf("%s:%s",os.Getenv("CATEGORY_HOST"),os.Getenv("CATEGORY_PORT")) )</span></span></code> </pre><br>  E, finalmente, implementamos o próprio proxy HTTP: <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">HTTPProxy</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(proxyAddr </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span>{ grpcGwMux:=runtime.NewServeMux() <span class="hljs-comment"><span class="hljs-comment">//---------------------------------------------------------------- //     gRPC //---------------------------------------------------------------- //   User grpcUserConn, err:=grpc.Dial( userServerAdress, grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to User service", err) } defer grpcUserConn.Close() err = userService.RegisterUserServiceHandler( context.Background(), grpcGwMux, grpcUserConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //   Post grpcPostConn, err:=grpc.Dial( postServerAdress, grpc.WithUnaryInterceptor(AccessLogInterceptor), grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to Post service", err) } defer grpcPostConn.Close() err = postService.RegisterPostServiceHandler( context.Background(), grpcGwMux, grpcPostConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //   Comment grpcCommentConn, err:=grpc.Dial( commentServerAdress, grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to Comment service", err) } defer grpcCommentConn.Close() err = commentService.RegisterCommentServiceHandler( context.Background(), grpcGwMux, grpcCommentConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //   Category grpcCategoryConn, err:=grpc.Dial( categoryServerAdress, grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to Category service", err) } defer grpcCategoryConn.Close() err = categoryService.RegisterCategoryServiceHandler( context.Background(), grpcGwMux, grpcCategoryConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //     REST //---------------------------------------------------------------- mux:=http.NewServeMux() mux.Handle("/api/v1/",grpcGwMux) mux.HandleFunc("/",helloworld) fmt.Println("starting HTTP server at "+proxyAddr) log.Fatal(http.ListenAndServe(proxyAddr,mux)) }</span></span></code> </pre><br>  Ao configurar a conexão com microsserviços, usamos a opção grpc.WithUnaryInterceptor (AccessLogInterceptor), na qual passamos a função AccessLogInterceptor como parâmetro.  Isso nada mais é do que uma implementação da camada de middleware, ou seja,  a função AccessLogInterceptor será executada a cada chamada gRPC do microsserviço filho. <br><br><pre> <code class="go hljs">… <span class="hljs-comment"><span class="hljs-comment">//---------------------------------------------------------------- //   Post grpcPostConn, err:=grpc.Dial( … grpc.WithUnaryInterceptor(AccessLogInterceptor), … )</span></span></code> </pre> <br>  Por sua vez, na função AccessLogInterceptor, já implementamos mecanismos de autenticação, log e geração de TraceId. <br><br>  Se o atributo de autorização foi especificado no cabeçalho na solicitação de entrada (REST), analisamos e validamos na função CheckGetJWTToken, que retorna um erro ou, se bem-sucedido, retorna UserId e UserRole. <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> traceId,userId,userRole <span class="hljs-keyword"><span class="hljs-keyword">string</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-built_in"><span class="hljs-built_in">len</span></span>(md[<span class="hljs-string"><span class="hljs-string">"authorization"</span></span>])&gt;<span class="hljs-number"><span class="hljs-number">0</span></span>{ tokenString:= md[<span class="hljs-string"><span class="hljs-string">"authorization"</span></span>][<span class="hljs-number"><span class="hljs-number">0</span></span>] <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> tokenString!=<span class="hljs-string"><span class="hljs-string">""</span></span>{ err,token:=userService.CheckGetJWTToken(tokenString) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err!=<span class="hljs-literal"><span class="hljs-literal">nil</span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> err } userId=fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"%s"</span></span>,token[<span class="hljs-string"><span class="hljs-string">"UserID"</span></span>]) userRole=fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"%s"</span></span>,token[<span class="hljs-string"><span class="hljs-string">"UserRole"</span></span>]) } }</code> </pre> <br>  Em seguida, formamos o TraceId e o agrupamos com UserId e UserRole no contexto da chamada e realizamos a chamada gRPC do nosso microsserviço. <br><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">// ID  traceId=fmt.Sprintf("%d",time.Now().UTC().UnixNano()) callContext:=context.Background() mdOut:=metadata.Pairs( "trace-id",traceId, "user-id",userId, "user-role",userRole, ) callContext=metadata.NewOutgoingContext(callContext,mdOut) err:=invoker(callContext,method,req,reply,cc, opts...)</span></span></code> </pre><br>  E, finalmente, escrevemos um evento de chamada de serviço no log. <br><br><pre> <code class="go hljs">msg:=fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"Call:%v, traceId: %v, userId: %v, userRole: %v, time: %v"</span></span>, method,traceId,userId,userRole,time.Since(start)) app.AccesLog(msg)</code> </pre> <br>  Outro processador de middleware está "travando" nas respostas de métodos específicos (SignIn, SignUp) do serviço do Usuário.  Esse manipulador intercepta respostas gRPC, pega as respostas UserID e UserRole, converte-as em <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">JWT Token</a> e as fornece (JWT Token) na resposta REST como o cabeçalho de atributo "Authorization".  O código do middleware descrito é implementado no lado do cliente gRPC no arquivo ./api-gw/services/user/protobuf/functions.go. <br><br>  Conectamos o manipulador de respostas. <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">init</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { <span class="hljs-comment"><span class="hljs-comment">//     SignIn forward_UserService_SignIn_0 = forwardSignIn //     SignUp forward_UserService_SignUp_0 = forwardSignUp }</span></span></code> </pre><br>  Um exemplo é o manipulador de respostas SignIn (o manipulador SignUp é semelhante). <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">forwardSignIn</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(ctx context.Context, mux *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, req *http.Request, resp proto.Message, opts ...</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">func</span></span></span></span><span class="hljs-function"><span class="hljs-params">(context.Context, http.ResponseWriter, proto.Message)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">error</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-comment"><span class="hljs-comment">// proto.Message  SignInResponse signInResponse:=&amp;SignInResponse{} signInResponse.XXX_Merge(resp) token,err:=GetJWTToken(signInResponse.Slug,signInResponse.Role) if err!=nil{ http.Error(w, fmt.Sprintf("%v",err), http.StatusUnauthorized) return } w.Header().Set("authorization", token) runtime.ForwardResponseMessage(ctx, mux, marshaler, w, req, resp, opts...) }</span></span></code> </pre> <br>  Para continuar ... <br><br>  Sim, a demonstração do projeto pode ser vista <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">aqui</a> e o código fonte está <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">aqui</a> . </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt473516/">https://habr.com/ru/post/pt473516/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt473500/index.html">Aplicativo no TSD e comunicação com 1C: Enterprise 8.3 através do serviço HTTP. Parte 1 (escolhendo um método de troca. Descrição da API)</a></li>
+<li><a href="../pt473502/index.html">O Linux matou o Unix comercial?</a></li>
+<li><a href="../pt473510/index.html">Estamos escrevendo um programa para uma câmera com reconhecimento de rosto</a></li>
+<li><a href="../pt473512/index.html">Notícias do mundo do OpenStreetMap nº 482 (10/08/2019 - 10/10/2019)</a></li>
+<li><a href="../pt473514/index.html">Escrevendo um blog de microsserviço - Parte 1 “Descrição geral”</a></li>
+<li><a href="../pt473528/index.html">Uma cidade sem engarrafamentos</a></li>
+<li><a href="../pt473530/index.html">Introdução à exploração e reversão (não do zero) usando o IDA FREE e outras ferramentas gratuitas</a></li>
+<li><a href="../pt473532/index.html">Qual é o perigo de ataques de hackers em dispositivos IoT: histórias reais</a></li>
+<li><a href="../pt473534/index.html">Automatizar alterações nas informações do OEM</a></li>
+<li><a href="../pt473544/index.html">Estudo de recarga múltipla JPEG</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

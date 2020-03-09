@@ -1,0 +1,127 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚶🏾 👩‍👩‍👧‍👦 🧘🏼 Repositório LINSTOR e sua integração com o OpenNebula 🕴️ 🤸🏽 🚁</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Não faz muito tempo, o pessoal do LINBIT apresentou sua nova solução SDS - Linstor. Este é um armazenamento totalmente gratuito, baseado em tecnologia...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Repositório LINSTOR e sua integração com o OpenNebula</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/451186/"><p><img src="https://habrastorage.org/webt/e-/3z/h-/e-3zh-bbwjnljyazm68edln7muw.png"></p><br><p>  Não faz muito tempo, o pessoal do LINBIT apresentou sua nova solução SDS - Linstor.  Este é um armazenamento totalmente gratuito, baseado em tecnologias comprovadas: DRBD, LVM, ZFS.  Linstor combina simplicidade e uma arquitetura bem projetada, o que permite estabilidade e resultados impressionantes. </p><br><p>  Hoje, gostaria de falar um pouco mais sobre isso e mostrar como é fácil integrá-lo ao OpenNebula usando o linstor_un, um novo driver que desenvolvi especificamente para esse fim. </p><br><p>  O Linstor, em combinação com o OpenNebula, permite criar uma nuvem rápida e confiável, que pode ser facilmente implementada em sua própria infraestrutura. </p><a name="habracut"></a><br><h2 id="arhitektura-linstor">  Arquitetura Linstor </h2><br><p> O Linstor não é um sistema de arquivos nem um repositório de blocos em si; o Linstor é um orquestrador que fornece uma camada de abstração que automatiza a criação de volumes no LVM ou ZFS e os replica usando DRBD9. </p><br><h5 id="lomaem-stereotipy">  Quebrando estereótipos </h5><br><p>  Mas espere, DRBD?  "Por que automatizá-lo e como ele pode funcionar?" </p><br><p>  Lembre-se do passado, quando o DRBD8 era popular por toda parte.  Seu uso padrão implicava a criação de um grande dispositivo de bloco e o corte em muitos pedaços pequenos, usando o mesmo LVM.  Um tipo de mdadm RAID-1, mas com replicação na rede. </p><br><p>  Essa abordagem não apresenta desvantagens e, portanto, com o advento do DRBD9, os princípios da construção de armazenamento mudaram, agora um dispositivo DRBD separado é criado para cada máquina virtual. </p><br><p>  A abordagem com dispositivos de bloco independentes permite que você utilize melhor o espaço no cluster e também adiciona vários recursos adicionais.  Por exemplo, para cada dispositivo, você pode determinar o número de réplicas, sua localização e configurações individuais.  Eles são fáceis de criar / excluir, tirar instantâneos, redimensionar, ativar a criptografia e muito mais.  Vale ressaltar que o DRBD9 também suporta quorum, o que evita situações de cérebro dividido. </p><br><h5 id="resursy-i-bekendy">  Recursos e back-end </h5><br><p>  Criando um novo dispositivo de bloco, o Linstor coloca o número necessário de réplicas em diferentes nós no cluster.  Chamaremos cada réplica como um recurso DRBD. </p><br><p>  Os recursos são de dois tipos: </p><br><ul><li>  <strong>Recurso de dados</strong> - é um dispositivo DRBD localizado em um nó em um pool LVM ou ZFS. <br>  No momento, há suporte para vários back-ends e seu número está aumentando constantemente.  Há suporte para LVM, ThinLVM e ZFS.  Os dois últimos permitem criar e usar snapshots. </li><li>  <strong>Diskless-resource</strong> - é um dispositivo DRBD localizado em um nó sem back-end, mas permitindo tratá-lo como um dispositivo de bloco normal, todas as operações de leitura / gravação serão redirecionadas para recursos de dados.  O equivalente mais próximo de recursos sem disco é o iSCSI LUN. </li></ul><br><p>  Cada recurso DRBD pode ter até 8 réplicas e apenas uma delas pode estar ativa por padrão - <strong>Primária</strong> , todo o resto será <strong>Secundário</strong> e seu uso será impossível até que exista pelo menos uma Primária, ou seja, elas simplesmente serão replicadas dados entre você. </p><br><p>  Ao montar um dispositivo DRBD no sistema, ele automaticamente se torna <strong>Primário</strong> , portanto, mesmo um recurso Sem Disco, na terminologia DRBD, pode ser Primário. </p><br><h5 id="tak-zachem-nuzhen-linstor">  Então, por que precisamos do Linstor? </h5><br><p>  Confiando todas as tarefas intensivas em núcleo ao kernel, o Linstor é essencialmente um aplicativo Java comum que facilita a automação da criação de recursos DRBD. <br>  Além disso, cada recurso criado por ele será um cluster DRBD independente que funciona de forma independente, independentemente do estado do plano de controle e de outros recursos DRBD. </p><br><p>  <strong>O Linstor consiste em apenas dois componentes:</strong> </p><br><ul><li>  <strong>Linstor-controller</strong> - O controlador principal que fornece uma API para criar e gerenciar recursos.  Ele também se comunica com os satélites, verificando o espaço livre neles, e envia tarefas para criar e excluir novos recursos.  Ele roda em uma única instância e usa um banco de dados, que pode ser interno (H2) ou externo (PostgreSQL, MySQL, MariaDB) </li><li>  <strong>Linstor-satellite</strong> - Instalado em todos os nós de armazenamento e fornece ao controlador informações sobre espaço livre, além de executar tarefas recebidas do controlador para criar e excluir novos volumes e dispositivos DRBD sobre eles. </li></ul><br><p>  <strong>Linstor opera com os seguintes conceitos-chave:</strong> </p><br><ul><li>  <strong>O nó</strong> é um servidor físico no qual os recursos DRBD serão criados e usados. </li><li>  <strong>Pool de armazenamento</strong> - <strong>pool</strong> LVM ou ZFS criado em um nó no qual os recursos DRBD serão colocados.  Um pool sem disco também é possível - este é um pool no qual apenas os recursos sem disco serão hospedados. </li><li>  <strong>Definição de Recurso</strong> - Uma definição de recurso é essencialmente um protótipo que descreve o nome e todas as suas propriedades. </li><li>  <strong>Definição de volume</strong> - <strong>Definição de volume</strong> .  Cada recurso pode consistir em vários volumes, cada volume deve ter um tamanho. </li><li>  <strong>Recurso</strong> - uma instância criada de um dispositivo de bloco, cada recurso deve estar localizado em um nó específico e em algum pool de armazenamento. </li></ul><br><h2 id="ustanovka-linstor">  Instale o Linstor </h2><br><p>  Eu recomendo usar o Ubuntu como um sistema, como  Existe um <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">PPA pronto</a> para isso: </p><br><pre><code class="bash hljs">add-apt-repository ppa:linbit/linbit-drbd9-stack apt-get update</code> </pre> <br><p>  Ou Debian, onde o Linstor pode ser instalado a partir do repositório oficial do Proxmox: </p><br><pre> <code class="bash hljs">wget -O- https://packages.linbit.com/package-signing-pubkey.asc | apt-key add - PVERS=5 &amp;&amp; <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"deb http://packages.linbit.com/proxmox/ proxmox-</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$PVERS</span></span></span><span class="hljs-string"> drbd-9.0"</span></span> &gt; \ /etc/apt/sources.list.d/linbit.list apt-get update</code> </pre> <br><h5 id="controller">  Controlador </h5><br><p>  Tudo é simples aqui: </p><br><pre> <code class="bash hljs">apt-get install linstor-controller linstor-client systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> linstor-controller systemctl start linstor-controller</code> </pre> <br><h5 id="storage-nody">  Nós de armazenamento </h5><br><p>  Atualmente, o módulo do kernel <strong>DRBD8</strong> na árvore é fornecido no kernel Linux, infelizmente ele não nos convém e precisamos instalar o <strong>DRBD9</strong> : </p><br><pre> <code class="bash hljs">apt-get install drbd-dkms</code> </pre> <br><p>  Como mostra a prática, a maioria das dificuldades surge precisamente porque o módulo DRBD8 é carregado no sistema, e não o DRBD9.  Felizmente, é fácil verificar isso fazendo: </p><br><pre> <code class="bash hljs">modprobe drbd cat /proc/drbd</code> </pre> <br><p>  Se você vir a <strong>versão: 9</strong> - tudo está bem, se a <strong>versão: 8</strong> - algo deu errado e você precisará executar etapas adicionais para descobrir os motivos. </p><br><p>  Agora instale o <strong>linstor-satellite</strong> e o <strong>drbd-utils</strong> : </p><br><pre> <code class="bash hljs">apt-get install linstor-satellite drbd-utils systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> linstor-satellite systemctl start linstor-satellite</code> </pre> <br><h2 id="sozdanie-klastera">  Criação de Cluster </h2><br><p>  <strong>Conjuntos e nós de armazenamento</strong> </p><br><p>  Tomaremos o <strong>ThinLVM</strong> como <strong>back</strong> - <strong>end</strong> , como  é o mais simples e suporta instantâneos. <br>  Instale o <strong>lvm2</strong> se você ainda não o fez e vamos criar um pool ThinLVM em todos os nossos nós de armazenamento: </p><br><pre> <code class="bash hljs">sudo vgcreate drbdpool /dev/sdb sudo lvcreate -L 800G -T drbdpool/thinpool</code> </pre> <br><p>  Todas as ações adicionais podem ser executadas diretamente no controlador: </p><br><p>  Adicione nossos nós: </p><br><pre> <code class="bash hljs">linstor node create node1 127.0.0.11 linstor node create node2 127.0.0.12 linstor node create node3 127.0.0.13</code> </pre> <br><p>  Crie pools de armazenamento: </p><br><pre> <code class="bash hljs">linstor storage-pool create lvmthin node1 data drbdpool/thinpool linstor storage-pool create lvmthin node2 data drbdpool/thinpool linstor storage-pool create lvmthin node3 data drbdpool/thinpool</code> </pre> <br><p>  Agora verifique os pools criados: </p><br><pre> <code class="bash hljs">linstor storage-pool list</code> </pre> <br><p>  Se tudo for feito corretamente, devemos ver algo como: </p><br><pre>  + ------------------------------------------------- -------------------------------------------------- ---- +
+ |  StoragePool |  Nó  Motorista  PoolName |  FreeCapacity |  TotalCapacity |  SuportaSnapshots |
+ | ------------------------------------------------- -------------------------------------------------- ---- |
+ |  dados  node1 |  LVM_THIN  drbdpool / thinpool |  64 GiB |  64 GiB |  verdadeiro
+ |  dados  node2 |  LVM_THIN  drbdpool / thinpool |  64 GiB |  64 GiB |  verdadeiro
+ |  dados  node3 |  LVM_THIN  drbdpool / thinpool |  64 GiB |  64 GiB |  verdadeiro
+ + ------------------------------------------------- -------------------------------------------------- ---- + </pre><br><p>  <strong>Recursos DRBD</strong> </p><br><p>  Agora vamos tentar criar nosso novo recurso DRBD: </p><br><pre> <code class="bash hljs">linstor resource-definition create myres linstor volume-definition create myres 1G linstor resource create myres --auto-place 2</code> </pre> <br><p>  Vamos verificar os recursos criados: </p><br><pre> <code class="bash hljs">linstor volume list</code> </pre> <br><pre>  + ------------------------------------------------- -------------------------------------------------- --- +
+ |  Nó  Recurso  StoragePool |  VolumeNr |  MinorNr  DeviceName |  Alocado  InUse |  Estado
+ | ------------------------------------------------- -------------------------------------------------- --- |
+ |  node1 |  myres |  dados  0  1084  / dev / drbd1084 |  52 KiB |  Não utilizado |  UpToDate |
+ |  node2 |  myres |  dados  0  1084  / dev / drbd1084 |  52 KiB |  Não utilizado |  UpToDate |
+ + ------------------------------------------------- -------------------------------------------------- --- + </pre><br><p>  Ótimo!  - vemos que o recurso foi criado nos dois primeiros nós, também podemos tentar criar um recurso sem disco no terceiro: </p><br><pre> <code class="bash hljs">linstor resource create --diskless node3 myres</code> </pre> <br><p>  Nos nós, você sempre encontrará este dispositivo como <code>/dev/drbd1084</code> ou <code>/dev/drbd/by-res/myres/0</code> </p><br><p>  É assim que o Linstor funciona. Você pode obter mais informações na <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">documentação oficial</a> . </p><br><p>  Agora vou falar sobre como integrá-lo ao OpenNebula </p><br><h2 id="nastroyka-opennebula">  Configurar o OpenNebula </h2><br><p>  Não vou aprofundar o processo de criação do OpenNebula, pois  todas as etapas são descritas em detalhes na <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">documentação oficial</a> , a qual eu recomendo que você recorra, falarei apenas sobre a integração do OpenNebula com o Linstor. </p><br><h5 id="linstor_un">  linstor_un </h5><br><p>  Para resolver esse problema, escrevi meu próprio driver - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">linstor_un</a> , no momento, está disponível como um plug-in e deve ser instalado separadamente. </p><br><p>  Toda a instalação é realizada nos nós OpenNebula-frontend e não requer ações adicionais nos nós de computação. </p><br><p>  Primeiro de tudo, precisamos ter certeza de que temos <strong>jq</strong> e <strong>linstor-client</strong> : </p><br><pre> <code class="plaintext hljs">apt-get install jq linstor-client</code> </pre> <br><p>  O comando <code>linstor node list</code> deve listar os nós.  Todos os nós de computação do OpenNebula devem ser adicionados ao cluster Linstor. </p><br><p>  Faça o download e instale o plugin: </p><br><pre> <code class="bash hljs">curl -L https://github.com/OpenNebula/addon-linstor_un/archive/master.tar.gz | tar -xzvf - -C /tmp mv /tmp/addon-linstor_un-master/vmm/kvm/* /var/lib/one/remotes/vmm/kvm/ mkdir -p /var/lib/one/remotes/etc/datastore/linstor_un mv /tmp/addon-linstor_un-master/datastore/linstor_un/linstor_un.conf /var/lib/one/remotes/etc/datastore/linstor_un/linstor_un.conf mv /tmp/addon-linstor_un-master/datastore/linstor_un /var/lib/one/remotes/datastore/linstor_un mv /tmp/addon-linstor_un-master/tm/linstor_un /var/lib/one/remotes/tm/linstor_un rm -rf /tmp/addon-linstor_un-master</code> </pre> <br><p>  Agora precisamos adicioná-lo à configuração do OpenNebula, para isso, executamos as etapas simples descritas <strong><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">aqui</a></strong> . </p><br><p>  Em seguida, reinicie o OpenNebula: </p><br><pre> <code class="bash hljs">systemctl restart opennebula</code> </pre> <br><p>  E adicione nosso sistema de armazenamento de dados: </p><br><pre> <code class="bash hljs">cat &gt; system-ds.conf &lt;&lt;EOT NAME=<span class="hljs-string"><span class="hljs-string">"linstor-system"</span></span> TYPE=<span class="hljs-string"><span class="hljs-string">"SYSTEM_DS"</span></span> STORAGE_POOL=<span class="hljs-string"><span class="hljs-string">"data"</span></span> AUTO_PLACE=<span class="hljs-string"><span class="hljs-string">"2"</span></span> CLONE_MODE=<span class="hljs-string"><span class="hljs-string">"snapshot"</span></span> CHECKPOINT_AUTO_PLACE=<span class="hljs-string"><span class="hljs-string">"1"</span></span> BRIDGE_LIST=<span class="hljs-string"><span class="hljs-string">"node1 node2 node3"</span></span> TM_MAD=<span class="hljs-string"><span class="hljs-string">"linstor_un"</span></span> EOT onedatastore create system-ds.conf</code> </pre> <br><p>  E armazenamento de imagens: </p><br><pre> <code class="bash hljs">cat &gt; images-ds.conf &lt;&lt;EOT NAME=<span class="hljs-string"><span class="hljs-string">"linstor-images"</span></span> TYPE=<span class="hljs-string"><span class="hljs-string">"IMAGE_DS"</span></span> STORAGE_POOL=<span class="hljs-string"><span class="hljs-string">"data"</span></span> AUTO_PLACE=<span class="hljs-string"><span class="hljs-string">"2"</span></span> BRIDGE_LIST=<span class="hljs-string"><span class="hljs-string">"node1 node2 node3"</span></span> DISK_TYPE=<span class="hljs-string"><span class="hljs-string">"BLOCK"</span></span> DS_MAD=<span class="hljs-string"><span class="hljs-string">"linstor_un"</span></span> TM_MAD=<span class="hljs-string"><span class="hljs-string">"linstor_un"</span></span> EOT onedatastore create images-ds.conf</code> </pre> <br><ul><li>  O parâmetro <code>AUTO_PLACE</code> exibe o número de réplicas de dados que serão criadas para cada nova imagem no OpenNebula. </li><li>  O parâmetro <code>CLONE_MODE</code> indica como as imagens serão clonadas ao criar novas máquinas virtuais, o <code>snapshot</code> - criará um instantâneo da imagem e implantará uma máquina virtual a partir do instantâneo, <code>copy</code> - fará uma cópia completa da imagem para cada máquina virtual. </li><li>  <code>BRIDGE_LIST</code> recomenda especificar todos os nós que serão usados ​​para executar operações de clonagem de imagem. </li></ul><br><p>  Uma lista completa dos parâmetros suportados é fornecida no projeto <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">README</a> . </p><br><p>  Com essa configuração concluída, agora você pode baixar alguns dispositivos do <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">OpenNebula Marketplace</a> oficial e criar máquinas virtuais a partir dele. </p><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Link para o projeto</a> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt451186/">https://habr.com/ru/post/pt451186/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt451176/index.html">Notícias do mundo do OpenStreetMap nº 458 (23/04/2019 - 09/04/2019)</a></li>
+<li><a href="../pt451178/index.html">Teste de colisão com pouso em paraquedas</a></li>
+<li><a href="../pt451180/index.html">PCB substitui dois motores lineares</a></li>
+<li><a href="../pt451182/index.html">Como os tamanhos de matrizes C se tornaram parte da interface binária da biblioteca</a></li>
+<li><a href="../pt451184/index.html">Projeto Blue Origin Blue Moon: Pessoas na Lua até 2024</a></li>
+<li><a href="../pt451188/index.html">Sberbank ou lá e volta</a></li>
+<li><a href="../pt451196/index.html">Separação de perfis de clientes e freelancers</a></li>
+<li><a href="../pt451198/index.html">O papel da realidade aumentada e da realidade virtual na NBA</a></li>
+<li><a href="../pt451200/index.html">Obtenção automática de certificados SSL por Let's Encrypt usando o desafio DNS-01 e AWS</a></li>
+<li><a href="../pt451204/index.html">Editores de texto gratuitos para colaboração</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

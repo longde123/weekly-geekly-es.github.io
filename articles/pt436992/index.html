@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏇🏾 🙇🏾 🧘🏿 Tentativa e erro ao escolher o proxy reverso HTTP 👩🏼‍✈️ 👨🏻‍⚕️ 👨‍⚕️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Olá pessoal! 
+
+ Hoje, queremos falar sobre como a equipe do serviço de reservas de hotéis Ostrovok.ru resolveu o problema do crescimento de microsserv...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Tentativa e erro ao escolher o proxy reverso HTTP</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ostrovok/blog/436992/">  Olá pessoal! <br><br>  Hoje, queremos falar sobre como a equipe do serviço de reservas de hotéis <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Ostrovok.ru</a> resolveu o problema do crescimento de microsserviços, cuja tarefa é trocar informações com nossos fornecedores.  Sobre sua experiência diz <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" class="user_link">imortal</a> , DevOps Team Lead em Ostrovok.ru. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/mb/qx/eh/mbqxehqjq4oabybefapvvbpqadg.png"></div><a name="habracut"></a><br>  No início, o microsserviço era pequeno e executava as seguintes funções: <br><br><ul><li>  aceitar uma solicitação de um serviço local; </li><li>  faça uma solicitação a um parceiro; </li><li>  normalizar a resposta; </li><li>  retorne o resultado ao serviço de consulta. </li></ul><br>  No entanto, com o tempo, o serviço cresceu junto com o número de parceiros e solicitações a eles. <br><br>  À medida que o serviço cresceu, vários tipos de problemas começaram a surgir.  Diferentes fornecedores apresentam suas próprias regras: alguém limita o número máximo de conexões, alguém restringe os clientes às listas brancas. <br><cut></cut><br>  Como resultado, tivemos que resolver os seguintes problemas: <br><br><ul><li>  é desejável ter vários endereços IP externos fixos para que você possa fornecê-los aos parceiros para adicioná-los às listas brancas, </li><li>  ter um único pool de conexões com todos os fornecedores para que, ao escalar nosso microsserviço, o número de conexões permaneça mínimo, </li><li>  encerre o SSL e mantenha a atividade <code>keepalive</code> em um só lugar, reduzindo assim a carga nos próprios parceiros. </li></ul><br>  Eles não pensaram por um longo tempo e imediatamente se perguntaram o que escolher: Nginx ou Haproxy. <br>  No começo, o pêndulo girava em direção ao Nginx, pois resolvi a maioria dos problemas associados ao HTTP / HTTPS com sua ajuda e sempre fiquei satisfeito com o resultado. <br><br>  O esquema era simples: uma solicitação foi feita ao nosso novo servidor proxy no Nginx com um domínio no formato <code>&lt;partner_tag&gt;.domain.local</code> , no Nginx havia um <code>map</code> que <code>&lt;partner_tag&gt;</code> correspondia ao endereço do parceiro.  Um endereço foi retirado do <code>map</code> e <code>proxy_pass</code> foi feito para esse endereço. <br><br>  Aqui está um exemplo de <code>map</code> com o qual analisamos o domínio e selecionamos o montante da lista: <br><br><pre> <code class="nginx hljs"><span class="hljs-comment"><span class="hljs-comment">###     : &lt;tag&gt;.domain.local map $http_host $upstream_prefix { default 0; "~^([^\.]+)\." $1; } ###      map $upstream_prefix $upstream_address { include snippet.d/upstreams_map; default http://127.0.0.1:8080; } ###   upstream_host    upstream_address map $upstream_address $upstream_host { default 0; "~^https?://([^:]+)" $1; }</span></span></code> </pre><br>  E aqui está <code>snippet.d/upstreams_map</code> aparência de " <code>snippet.d/upstreams_map</code> ": <br><pre> <code class="nginx hljs">“one” “http://one.domain.net”; “two” “https://two.domain.org”;</code> </pre><br>  Aqui nós temos o <code>server{}</code> : <br><br><pre> <code class="nginx hljs"><span class="hljs-section"><span class="hljs-section">server</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">listen</span></span> <span class="hljs-number"><span class="hljs-number">80</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> / { <span class="hljs-attribute"><span class="hljs-attribute">proxy_http_version</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>.<span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_pass</span></span> <span class="hljs-variable"><span class="hljs-variable">$upstream_address</span></span><span class="hljs-variable"><span class="hljs-variable">$request_uri</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> Host <span class="hljs-variable"><span class="hljs-variable">$upstream_host</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> X-Forwarded-For <span class="hljs-string"><span class="hljs-string">""</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> X-Forwarded-Port <span class="hljs-string"><span class="hljs-string">""</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> X-Forwarded-Proto <span class="hljs-string"><span class="hljs-string">""</span></span>; } } <span class="hljs-comment"><span class="hljs-comment"># service for error handling and logging server { listen 127.0.0.1:8080; location / { return 400; } location /ngx_status/ { stub_status; } }</span></span></code> </pre><br>  Tudo é legal, tudo funciona.  É possível terminar este artigo, se não for por uma nuance. <br><br>  Ao usar proxy_pass, a solicitação vai diretamente para o endereço desejado, como regra, usando o protocolo HTTP / 1.0 sem <code>keepalive</code> e fecha imediatamente após a resposta ser concluída.  Mesmo se <code>proxy_http_version 1.1</code> , nada será alterado sem o upstream ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=https://nginx.org/ru/docs/http/ngx_http_proxy_module.html&amp;usg=ALkJrhiPZ1o-f3a_8hyrLUrGkytopJWdPA#proxy_">proxy_http_version</a> ). <br><br>  O que fazer  O primeiro pensamento é colocar todos os fornecedores no upstream, onde o servidor será o endereço do fornecedor de que precisamos e, no <code>map</code> mantenha <code>"tag" "upstream_name"</code> . <br><br>  Adicione outro <code>map</code> para analisar o esquema: <br><br><pre> <code class="nginx hljs"><span class="hljs-comment"><span class="hljs-comment">###     : &lt;tag&gt;.domain.local map $http_host $upstream_prefix { default 0; "~^([^\.]+)\." $1; } ###      map $upstream_prefix $upstream_address { include snippet.d/upstreams_map; default http://127.0.0.1:8080; } ###   upstream_host    upstream_address map $upstream_address $upstream_host { default 0; "~^https?://([^:]+)" $1; } ###   ,       https,    ,    -  http map $upstream_address $upstream_scheme { default "http://"; "~(https?://)" $1; }</span></span></code> </pre><br>  E crie <code>upstreams</code> com nomes de tags: <br><pre> <code class="nginx hljs"> <span class="hljs-attribute"><span class="hljs-attribute">upstream</span></span> one { <span class="hljs-attribute"><span class="hljs-attribute">keepalive</span></span> <span class="hljs-number"><span class="hljs-number">64</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">server</span></span> one.domain.com; } <span class="hljs-attribute"><span class="hljs-attribute">upstream</span></span> two { <span class="hljs-attribute"><span class="hljs-attribute">keepalive</span></span> <span class="hljs-number"><span class="hljs-number">64</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">server</span></span> two.domain.net; }</code> </pre><br>  O servidor em si é ligeiramente modificado para levar em conta o esquema e usar o nome do upstream em vez do endereço: <br><br><pre> <code class="nginx hljs"><span class="hljs-section"><span class="hljs-section">server</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">listen</span></span> <span class="hljs-number"><span class="hljs-number">80</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">location</span></span> / { <span class="hljs-attribute"><span class="hljs-attribute">proxy_http_version</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>.<span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_pass</span></span> <span class="hljs-variable"><span class="hljs-variable">$upstream_scheme</span></span><span class="hljs-variable"><span class="hljs-variable">$upstream_prefix</span></span><span class="hljs-variable"><span class="hljs-variable">$request_uri</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> Host <span class="hljs-variable"><span class="hljs-variable">$upstream_host</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> X-Forwarded-For <span class="hljs-string"><span class="hljs-string">""</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> X-Forwarded-Port <span class="hljs-string"><span class="hljs-string">""</span></span>; <span class="hljs-attribute"><span class="hljs-attribute">proxy_set_header</span></span> X-Forwarded-Proto <span class="hljs-string"><span class="hljs-string">""</span></span>; } } <span class="hljs-comment"><span class="hljs-comment"># service for error handling and logging server { listen 127.0.0.1:8080; location / { return 400; } location /ngx_status/ { stub_status; } }</span></span></code> </pre><br>  Ótimo.  A solução funciona, adicione a diretiva <code>keepalive</code> em cada montante, defina <code>proxy_http_version 1.1</code> , - agora temos um pool de conexões e tudo funciona como deveria. <br><br>  Desta vez, você pode definitivamente terminar o artigo e tomar um chá.  Ou não? <br><br>  De fato, enquanto tomamos chá, um dos fornecedores pode alterar o endereço IP ou o grupo de endereços no mesmo domínio (oi, Amazon), assim um dos fornecedores pode cair no auge da festa do chá. <br><br>  Bem, o que fazer?  O Nginx tem uma nuance interessante: durante a recarga, ele pode aumentar os servidores internos do <code>upstream</code> para novos endereços e colocar tráfego neles.  Em geral, também uma solução.  Jogue no <code>cron reload nginx</code> cada 5 minutos e continue tomando chá. <br><br>  Mas ainda assim me pareceu uma decisão mais ou menos, então comecei a olhar desconfiado para Haproxy. <br><br>  O Haproxy tem a capacidade de especificar <code>dns resolvers</code> e configurar o <code>dns cache</code> .  Portanto, o Haproxy atualizará o <code>dns cache</code> do <code>dns cache</code> se as entradas nele expirarem e substituirá os endereços do upstream se eles tiverem sido alterados. <br><br>  Ótimo!  Agora cabe às configurações. <br><br>  Aqui está um pequeno exemplo de configuração para o Haproxy: <br><br><pre> <code class="nginx hljs"><span class="hljs-attribute"><span class="hljs-attribute">frontend</span></span> http bind *:<span class="hljs-number"><span class="hljs-number">80</span></span> http-request del-header X-Forwarded-For http-request del-header X-Forwarded-Port http-request del-header X-Forwarded-Proto capture request header Host len <span class="hljs-number"><span class="hljs-number">32</span></span> capture request header Referer len <span class="hljs-number"><span class="hljs-number">128</span></span> capture request header User-Agent len <span class="hljs-number"><span class="hljs-number">128</span></span> acl host_present hdr(host) -m len gt <span class="hljs-number"><span class="hljs-number">0</span></span> use_backend %[req.hdr(host),lower,field(<span class="hljs-number"><span class="hljs-number">1</span></span>,<span class="hljs-string"><span class="hljs-string">'.'</span></span>)] if host_present default_backend default resolvers dns hold valid <span class="hljs-number"><span class="hljs-number">1s</span></span> timeout retry <span class="hljs-number"><span class="hljs-number">100ms</span></span> nameserver dns1 <span class="hljs-number"><span class="hljs-number">1.1.1.1:53</span></span> backend one http-request set-header Host one.domain.com server one--one.domain.com one.domain.com:<span class="hljs-number"><span class="hljs-number">80</span></span> resolvers dns check backend two http-request set-header Host two.domain.net server two--two.domain.net two.domain.net:<span class="hljs-number"><span class="hljs-number">443</span></span> resolvers dns check ssl verify <span class="hljs-literal"><span class="hljs-literal">none</span></span> check-sni two.domain.net sni str(two.domain.net)</code> </pre><br>  Tudo parece funcionar como deveria desta vez.  A única coisa que eu não gosto no Haproxy é a complexidade da descrição da configuração.  Você precisa criar muito texto para adicionar um trabalho a montante.  Mas a preguiça é o motor do progresso: se você não quiser escrever a mesma coisa, escreva um gerador. <br><br>  Eu já tinha um mapa do Nginx com o formato <code>"tag" "upstream"</code> , então decidi tomá-lo como base, analisar e gerar um back-end haproxy com base nesses valores. <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#! /usr/bin/env bash haproxy_backend_map_file=./root/etc/haproxy/snippet.d/name_domain_map haproxy_backends_file=./root/etc/haproxy/99_backends.cfg nginx_map_file=./nginx_map while getopts 'n:b:m:' OPT;do case ${OPT} in n) nginx_map_file=${OPTARG} ;; b) haproxy_backends_file=${OPTARG} ;; m) haproxy_backend_map_file=${OPTARG} ;; *) echo 'Usage: ${0} -n [nginx_map_file] -b [haproxy_backends_file] -m [haproxy_backend_map_file]' exit esac done function write_backend(){ local tag=$1 local domain=$2 local port=$3 local server_options="resolvers dns check" [ -n "${4}" ] &amp;&amp; local ssl_options="ssl verify none check-sni ${domain} sni str(${domain})" [ -n "${4}" ] &amp;&amp; server_options+=" ${ssl_options}" cat &gt;&gt; ${haproxy_backends_file} &lt;&lt;EOF backend ${tag} http-request set-header Host ${domain} server ${tag}--${domain} ${domain}:${port} ${server_options} EOF } :&gt; ${haproxy_backends_file} :&gt; ${haproxy_backend_map_file} while read tag addr;do tag=${tag//\"/} [ -z "${tag:0}" ] &amp;&amp; continue [ "${tag:0:1}" == "#" ] &amp;&amp; continue IFS=":" read scheme domain port &lt;&lt;&lt;${addr//;} unset IFS domain=${domain//\/} case ${scheme} in http) port=${port:-80} write_backend ${tag} ${domain} ${port} ;; https) port=${port:-443} write_backend ${tag} ${domain} ${port} 1 esac done &lt; &lt;(sort -V ${nginx_map_file})</span></span></code> </pre><br>  Agora tudo o que precisamos é adicionar um novo host no nginx_map, iniciar o gerador e obter a configuração haproxy pronta. <br><br>  Provavelmente é tudo por hoje.  Este artigo se refere mais ao introdutório e foi dedicado ao problema de escolher uma solução e sua integração no ambiente atual. <br><br>  No próximo artigo, mostrarei mais sobre as armadilhas que encontramos ao usar o Haproxy, quais métricas se mostraram úteis para monitorar e o que exatamente deve ser otimizado no sistema para obter o máximo desempenho dos servidores. <br><br>  Obrigado a todos pela atenção, até mais! </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt436992/">https://habr.com/ru/post/pt436992/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt436982/index.html">Semana 04 de segurança: o que fazer com senhas</a></li>
+<li><a href="../pt436984/index.html">Microsoft para de oferecer suporte ao Windows 10 Mobile</a></li>
+<li><a href="../pt436986/index.html">API do Linux Gerenciando o buffer de E / S do arquivo do kernel</a></li>
+<li><a href="../pt436988/index.html">Câmera, motor, Big Data: como os estúdios de cinema procuram novos filmes usando IA</a></li>
+<li><a href="../pt436990/index.html">O Zimbra e o Zextras Suite são totalmente compatíveis com os sistemas operacionais NTC IT ROSA</a></li>
+<li><a href="../pt436994/index.html">Liquibase e Maven</a></li>
+<li><a href="../pt436996/index.html">Curso Final de Especialização em Python do Grupo Mail.ru</a></li>
+<li><a href="../pt436998/index.html">Proteção de microchips contra engenharia reversa e entrada não autorizada</a></li>
+<li><a href="../pt437000/index.html">Como ensinar as pessoas a usar o git</a></li>
+<li><a href="../pt437002/index.html">Núcleo ASP.NET válido</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏼‍🏫 🤹 🔓 Acelerando a E / S de arquivos C / C ++ sem realmente sobrecarregar 👈🏾 📇 👨🏼‍🏭</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Prefácio 
+ Existe um utilitário tão simples e muito útil no mundo - o BDelta , e aconteceu que ele se enraizou no nosso processo de produção por um lo...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Acelerando a E / S de arquivos C / C ++ sem realmente sobrecarregar</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/444036/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/1j/gs/ok/1jgsokcb4ocacisc7uvo-h40d8o.jpeg" alt="imagem"></div><br><h4>  Prefácio </h4><br>  Existe um utilitário tão simples e muito útil no mundo - o <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">BDelta</a> , e aconteceu que ele se enraizou no nosso processo de produção por um longo tempo (embora sua versão não possa ser instalada, mas certamente não foi a última disponível).  Nós o usamos para a finalidade a que se destina - a construção de patches binários.  Se você olhar para o que está no repositório, fica um pouco triste: na verdade, foi abandonado há muito tempo e muito estava desatualizado (uma vez que meu ex-colega fez várias correções no local, mas isso foi há muito tempo).  Em geral, decidi ressuscitar esse negócio: bifurquei-me, joguei fora o que não planejava usar, superei o projeto no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">cmake</a> , inline as microfunções "quentes", removi grandes matrizes da pilha (e matrizes de comprimento variável, das quais francamente "bombardei") , mais uma vez dirigiu o criador de perfil - e descobriu que cerca de 40% do tempo é gasto em <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">fwrite</a> ... <br><a name="habracut"></a><br><h4>  Então, o que há com fwrite? </h4><br>  Nesse código, fwrite (no meu caso de teste específico: criando um patch entre arquivos próximos de 300 MB, os dados de entrada estão completamente na memória) é chamado milhões de vezes com um pequeno buffer.  Obviamente, isso diminuirá a velocidade e, portanto, eu gostaria de influenciar de alguma forma essa desgraça.  Não há desejo de implementar qualquer tipo de fonte de dados, entrada-saída assíncrona, eu queria encontrar uma solução mais fácil.  A primeira coisa que veio à mente foi aumentar o tamanho do buffer <br><br><pre><code class="cpp hljs">setvbuf(file, <span class="hljs-literal"><span class="hljs-literal">nullptr</span></span>, _IOFBF, <span class="hljs-number"><span class="hljs-number">64</span></span>* <span class="hljs-number"><span class="hljs-number">1024</span></span>)</code> </pre> <br>  mas não obtive uma melhora significativa no resultado (agora a fwrite representava cerca de 37% do tempo) - significa que o problema ainda não está na gravação frequente de dados no disco.  Olhando fwrite "under the hood", você pode ver que a estrutura FILE de bloqueio / desbloqueio está acontecendo dentro desta forma (pseudo-código, todas as análises foram feitas no Visual Studio 2017): <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> fwrite (<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> *buffer, <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> size, <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> count, FILE *stream) { <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> retval = <span class="hljs-number"><span class="hljs-number">0</span></span>; _lock_str(stream); <span class="hljs-comment"><span class="hljs-comment">/* lock stream */</span></span> __try { retval = _fwrite_nolock(buffer, size, count, stream); } __finally { _unlock_str(stream); <span class="hljs-comment"><span class="hljs-comment">/* unlock stream */</span></span> } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> retval; }</code> </pre><br>  De acordo com o criador de perfil, _fwrite_nolock é responsável por apenas 6% do tempo, o restante é indireto.  No meu caso particular, a segurança do encadeamento é um excesso óbvio, e eu o sacrificarei substituindo a chamada fwrite por <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">_fwrite_nolock</a> - mesmo com argumentos de que não preciso ser <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">inteligente</a> .  Total: essa manipulação simples às vezes reduzia o custo de registrar o resultado, que na versão original representava quase metade do tempo.  A propósito, no mundo POSIX, existe uma função semelhante - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">fwrite_unlocked</a> .  De um modo geral, o mesmo vale para o medo.  Portanto, com a ajuda do par #define, você pode obter uma solução de plataforma cruzada sem bloqueios desnecessários, se não forem necessários (e isso acontece com bastante frequência). <br><br><h4>  fwrite, _fwrite_nolock, setvbuf </h4><br>  Vamos abstrair do projeto original e começar a testar um caso específico: gravar um arquivo grande (512 MB) em partes extremamente pequenas - 1 byte.  Sistema de teste: AMD Ryzen 7 1700, 16 GB RAM, HDD 3,5 "7200 rpm, cache de 64 MB, Windows 10 1809, o binário foi construído em 32 bits, otimizações incluídas, otimizações incluídas, a biblioteca está vinculada estaticamente. <br><br>  Amostra para o experimento: <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;chrono&gt; #include &lt;cstdio&gt; #include &lt;inttypes.h&gt; #include &lt;memory&gt; #ifdef _MSC_VER #define fwrite_unlocked _fwrite_nolock #endif using namespace std::chrono; int main() { std::unique_ptr&lt;FILE, int(*)(FILE*)&gt; file(fopen("test.bin", "wb"), fclose); if (!file) return 1; constexpr size_t TEST_BUFFER_SIZE = 256 * 1024; if (setvbuf(file.get(), nullptr, _IOFBF, TEST_BUFFER_SIZE) != 0) return 2; auto start = steady_clock::now(); const uint8_t b = 77; constexpr size_t TEST_FILE_SIZE = 512 * 1024 * 1024; for (size_t i = 0; i &lt; TEST_FILE_SIZE; ++i) fwrite_unlocked(&amp;b, sizeof(b), 1, file.get()); auto end = steady_clock::now(); auto interval = duration_cast&lt;microseconds&gt;(end - start); printf("Time: %lld\n", interval.count()); return 0; }</span></span></span></span></code> </pre><br>  As variáveis ​​serão TEST_BUFFER_SIZE e, em alguns casos, substituiremos fwrite_unlocked por fwrite.  Vamos começar com o caso de fwrite sem definir explicitamente o tamanho do buffer (comente o setvbuf e o código associado): tempo 27048906 μs, velocidade de gravação - 18,93 Mb / s.  Agora defina o tamanho do buffer para 64 Kb: tempo - 25037111 μs, velocidade - 20,44 Mb / s.  Agora testamos a operação de _fwrite_nolock sem chamar setvbuf: 7262221 ms, a velocidade é de 70,5 Mb / s! <br><br>  Em seguida, experimente o tamanho do buffer (setvbuf): <br><br><img src="https://habrastorage.org/webt/xv/qv/jd/xvqvjd0rl4owz3zjb319bh0fq9u.png"><br><br>  Os dados foram obtidos com média de cinco experimentos; eu estava com preguiça de considerar os erros.  Quanto a mim, 93 MB / s ao gravar 1 byte em um disco rígido normal é um resultado muito bom, basta selecionar o tamanho ideal do buffer (no meu caso, 256 KB - à direita) e substituir fwrite por _fwrite_nolock / fwrite_unlocked (em se a segurança da linha não for necessária, é claro). <br>  Da mesma forma com medo em condições semelhantes.  Agora vamos ver como estão as coisas no Linux, a configuração de teste é a seguinte: AMD Ryzen 7 1700X, 16 GB de RAM, HDD 3,5 "7200 rpm, cache de 64 MB, OpenSUSE 15 OS, GCC 8.3.1, testaremos o binário x86-64, sistema de arquivos em seção de teste ext4 O resultado de fwrite sem definir explicitamente o tamanho do buffer neste teste é 67,6 Mb / s, ao definir o buffer para 256 Kb, a velocidade aumentou para 69,7 Mb / s. Agora, realizaremos medições semelhantes para fwrite_unlocked - os resultados são 93,5 e 94,6 Mb / s, respectivamente. A variação do tamanho do buffer de 1 KB para 8 MB levou-me às seguintes conclusões: aumentar o buffer aumenta a velocidade de gravação,  mas a diferença no meu caso era de apenas 3 Mb / s, não notei nenhuma diferença de velocidade entre o buffer de 64 Kb e 8 Mb. Dos dados recebidos nesta máquina Linux, podemos tirar as seguintes conclusões: <br><br><ul><li>  fwrite_unlocked é mais rápido que fwrite, mas a diferença na velocidade de gravação não é tão grande quanto no Windows </li><li>  O tamanho do buffer no Linux não tem um efeito tão significativo na velocidade de gravação através de fwrite / fwrite_unlocked como no Windows </li></ul><br><br>  No total, o método proposto é eficaz no Windows, mas também no Linux (embora em menor grau). <br><br><h4>  Posfácio </h4><br>  O objetivo deste artigo era descrever uma técnica simples e eficaz em muitos casos (não encontrei as funções _fwrite_nolock / fwrite_unlocked anteriormente, elas não são muito populares - mas em vão).  Não pretendo ser novo no material, mas espero que o artigo seja útil para a comunidade. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt444036/">https://habr.com/ru/post/pt444036/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt444026/index.html">MODX Digest # 1.1 (25 de fevereiro a 11 de março de 2019)</a></li>
+<li><a href="../pt444028/index.html">Apresentando o Microsoft Game Stack</a></li>
+<li><a href="../pt444030/index.html">A varejista on-line chinesa Gearbest deixou em aberto um banco de dados com milhões de dados pessoais de clientes</a></li>
+<li><a href="../pt444032/index.html">Por que uma impressora 3D não é uma impressora</a></li>
+<li><a href="../pt444034/index.html">7 pecados capitais de um gerente</a></li>
+<li><a href="../pt444038/index.html">Experiência de uso de "coordenadores" em um projeto real de "iOS"</a></li>
+<li><a href="../pt444040/index.html">Classificação autocêntrica. Relatório Yandex sobre como encontrar públicos relevantes para autores Zen</a></li>
+<li><a href="../pt444044/index.html">A Europa reciclará ferro do data center</a></li>
+<li><a href="../pt444048/index.html">Dicas e truques do Digital Forensics: como detectar alterações de diretiva de grupo direcionadas a intrusos</a></li>
+<li><a href="../pt444050/index.html">Discussão: O armazenamento de DNA se tornará maciço</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

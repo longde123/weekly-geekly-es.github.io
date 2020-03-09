@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏾‍🚒 😢 🦌 Como as prioridades do pod em Kubernetes causaram o tempo de inatividade no Grafana Labs 👂🏼 👨🏾‍🔬 📬</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nota perev. : Apresentamos à sua atenção detalhes técnicos sobre os motivos da recente interrupção no serviço em nuvem, atendido pelos criadores da Gr...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Como as prioridades do pod em Kubernetes causaram o tempo de inatividade no Grafana Labs</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/461807/">  <i><b>Nota</b></i>  <i><b>perev.</b></i>  <i>: Apresentamos à sua atenção detalhes técnicos sobre os motivos da recente interrupção no serviço em nuvem, atendido pelos criadores da Grafana.</i>  <i>Este é um exemplo clássico de como um recurso novo e aparentemente extremamente útil projetado para melhorar a qualidade da infraestrutura ... pode causar muito dano se não se prever as inúmeras nuances de sua aplicação nas realidades da produção.</i>  <i>É maravilhoso quando esses materiais aparecem, permitindo que você aprenda não apenas com seus erros.</i>  <i>Os detalhes estão na tradução deste texto do vice-presidente de produto da Grafana Labs.</i> <br><br><img src="https://habrastorage.org/webt/yb/jj/1h/ybjj1hh4m7ro1eym14eiercw7po.jpeg"><br><br>  Na sexta-feira, 19 de julho, o serviço Hosted Prometheus na Grafana Cloud parou de funcionar por cerca de 30 minutos.  Peço desculpas a todos os clientes que sofreram com o fracasso.  Nossa tarefa é fornecer as ferramentas necessárias para o monitoramento e entendemos que a inacessibilidade deles complica sua vida.  Levamos esse incidente muito a sério.  Esta nota explica o que aconteceu, como reagimos a ele e o que estamos fazendo para que isso não aconteça novamente. <a name="habracut"></a><br><br><h2>  Antecedentes </h2><br>  O serviço Grafana Cloud Hosted Prometheus é baseado no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Cortex</a> , um projeto CNCF para criar um serviço Prometheus horizontalmente escalável, altamente acessível e com vários locatários.  A arquitetura Cortex consiste em um conjunto de microsserviços separados, cada um dos quais desempenha sua função: replicação, armazenamento, solicitações etc.  O Cortex está sendo desenvolvido ativamente, está constantemente tendo novas oportunidades e melhorando a produtividade.  Implementamos regularmente novas versões do Cortex em clusters para que os clientes possam aproveitar essas oportunidades - felizmente, o Cortex pode atualizar sem tempo de inatividade. <br><br>  Para atualizações tranqüilas, o serviço Ingester Cortex requer uma réplica adicional do Ingester durante o processo de atualização.  <i>( <b>Nota</b> : o <a href="">Ingester</a> é o componente principal do Cortex. Sua tarefa é coletar um fluxo constante de amostras, agrupá-las em partes do Prometheus e armazená-las em um banco de dados como DynamoDB, BigTable ou Cassandra.)</i> Isso permite Ingesters mais antigos. encaminhar dados atuais para novos Ingesters.  Vale a pena notar que os Ingesters estão exigindo recursos.  Para o trabalho deles, é necessário ter 4 núcleos e 15 GB de memória por pod, ou seja,  25% da energia e memória do processador da máquina base no caso de nossos clusters Kubernetes.  Em geral, geralmente temos muito mais recursos não utilizados em um cluster do que 4 núcleos e 15 GB de memória, para que possamos executar facilmente esses Ingesters adicionais durante as atualizações. <br><br>  No entanto, muitas vezes acontece que durante a operação normal, nenhuma dessas máquinas possui esses 25% de recursos não reclamados.  Sim, não nos esforçamos: CPU e memória são sempre úteis para outros processos.  Para resolver esse problema, decidimos usar as <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">prioridades do pod do Kubernetes</a> .  A idéia é dar aos Ingesters uma prioridade mais alta que outros microsserviços (sem estado).  Quando precisamos executar um Ingester adicional (N + 1), forçamos temporariamente outros pods menores.  Esses pods são transferidos para liberar recursos em outras máquinas, deixando um “buraco” suficientemente grande para o lançamento de um Ingester adicional. <br><br>  Na quinta-feira, 18 de julho, lançamos quatro novos níveis de prioridade em nossos clusters: <b>crítico</b> , <b>alto</b> , <b>médio</b> e <b>baixo</b> .  Eles foram testados em um cluster interno sem tráfego de clientes por cerca de uma semana.  Por padrão, os pods sem uma determinada prioridade receberam prioridade <b>média</b> ; uma classe com <b>alta</b> prioridade foi definida para os Ingesters.  <b>Critical</b> foi reservado para monitoramento (Prometheus, Alertmanager, exportador de nós, métricas de estado de cubo etc.).  Nossa configuração está aberta e veja PR <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">aqui</a> . <br><br><h2>  Acidente </h2><br>  Na sexta-feira, 19 de julho, um dos engenheiros lançou um novo cluster Cortex dedicado para um grande cliente.  A configuração deste cluster não incluiu as novas prioridades de pod, portanto, todos os novos pods receberam a prioridade padrão - <b>média</b> . <br><br>  O cluster Kubernetes não tinha recursos suficientes para o novo cluster Cortex, e o cluster de produção existente do Cortex não foi atualizado (os Ingesters foram deixados sem <b>alta</b> prioridade).  Como os Ingesters do novo cluster assumiram como padrão a prioridade <b>média</b> e os pods existentes na produção funcionaram sem prioridade, os Ingesters do novo cluster expulsaram os Ingesters do cluster de produção Cortex existente. <br><br>  O ReplicaSet para o Ingester preempted no cluster de produção detectou o pod preempted e criou um novo para manter o número especificado de cópias.  O novo pod foi definido como prioridade <b>média</b> por padrão, e o próximo Ingester "antigo" em produção perdeu recursos.  O resultado foi <b>um processo semelhante a uma avalanche</b> que levou à exclusão de todos os pods do Ingester para os clusters de produção da Cortex. <br><br>  Os ingestores mantêm o estado e armazenam dados pelas 12 horas anteriores.  Isso nos permite compactá-los com mais eficiência antes de gravar no armazenamento de longo prazo.  Para fazer isso, o Cortex fragmenta os dados da série usando uma tabela de hash distribuída (DHT) e replica cada série em três Ingesters usando consistência de quorum no estilo Dynamo.  O Cortex não grava dados nos Ingesters, que estão desativados.  Assim, quando um grande número de Ingesters sai da DHT, o Cortex não pode fornecer replicação suficiente dos registros e eles "caem". <br><br><h2>  Detecção e eliminação </h2><br>  As novas notificações do Prometheus com base no " <i>orçamento baseado em erro</i> " (os detalhes <i>baseados no orçamento do erro</i> aparecerão em um artigo futuro) começaram a soar um alarme 4 minutos após o início do desligamento.  Nos cinco minutos seguintes, realizamos diagnósticos e expandimos o cluster Kubernetes subjacente para acomodar clusters de produção novos e existentes. <br><br>  Cinco minutos depois, os antigos Ingesters registraram com êxito seus dados, os novos foram iniciados e os clusters do Cortex ficaram disponíveis novamente. <br><br>  Levou mais 10 minutos para diagnosticar e corrigir erros de falta de memória (OOM) de proxies de autenticação reversa localizados na frente do Cortex.  Os erros de OOM foram causados ​​por um aumento de dez vezes no QPS (como acreditamos, devido a solicitações excessivamente agressivas dos servidores clientes do Prometheus). <br><br><h2>  As consequências </h2><br>  O tempo total de inatividade foi de 26 minutos.  Nenhum dado foi perdido.  Os ingestores carregaram com êxito todos os dados na memória para armazenamento a longo prazo.  Durante um desligamento, os servidores clientes do Prometheus <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">armazenaram em buffer as</a> entradas usando a <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">nova API remote_write</a> baseada em <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">WAL</a> (de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Callum Styan</a> da Grafana Labs) e repetiram as entradas com falha após a falha. <br><br><img src="https://habrastorage.org/webt/ub/rv/3p/ubrv3po8fpxvn0r5ifuvwbcdogy.png"><br>  <i>Operações de gravação de cluster de produção</i> <br><br><h2>  Conclusões </h2><br>  É importante aprender com esse incidente e tomar as medidas necessárias para evitar uma recorrência. <br><br>  Olhando para trás, devemos admitir que não devemos definir a prioridade <b>média</b> padrão, até que todos os Ingesters em produção recebam uma <b>alta</b> prioridade.  Além disso, eles deveriam ter cuidado de sua <b>alta</b> prioridade com antecedência.  Agora tudo está consertado.  Esperamos que nossa experiência ajude outras organizações a considerar o uso de prioridades de pod em Kubernetes. <br><br>  Adicionaremos um nível adicional de controle sobre a implantação de quaisquer objetos adicionais cujas configurações sejam globais para o cluster.  A partir de agora, essas mudanças serão avaliadas por mais pessoas.  Além disso, a modificação que levou à falha foi considerada insignificante demais para um documento de projeto separado - foi discutida apenas na questão do GitHub.  A partir de agora, todas essas alterações de configuração serão acompanhadas pela documentação apropriada do projeto. <br><br>  Por fim, automatizamos o redimensionamento do proxy de autenticação reversa para impedir o OOM durante o congestionamento, que testemunhamos, e analisamos as configurações padrão do Prometheus relacionadas à reversão e dimensionamento para evitar problemas semelhantes no futuro. <br><br>  A falha experimentada também teve algumas consequências positivas: depois de receber os recursos necessários, o Cortex se recuperou automaticamente sem nenhuma intervenção adicional.  Também adquirimos uma valiosa experiência com o <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Grafana Loki</a> , nosso novo sistema de agregação de logs, que ajudou a garantir que todos os Ingesters se comportassem adequadamente durante e após o acidente. <br><br><h2>  PS do tradutor </h2><br>  Leia também em nosso blog: <br><br><ul><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Escalonamento automático e gerenciamento de recursos no Kubernetes (revisão e relatório de vídeo)</a> ”; </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Dailymotion da Kubernetes-adventure: construindo infraestrutura nas nuvens + no local</a> ”; </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Migração do Tinder para Kubernetes</a> ”; </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Histórias de sucesso da Kubernetes em produção.</a>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Parte 10: Reddit</a> . " </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt461807/">https://habr.com/ru/post/pt461807/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt461793/index.html">Ivan Ponomarev sobre a API do Kafka Streams na reunião jug.msk.ru</a></li>
+<li><a href="../pt461797/index.html">Contos de serviço. Um post frívolo sobre trabalho sério</a></li>
+<li><a href="../pt461801/index.html">DisplayPort-LVDS</a></li>
+<li><a href="../pt461803/index.html">Data Version Control (DVC): controle de versão de dados e reprodutibilidade do experimento</a></li>
+<li><a href="../pt461805/index.html">Aplicativo de Integração Monte Carlo em Renderização</a></li>
+<li><a href="../pt461813/index.html">Notícias do mundo do OpenStreetMap nº 470 (16.07.2019 - 22/07/2014)</a></li>
+<li><a href="../pt461815/index.html">Uma revolução no design de fontes de alimentação para computadores meio século atrás</a></li>
+<li><a href="../pt461817/index.html">CMake e C ++ - irmãos para sempre</a></li>
+<li><a href="../pt461819/index.html">Por que o design simples de sites é melhor cientificamente</a></li>
+<li><a href="../pt461821/index.html">Nova imunoterapia removeu todos os tumores de uma mulher com câncer de mama metastático</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

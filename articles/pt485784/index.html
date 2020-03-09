@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌕 👨🏿‍🏫 🦖 Fazendo qualquer processo funcionar com NTFS transacional: minha primeira etapa na criação de uma sandbox para Windows 🥙 ↖️ 🚛</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Há um módulo no kernel do Windows que é responsável por oferecer suporte ao agrupamento de operações de arquivo em alguma entidade chamada transação ....">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Fazendo qualquer processo funcionar com NTFS transacional: minha primeira etapa na criação de uma sandbox para Windows</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/485784/"><p><img src="https://habrastorage.org/webt/p0/-s/fi/p0-sfitxnzzpywfqxuc4arx1fps.png" align="right" alt="TransactionMaster">  Há um módulo no kernel do Windows que é responsável por oferecer suporte ao agrupamento de operações de arquivo em alguma entidade chamada <strong>transação</strong> .  As ações nessa entidade são isoladas e atômicas: elas podem ser <em>aplicadas</em> tornando-as permanentes ou <em>revertidas</em> .  Muito conveniente ao instalar programas, concorda?  Sempre passamos de um estado acordado para outro e, se algo der errado, todas as alterações serão revertidas. </p><br><p> Desde que soube do suporte a essa funcionalidade, sempre quis ver o mundo por dentro dessas transações.  E você sabe o que: achei um método simples e verdadeiramente maravilhoso para fazer qualquer processo funcionar dentro de uma transação de arquivo, <del>  mas as margens do livro são muito estreitas para ele </del>  .  Na maioria dos casos, isso nem exige privilégios administrativos. </p><br><p>  Vamos descobrir como funciona, experimentar meu programa e entender o que são as caixas de areia. </p><a name="habracut"></a><br><h2 id="repozitoriy">  Repositório </h2><br><p>  Para quem está ansioso para experimentar: <a href="https://github.com/diversenok/TransactionMaster">TransactionMaster no GitHub</a> . </p><br><h2 id="teoriya">  Teoria </h2><br><p>  O suporte para NTFS transacional, ou <strong>TxF</strong> , apareceu no Windows Vista e tornou possível simplificar significativamente o código responsável pela recuperação de erros no processo de atualização do software e do próprio sistema operacional.  De fato, a tarefa de restauração foi transferida para o kernel do sistema operacional, que começou a aplicar a <a href="https://ru.wikipedia.org/wiki/ACID">semântica</a> completa do <a href="https://ru.wikipedia.org/wiki/ACID"><abbr title="Atomicidade, Consistência, Isolamento, Durabilidade">ACID</abbr></a> às operações de arquivo - basta perguntar. </p><br><p> Para suportar essa tecnologia, foram adicionadas novas funções de API que duplicaram a funcionalidade existente, adicionando um novo parâmetro - uma transação.  A transação em si se tornou um dos muitos objetos do kernel no sistema operacional, junto com arquivos, processos e objetos de sincronização.  No caso mais simples, a sequência de ações ao trabalhar com transações consiste em criar um objeto de transação chamando <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/ktmw32/nf-ktmw32-createtransaction"><code>CreateTransaction</code></a> , trabalhando com arquivos (usando funções como <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/winbase/nf-winbase-createfiletransactedw"><code>CreateFileTransacted</code></a> , <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/winbase/nf-winbase-movefiletransactedw"><code>MoveFileTransacted</code></a> , <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/winbase/nf-winbase-deletefiletransactedw"><code>DeleteFileTransacted</code></a> e similares) e aplicando / revertendo a transação usando <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/ktmw32/nf-ktmw32-committransaction"><code>CommitTransaction</code></a> / <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/ktmw32/nf-ktmw32-rollbacktransaction"><code>RollbackTransaction</code></a> . </p><br><p>  Agora vamos dar uma olhada na arquitetura desses recursos.  Sabemos que a camada API documentada, de bibliotecas como <code>kernel32.dll</code> , não transfere diretamente o controle para o kernel do sistema operacional, mas refere-se à camada de abstração subjacente no modo de usuário - <code>ntdll.dll</code> , que já faz uma chamada de sistema.  E aqui uma surpresa nos espera: <u>simplesmente não há duplicação de funções para trabalhar com arquivos no contexto de transações no <strong>ntdll</strong> , como no kernel</u> . </p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ke/ql/5q/keql5q2xtkbwehzymrrnivsniq8.png" alt="Camadas de API"></div><br><p>  No entanto, os protótipos dessas funções da API nativa não mudaram desde tempos imemoriais, o que significa que eles aprenderão de algum outro lugar no contexto de qual transação executar a operação.  Mas de onde?  A resposta é que cada encadeamento possui um campo especial no qual o identificador da transação atual é armazenado.  A área da memória em que está localizada é chamada <abbr title="Bloco ambiental de encadeamento">TEB</abbr> , o bloco do ambiente de fluxo.  De coisas conhecidas, o <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror">último código de erro</a> e <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadid">identificador de fluxo</a> também são armazenados lá. </p><br><p>  Portanto, funções com o sufixo <code>*Transacted</code> definem o campo da transação atual, chamam uma função semelhante sem sufixo e, em seguida, restaura o valor anterior.  Eles fazem isso usando um par de <a href=""><code>RtlSetCurrentTransaction</code></a> / <a href=""><code>RtlSetCurrentTransaction</code></a> do <code>ntdll</code> .  O código das próprias funções é muito direto, com exceção do caso do <abbr title="Windows no Windows de 64 bits">WoW64</abbr> , que será <abbr title="Windows no Windows de 64 bits">discutido</abbr> abaixo. </p><br><p>  O que tudo isso significa para nós?  <strong>Alterando uma variável na memória do processo, podemos controlar no contexto de qual transação ela está trabalhando com o sistema de arquivos.</strong>  Você não precisa definir traps e interceptar chamadas de função, apenas entregue o descritor de transação ao processo de destino e corrija alguns bytes em sua memória para cada um dos encadeamentos.  Isso parece elementar, vamos fazê-lo! </p><br><h2 id="podvodnye-kamni">  Armadilhas </h2><br><p>  Os primeiros experimentos mostraram que a idéia é viável: o <a href="https://farmanager.com/">Far Manager</a> , que eu uso em vez do Windows Explorer, sobrevive perfeitamente à substituição de transações dinamicamente e permite que você veja o mundo em seu contexto.  Mas também havia programas que constantemente criam novos threads para operações de arquivo.  E no cenário original, essa é uma lacuna, pois não é muito conveniente rastrear a criação de threads em outro processo (sem mencionar o fato de que "atraso" é crítico aqui).  Um exemplo de um aplicativo da segunda classe é o <a href="https://github.com/microsoft/winfile">WinFile</a> recentemente portado. </p><br><h3 id="otslezhivayuschaya-dll">  DLL de rastreamento </h3><br><p>  Felizmente, o rastreamento síncrono da criação do encadeamento e a configuração subsequente das transações para eles são completamente elementares a partir do processo de destino.  Basta incorporar uma DLL nela, e o carregador do módulo chama seu ponto de entrada com o parâmetro <a href="https://docs.microsoft.com/ru-ru/windows/win32/dlls/dllmain"><code>DLL_THREAD_ATTACH</code></a> toda <b>*</b> vez ao criar um novo encadeamento.  Ao implementar essa funcionalidade, corrigi a compatibilidade com uma dúzia de outros programas. </p><br><p>  <strong>*</strong> Tecnicamente, uma chamada nem sempre funciona, e esse comportamento às vezes pode ser observado na interface do meu programa.  Na maioria das vezes, as exceções são encadeamentos do pool de trabalho do próprio carregador de módulos.  O problema é que as bibliotecas DLL são notificadas sob o bloqueio do carregador de inicialização e isso significa: você não pode carregar novos módulos no momento.  E os threads do carregador, como você sabe, fazem exatamente isso, paralelizando o acesso ao sistema de arquivos.  É fornecida uma exceção para esses casos: se você especificar <a href=""><code>THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH</code></a> como um sinalizador ao chamar <a href=""><code>NtCreateThreadEx</code></a> , poderá evitar adicionar um novo encadeamento às DLLs existentes e, respectivamente, deadlocks.  Sobre isso é o que acontece aqui. </p><br><h3 id="zapuskaem-provodnik">  Iniciar o Explorer </h3><br><p>  Resta a terceira e última categoria de programas que ainda falham ao tentar fazê-los funcionar em uma transação.  Um desses programas é o Windows Explorer.  Não consigo diagnosticar o problema com precisão, mas o aplicativo é complicado e a troca a quente dentro da transação não o afeta muito.  Talvez o motivo seja o fato de ter muitos descritores de arquivos abertos, alguns dos quais deixam de ser válidos no novo contexto.  Ou talvez seja outra coisa.  Nessas situações, reiniciar o processo ajuda, para que ele funcione desde o início da transação.  Então, nenhuma inconsistência deve surgir. </p><br><p>  E, portanto, adicionei a capacidade de iniciar novos processos no programa, para os quais a transação e o rastreamento de novos fluxos são configurados antes mesmo de chegar ao ponto de entrada, enquanto o processo está em pausa.  E você sabe o que, funcionou!  É verdade que, como o Explorer usa ativamente objetos COM fora do processo, a visualização é interrompida ao mover arquivos.  Mas, caso contrário, tudo é estável. </p><br><h3 id="chto-tam-s-wow64">  O que há com o WoW64? </h3><br><p>  Esse subsistema para iniciar programas de 32 bits em sistemas de 64 bits é uma ferramenta extremamente conveniente, mas a necessidade de levar em conta seus recursos geralmente complica a programação do sistema.  <code>Rtl[Get/Set]CurrentTransaction</code> acima que o comportamento de <code>Rtl[Get/Set]CurrentTransaction</code> marcadamente diferente no caso de processos similares.  A razão para isso reside no fato de que os threads nos processos WoW64 têm até dois blocos de ambiente.  Eles têm tamanhos diferentes do ponteiro, e é desejável mantê-los em um estado consistente, embora, no caso de transações, o TEB de 64 bits tenha precedência.  Quando estabelecemos transações remotamente, devemos reproduzir o comportamento dessas funções.  Não é difícil, mas você não deve esquecê-lo, e detalhes podem ser encontrados <a href="">aqui</a> .  Finalmente, os processos WoW64 precisam de uma cópia adicional de 32 bits da nossa DLL de rastreamento. </p><br><h3 id="nereshyonnye-problemy">  Problemas não resolvidos </h3><br><p>  Forçado a sofrer - o primeiro cenário que vem à mente, a saber, o lançamento de instaladores de programas nesse modo - ainda não está operacional.  Primeiramente, ele não está configurado para capturar processos filhos na mesma transação.  Existem várias soluções aqui, estou trabalhando nisso.  Mas se o aplicativo criar vários processos, ainda é muito cedo para usá-lo em combinação com transações. </p><br><p>  Em segundo lugar, o caso com arquivos executáveis ​​que não existem fora da transação merece atenção especial.  Lembro-me de que havia algum tipo de vírus que enganava antivírus ingênuos dessa maneira: era descompactado em uma transação, se lançava e depois revertia a transação.  Existe um processo, mas não há arquivo executável.  O antivírus pode decidir que não há nada para verificar e ignorar a ameaça.  Também precisamos trabalhar em soluções criativas, porque, por algum motivo, <a href=""><code>NtCreateUserProcess</code></a> (e, consequentemente, <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw"><code>CreateProcess</code></a> ) ignora a transação atual.  Obviamente, o <a href=""><code>NtCreateProcessEx</code></a> sempre permanece, mas espera-se muita confusão para corrigir problemas de compatibilidade.  Vou pensar em alguma coisa. </p><br><h2 id="prichyom-tut-pesochnicy">  E onde estão as caixas de areia? </h2><br><p>  Dê uma olhada na foto.  Aqui, três programas diferentes mostram o conteúdo da mesma pasta em três transações diferentes.  Legal, né? </p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/9f/ml/ds/9fmldsooc30vlqq7plchzoxystc.png" alt="Um olhar de dentro da transação"></div><br><p>  E, no entanto, meu programa não é de modo algum uma caixa de areia, falta um detalhe importante - <strong>a fronteira de segurança</strong> .  Obviamente, isso não impede que algumas empresas vendam artesanato semelhante sob o disfarce de caixas de areia de pleno direito, uma vergonha para elas, o que posso dizer.  E, apesar de isso parecer completamente impossível, como podemos impedir que um programa altere uma variável em nossa memória, mesmo se formos um depurador?  - Tenho um truque delicioso que me permitirá concluir o que iniciei e criar a primeira caixa de proteção que conheço, que não exigirá um driver, mas virtualizará o sistema de arquivos.  Até lá, aguarde atualizações, use o <a href="https://sandboxie.com/">Sandboxie</a> e experimente a tecnologia <a href="https://docs.microsoft.com/ru-ru/windows/win32/secauthz/appcontainer-isolation">AppContainer</a> .  Obrigado pela atenção. </p><br><p>  Repositório do projeto no GitHub: <strong><a href="https://github.com/diversenok/TransactionMaster">TransactionMaster</a></strong> . <br>  <a href="https://habr.com/en/post/485788/">O mesmo artigo em inglês</a> . </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt485784/">https://habr.com/ru/post/pt485784/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt485766/index.html">Regras de alimentação</a></li>
+<li><a href="../pt485768/index.html">Tendências da Web para 2020 que vale a pena experimentar</a></li>
+<li><a href="../pt485770/index.html">Polêmica incorreta</a></li>
+<li><a href="../pt485776/index.html">Em toda a geografia: navegação e tarefas geodésicas em diferentes idiomas</a></li>
+<li><a href="../pt485780/index.html">Robôs, ressonadores de quartzo, microcontroladores ... o que a Epson faz?</a></li>
+<li><a href="../pt485786/index.html">Lição de casa aritmética</a></li>
+<li><a href="../pt485788/index.html">Como fazer com que qualquer processo funcione com o NTFS transacional: minha primeira etapa para escrever uma sandbox para Windows</a></li>
+<li><a href="../pt485790/index.html">Entrevistas: expectativas versus realidade</a></li>
+<li><a href="../pt485792/index.html">Ivan Lilekvist e Kim Dotkom, uma grande entrevista: a história do Megaupload, extradição para os Estados Unidos, liberdade, bitcoin. Parte 2</a></li>
+<li><a href="../pt485794/index.html">Você está desenvolvendo no .NET Core? Vamos para o Ubuntu, eu preparei tudo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

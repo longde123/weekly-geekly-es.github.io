@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💦 🐛 🌗 Simples e em C ++. Userver Basics - Uma estrutura para escrever microsserviços assíncronos 🏞️ 💶 👽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="O Yandex.Taxi adere à arquitetura de microsserviço. Com o aumento do número de microsserviços, percebemos que os desenvolvedores passam muito tempo em...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Simples e em C ++. Userver Basics - Uma estrutura para escrever microsserviços assíncronos</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/474438/">  O Yandex.Taxi adere à arquitetura de microsserviço.  Com o aumento do número de microsserviços, percebemos que os desenvolvedores passam muito tempo em problemas comuns e problemas comuns, enquanto as soluções nem sempre funcionam da maneira ideal. <br><br>  Decidimos criar nossa própria estrutura, com C ++ 17 e corotinas.  É assim que um código típico de microsserviço se parece agora: <br><br><pre><code class="cpp hljs">Response View::Handle(Request&amp;&amp; request, <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> Dependencies&amp; dependencies) { <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> cluster = dependencies.pg-&gt;GetCluster(); <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> trx = cluster-&gt;Begin(storages::postgres::ClusterHostType::kMaster); <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">char</span></span>* statement = <span class="hljs-string"><span class="hljs-string">"SELECT ok, baz FROM some WHERE id = $1 LIMIT 1"</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> row = psql::Execute(trx, statement, request.id)[<span class="hljs-number"><span class="hljs-number">0</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!row[<span class="hljs-string"><span class="hljs-string">"ok"</span></span>].As&lt;<span class="hljs-keyword"><span class="hljs-keyword">bool</span></span>&gt;()) { LOG_DEBUG() &lt;&lt; request.id &lt;&lt; <span class="hljs-string"><span class="hljs-string">" is not OK of "</span></span> &lt;&lt; GetSomeInfoFromDb(); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> Response400(); } psql::Execute(trx, queries::kUpdateRules, request.foo, request.bar); trx.Commit(); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> Response200{row[<span class="hljs-string"><span class="hljs-string">"baz"</span></span>].As&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span>&gt;()}; }</code> </pre> <br>  E aqui está o porquê de ser extremamente eficaz e rápido - contaremos sob o corte. <br><a name="habracut"></a><br><h2>  Userver - Assíncrono </h2><br>  Nossa equipe não consiste apenas de desenvolvedores experientes em C ++: existem estagiários, desenvolvedores juniores e até pessoas que não estão acostumadas a escrever em C ++.  Portanto, o design do usuário é baseado na facilidade de uso.  No entanto, com nossos volumes e carga de dados, também não podemos desperdiçar recursos de ferro ineficientemente. <br><br>  Os microsserviços são caracterizados pela expectativa de entrada / saída: geralmente a resposta de um microsserviço é formada a partir de várias respostas de outros microsserviços e bancos de dados.  O problema da espera de E / S eficiente é resolvido através de métodos assíncronos e retornos de chamada: com operações assíncronas, não há necessidade de produzir encadeamentos de execução e, portanto, não há grande sobrecarga para alternar fluxos ... apenas o código é bastante difícil de escrever e manter: <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">void</span></span> View::Handle(Request&amp;&amp; request, <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> Dependencies&amp; dependencies, Response response) { <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> cluster = dependencies.pg-&gt;GetCluster(); cluster-&gt;Begin(storages::postgres::ClusterHostType::kMaster, [request = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(request), response](<span class="hljs-keyword"><span class="hljs-keyword">auto</span></span>&amp; trx) { <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">char</span></span>* statement = <span class="hljs-string"><span class="hljs-string">"SELECT ok, baz FROM some WHERE id = $1 LIMIT 1"</span></span>; psql::Execute(trx, statement, request.id, [request = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(request), response, trx = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(trx)](<span class="hljs-keyword"><span class="hljs-keyword">auto</span></span>&amp; res) { <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> row = res[<span class="hljs-number"><span class="hljs-number">0</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!row[<span class="hljs-string"><span class="hljs-string">"ok"</span></span>].As&lt;<span class="hljs-keyword"><span class="hljs-keyword">bool</span></span>&gt;()) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (LogDebug()) { GetSomeInfoFromDb([id = request.id](<span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> info) { LOG_DEBUG() &lt;&lt; id &lt;&lt; <span class="hljs-string"><span class="hljs-string">" is not OK of "</span></span> &lt;&lt; info; }); } *response = Response400{}; } psql::Execute(trx, queries::kUpdateRules, request.foo, request.bar, [row = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(row), trx = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(trx), response]() { trx.Commit([row = <span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::move(row), response]() { *response = Response200{row[<span class="hljs-string"><span class="hljs-string">"baz"</span></span>].As&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span>&gt;()}; }); }); }); }); }</code> </pre><br>  E aqui as empilhadeiras cheias de socorro vêm em socorro.  O usuário da estrutura pensa que ele escreve o código síncrono usual: <br><br><pre> <code class="cpp hljs"> <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> row = psql::Execute(trx, queries::kGetRules, request.id)[<span class="hljs-number"><span class="hljs-number">0</span></span>];</code> </pre><br>  No entanto, aproximadamente o seguinte ocorre sob o capô: <br><br><ol><li>  Pacotes TCP são gerados e enviados com uma solicitação ao banco de dados; </li><li>  a execução da corotina, na qual a função View :: Handle está em execução, está suspensa; </li><li>  dizemos ao kernel do sistema operacional: ““ Coloque a corotina suspensa na fila de tarefas prontas para execução assim que pacotes TCP suficientes saírem do banco de dados ”; </li><li>  sem aguardar a etapa anterior, lançamos outra corotina pronta para execução a partir da fila. </li></ol><br>  Em outras palavras, a função do primeiro exemplo funciona de forma assíncrona e fica próxima a esse código usando Cout 20 Coroutines: <br><br><pre> <code class="cpp hljs">Response View::Handle(Request&amp;&amp; request, <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> Dependencies&amp; dependencies) { <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> cluster = dependencies.pg-&gt;GetCluster(); <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> trx = co_await cluster-&gt;Begin(storages::postgres::ClusterHostType::kMaster); <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">char</span></span>* statement = <span class="hljs-string"><span class="hljs-string">"SELECT ok, baz FROM some WHERE id = $1 LIMIT 1"</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">auto</span></span> row = co_await psql::Execute(trx, statement, request.id)[<span class="hljs-number"><span class="hljs-number">0</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!row[<span class="hljs-string"><span class="hljs-string">"ok"</span></span>].As&lt;<span class="hljs-keyword"><span class="hljs-keyword">bool</span></span>&gt;()) { LOG_DEBUG() &lt;&lt; request.id &lt;&lt; <span class="hljs-string"><span class="hljs-string">" is not OK of "</span></span> &lt;&lt; <span class="hljs-function"><span class="hljs-function">co_await </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetSomeInfoFromDb</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span>; co_return Response400{<span class="hljs-string"><span class="hljs-string">"NOT_OK"</span></span>, <span class="hljs-string"><span class="hljs-string">"Please provide different ID"</span></span>}; } co_await psql::Execute(trx, queries::kUpdateRules, request.foo, request.bar); co_await trx.Commit(); co_return Response200{row[<span class="hljs-string"><span class="hljs-string">"baz"</span></span>].As&lt;<span class="hljs-built_in"><span class="hljs-built_in">std</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">string</span></span>&gt;()}; }</code> </pre><br>  Isso é apenas o usuário não precisa pensar em co_await e co_return, tudo funciona "por conta própria". <br><br>  Em nossa estrutura, alternar entre corotinas é mais rápido do que chamar std :: this_thread :: yield ().  Todo o microsserviço custa um número muito pequeno de threads. <br><br>  No momento, userver contém drivers assíncronos: <br>  * para soquetes do sistema operacional; <br>  * http e https (cliente e servidor); <br>  * PostgreSQL; <br>  * MongoDB; <br>  * Redis; <br>  * trabalha com arquivos; <br>  * temporizadores; <br>  * primitivas para sincronizar e lançar novas corotinas. <br><br>  A abordagem assíncrona acima para resolver tarefas ligadas a E / S deve ser familiar para os desenvolvedores do Go.  Mas, diferentemente do Go, não sobrecarregamos a memória e a CPU do coletor de lixo.  Os desenvolvedores podem usar uma linguagem mais rica, com vários contêineres e bibliotecas de alto desempenho, sem sofrer falta de consistência, RAII ou modelos. <br><br><h2>  Userver - componentes </h2><br>  Evidentemente, uma estrutura completa não é apenas corotinas.  As tarefas dos desenvolvedores em Taxi são extremamente diversas e cada uma delas requer seu próprio conjunto de ferramentas.  Portanto, userver tem tudo o que você precisa: <br>  * para registro; <br>  * cache; <br>  * trabalhar com vários formatos de dados; <br>  * trabalhe com configurações e atualize as configurações sem reiniciar o serviço; <br>  * bloqueios distribuídos; <br>  * teste; <br>  * autorização e autenticação; <br>  * criar e enviar métricas; <br>  * escrevendo manipuladores REST; <br>  + suporte à geração e dependência de código (feito em uma parte separada da estrutura). <br><br><h2>  Userver - geração de código </h2><br>  Vamos voltar à primeira linha do nosso exemplo e ver o que está oculto por trás da resposta e solicitação: <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">Response </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Handle</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(Request&amp;&amp; request, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> Dependencies&amp; dependencies)</span></span></span></span>;</code> </pre><br>  Com o userver, você pode gravar qualquer microsserviço, mas existe um requisito para nossos microsserviços de que suas APIs sejam documentadas (descritas por meio de esquemas de swagger). <br><br>  Por exemplo, para o Handle do exemplo, o diagrama de arrogância pode ser assim: <br><br><pre> <code class="json hljs">paths: /some/sample/{bar}: post: description: |     Habr. summary: | ,  -   . parameters: - in: query name: id type: string required: <span class="hljs-literal"><span class="hljs-literal">true</span></span> - in: header name: foo type: string enum: - foo<span class="hljs-number"><span class="hljs-number">1</span></span> - foo<span class="hljs-number"><span class="hljs-number">2</span></span> required: <span class="hljs-literal"><span class="hljs-literal">true</span></span> - in: path name: bar type: string required: <span class="hljs-literal"><span class="hljs-literal">true</span></span> responses: '<span class="hljs-number"><span class="hljs-number">200</span></span>': description: OK schema: type: object additionalProperties: <span class="hljs-literal"><span class="hljs-literal">false</span></span> required: - baz properties: baz: type: string '<span class="hljs-number"><span class="hljs-number">400</span></span>': $ref: '#/responses/ResponseCommonError'</code> </pre><br>  Bem, como o desenvolvedor já possui um esquema com uma descrição de solicitações e respostas, por que não gerar essas solicitações e respostas com base nele?  Ao mesmo tempo, links para arquivos protobuf / flatbuffer / ... também podem ser indicados no esquema - a geração de código da própria solicitação obterá tudo, validará os dados de entrada de acordo com o esquema e os decomporá nos campos da estrutura de resposta.  O usuário só precisa escrever a funcionalidade no método Handle, sem se distrair com o clichê com análise de solicitação e serialização da resposta. <br><br>  Ao mesmo tempo, a geração de código funciona para clientes de serviço.  Você pode indicar que seu serviço precisa de um cliente trabalhando de acordo com esse esquema e preparar uma classe para uso para criar solicitações assíncronas: <br><br><pre> <code class="cpp hljs">Request req; req.id = id; req.foo = foo; req.bar = bar; dependencies.sample_client.SomeSampleBarPost(req);</code> </pre><br>  Essa abordagem tem outra vantagem: documentação sempre atualizada.  Se um desenvolvedor tentar repentinamente usar parâmetros que não estão na documentação, ele receberá um erro de compilação. <br><br><h2>  Userver - registro </h2><br>  Adoramos escrever logs.  Se você registrar apenas as informações mais importantes, vários terabytes de logs por hora serão executados.  Portanto, não é surpreendente que nosso registro tenha seus próprios truques: <br>  * é assíncrono (é claro :-)); <br>  * podemos registrar ignorando o lento std :: locale e std :: ostream; <br>  * podemos mudar o nível de registro em tempo real (sem reiniciar o serviço); <br>  * não executamos o código do usuário se for necessário apenas para o registro. <br><br>  Por exemplo, durante a operação normal do microsserviço, o nível de log será definido como INFO e toda a expressão <br><br><pre> <code class="cpp hljs"> LOG_DEBUG() &lt;&lt; request.id &lt;&lt; <span class="hljs-string"><span class="hljs-string">" is not OK of "</span></span> &lt;&lt; GetSomeInfoFromDb();</code> </pre><br>  não será calculado.  A inclusão da chamada para a função de uso intensivo de recursos GetSomeInfoFromDb () não ocorrerá. <br><br>  Se de repente o serviço começar a "enganar", o desenvolvedor sempre poderá dizer ao serviço em funcionamento: "Efetue login no modo DEBUG".  E, nesse caso, as entradas “não está OK de” começarão a aparecer nos logs, a função GetSomeInfoFromDb () será executada. <br><br><h2>  Em vez de totais </h2><br>  Em um artigo, é impossível contar de uma vez sobre todos os recursos e truques.  Portanto, começamos com uma breve introdução.  Escreva nos comentários sobre o que você gostaria de aprender e ler sobre o userver. <br><br>  Agora, estamos pensando em publicar a estrutura em código aberto.  Se decidirmos que sim, preparar a estrutura para abrir a fonte exigirá muito esforço. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt474438/">https://habr.com/ru/post/pt474438/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt474424/index.html">Treinamento combinado - o que é e como funciona</a></li>
+<li><a href="../pt474426/index.html">A série animada "Círculo Matemático"</a></li>
+<li><a href="../pt474430/index.html">DevOpsDays Moscow - uma conferência que a comunidade faz para a comunidade</a></li>
+<li><a href="../pt474434/index.html">Próprio bot Telegram para rastrear o tempo de atividade de seus servidores em python e docker</a></li>
+<li><a href="../pt474436/index.html">O GitLab devido à política encerra o recrutamento de engenheiros da Rússia e China</a></li>
+<li><a href="../pt474440/index.html">Dificuldades no cálculo da receita de assinaturas renováveis ​​automaticamente em aplicativos iOS</a></li>
+<li><a href="../pt474442/index.html">História da extensão da vida irlandesa</a></li>
+<li><a href="../pt474444/index.html">Mais 5 projetos de treinamento ousados ​​para o desenvolvedor (Camada, Squoosh, Calculadora, Rastreador de sites, Leitor de música)</a></li>
+<li><a href="../pt474448/index.html">O que o cérebro de um estudante no mundo da computação é capaz</a></li>
+<li><a href="../pt474450/index.html">Pare de usar TTL ridiculamente pequeno para DNS</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

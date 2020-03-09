@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐈 📟 🥜 Por que o DFSR não replica alguns arquivos e como lidar com isso 🗜️ 🤧 🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Como muitas pessoas sabem, você pode configurar exceções na forma de máscaras de arquivos nas propriedades de pastas replicadas - e o serviço não repl...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Por que o DFSR não replica alguns arquivos e como lidar com isso</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/459020/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/l0/db/7v/l0db7vvrxzkmfa0sbvmi6ixsuf0.jpeg"></div><br>  Como muitas pessoas sabem, você pode configurar exceções na forma de máscaras de arquivos nas propriedades de pastas replicadas - e o serviço não replicará arquivos que correspondam às máscaras especificadas.  Mas nem todo mundo sabe que os arquivos têm um atributo "temporário" e o DFSR não processa esses arquivos por design.  E se isso não for levado em consideração, pode acontecer que o conteúdo de suas pastas DFSR fique fora de sincronia, embora tudo fique limpo e bonito nos logs de serviço, e isso possa ocorrer no momento mais inoportuno.  O problema em si e sua solução foram analisados ​​na Internet mais de uma vez. O objetivo deste artigo é finalizar a solução criada anteriormente, adicionando flexibilidade e conveniência a ele.  Para quem é relevante - pergunto sob o gato. <br><a name="habracut"></a><br>  O tópico foi abordado na Internet mais de uma vez, por exemplo, no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">blog oficial</a> , <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">aqui</a> e <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">no próprio Habré</a> .  Portanto, não vou me repetir, mas vou direto ao ponto.  A solução original é um script do PowerShell que redefine o atributo "temporário" para todos os arquivos em uma determinada pasta.  Tomando como base, escrevi minha própria versão, que encontra pastas replicadas no servidor de destino e percorre cada uma delas, redefinindo o atributo problem e enviando um relatório sobre os arquivos encontrados por email.  Também foi adicionado suporte para <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">caminhos longos</a> (requer a 5ª versão do PowerShell). <br><br>  Para que o script funcione, você precisa das ferramentas de gerenciamento de serviço DFS (por padrão, elas são instaladas juntamente com a adição da função Replicação DFS).  Se eles não estiverem disponíveis no servidor de destino, execute este cmdlet: <br><br><pre><code class="plaintext hljs">Install-WindowsFeature RSAT-DFS-Mgmt-Con</code> </pre> <br>  E aqui está o próprio script: <br><br><div class="spoiler">  <b class="spoiler_title">TempAttrFixer.ps1</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">Param( #   [parameter(Mandatory=$false)][String]$OutDir ) $SMTPServer = "mail.mydomain.com" $MailFrom = "sender@mydomain.com" $MailTo = "recipient@mydomain.com" Function ConvertTo-LiteralPath { #      LiteralPath Param( [parameter(Mandatory=$true)][String]$Path ) #    UNC If ($Path.Substring(0,2) -eq "\\") { Return ("\\?\UNC" + $Path.Remove(0,1)) } Else { Return "\\?\$Path" } } $StartTime = Get-Date $Error.Clear() If (!$OutDir) { $OutDir = (Get-WmiObject Win32_OperatingSystem).SystemDrive +"\TempAttrFixer_Report" } #   ,    $FoldersToScan = @(Get-DfsrMembership -ComputerName $env:COMPUTERNAME | Sort-Object GroupName, FolderName).ContentPath $LogFileName = "$env:COMPUTERNAME" + "_TempFiles_" + (Get-Date -Format "yyyy-MM-dd-HH-mm-ss") + ".csv" $LogFilePath = "$OutDir\$LogFileName" $Delimiter = "`t" $FilesCount = 0 If (!(Test-Path $OutDir -PathType Container)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null } ForEach ($Folder in $FoldersToScan) { # PowerShell 5.1,      LireralPath Write-Output "Scanning `"$Folder`"..." Get-ChildItem -LiteralPath (ConvertTo-LiteralPath $Folder) -Recurse | ForEach-Object -Process { if (($_.Attributes -band 0x100) -eq 0x100) { $FilesCount += 1 $Entry = $_.FullName + $Delimiter + $_.GetAccessControl().Owner + "`r`n" $Entry $Entry | Out-File -FilePath $LogFilePath -Encoding unicode -Append -NoNewline $_.Attributes = ($_.Attributes -band 0xFEFF) } } } $FinishTime = Get-Date $TimeSpan = $FinishTime - $StartTime Write-Output ("Done, errors: " + $Error.Count) $Encoding = [System.Text.Encoding]::Unicode If ($FilesCount -gt 0) { $MessageBody = $null $Subject = "     " $MessageBody += " : $env:COMPUTERNAME`r`n" $MessageBody += "  : " + $TimeSpan.ToString() + "`r`n" $MessageBody += "   `"$LogFilePath`"`r`n" Send-MailMessage -SmtpServer $SMTPServer -From $MailFrom -Subject $Subject -Encoding $Encoding -To $MailTo -Body $MessageBody -Attachments $LogFilePath } Else { $MessageBody = $null $Subject = "      " $MessageBody += " : $env:COMPUTERNAME`r`n" $MessageBody += "  : " + $TimeSpan.ToString() + "`r`n" Send-MailMessage -SmtpServer $SMTPServer -From $MailFrom -Subject $Subject -Encoding $Encoding -To $MailTo -Body $MessageBody } #,  -    If ($Error.Count -gt 0) { $MessageBody = $null $Subject = "     " $MessageBody += " : $env:COMPUTERNAME`r`n" $MessageBody += " : $env:UserName`r`n" $MessageBody += " :`r`n" $MessageBody += $Error[0] Send-MailMessage -SmtpServer $SMTPServer -From $MailFrom -Subject $Subject -Encoding $Encoding -To $MailTo -Body $MessageBody }</code> </pre><br></div></div><br>  Corrigimos os valores das variáveis ​​responsáveis ​​pelos alertas por email e adicionamos o script ao planejador: <br><br><pre> <code class="plaintext hljs">powershell.exe -NoLogo -ExecutionPolicy Bypass -NoProfile -File "&lt;  &gt;\TempAttrFixer.ps1"</code> </pre><br>  É mais fácil executar a tarefa a partir do SYSTEM, mas se você tiver <s>um nível aumentado de paranóia e</s> uma abordagem séria à segurança da informação for praticada, poderá usar uma conta separada, concedendo o privilégio de efetuar logon como um trabalho em lotes e o direito de modificar arquivos em pastas replicadas. <br><br>  Em vez de relatórios por email (ou em adição a eles), você pode configurar o script para interagir com o zabbix ou outro sistema de monitoramento.  Também é importante entender que o procedimento consome bastante recursos, portanto, não o execute com muita frequência.  Demora cerca de uma hora para processar 10 TB de dados, e o script é executado uma vez por dia à noite. <br><br>  Meus colegas e eu estávamos interessados ​​na questão de onde vêm os arquivos com o atributo temporário.  Portanto, em cada relatório, juntamente com o nome completo do arquivo, o proprietário do NTFS é exibido.  Com base nos dados coletados, foi possível descobrir que, em nossa situação, o atributo às vezes era adicionado aos arquivos ao copiar dados de discos locais encaminhados via RDP (estamos usando ativamente a tecnologia de área de trabalho remota).  Mas é possível que os arquivos tenham sido inicialmente "defeituosos".  Até agora, não foi possível descobrir com mais detalhes. <br><br>  Ficaria muito grato se você passar em uma pequena pesquisa e compartilhar sua experiência nos comentários. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt459020/">https://habr.com/ru/post/pt459020/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt459002/index.html">Como configurar o HTTPS - SSL Configuration Generator ajudará</a></li>
+<li><a href="../pt459004/index.html">Algoritmo criptográfico Grasshopper: praticamente o complexo</a></li>
+<li><a href="../pt459012/index.html">Criando um aplicativo para Bitrix24 do zero</a></li>
+<li><a href="../pt459014/index.html">Saindo da sua zona de conforto: de nodejs a dlang</a></li>
+<li><a href="../pt459018/index.html">Táticas de role-playing no desktop</a></li>
+<li><a href="../pt459022/index.html">Comunicação por vídeo olho no olho: tentativas de resolver o problema da falta de contato visual</a></li>
+<li><a href="../pt459024/index.html">Como perfuramos o grande firewall chinês (parte 3)</a></li>
+<li><a href="../pt459028/index.html">Alocação de memória estática em microcontroladores</a></li>
+<li><a href="../pt459030/index.html">Um vislumbre da caixa preta - um novo sistema do MIT mostrará como os algoritmos de aprendizado de máquina funcionam</a></li>
+<li><a href="../pt459034/index.html">Algumas dicas simples, mas úteis, para trabalhar com getters no Vuex</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

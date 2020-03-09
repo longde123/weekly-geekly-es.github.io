@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👷 🎄 🛐 Acelerando conectores PHP para Tarantool usando Async, Swoole e Parallel ⚖️ 👍🏾 🎼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="No ecossistema PHP, atualmente existem dois conectores para o servidor Tarantool: a extensão oficial PECL tarantool / tarantool-php escrita em C e tar...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Acelerando conectores PHP para Tarantool usando Async, Swoole e Parallel</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/480032/"><img src="https://habrastorage.org/webt/5r/bm/wi/5rbmwilvinacbni2aggejp0n7sk.jpeg"><br><br>  No ecossistema PHP, atualmente existem dois conectores para o servidor Tarantool: a extensão oficial PECL <a href="https://github.com/tarantool/tarantool-php">tarantool / tarantool-php</a> escrita em C e <a href="https://github.com/tarantool-php/client">tarantool-php / client</a> escrito em PHP.  Eu sou o autor deste último. <br><br>  Neste artigo, gostaria de compartilhar os resultados dos testes de desempenho dessas duas bibliotecas e mostrar como você pode obter uma melhoria de desempenho 3x-5x ( <i>em testes sintéticos!</i> ) Com alterações mínimas no código. <br><a name="habracut"></a><br><h2>  O que vamos testar? </h2><br>  Testaremos os conectores síncronos mencionados acima, lançados de forma assíncrona, em paralelo e assíncrona em paralelo.  Além disso, não queremos alterações no código fonte dos conectores.  No momento, existem várias extensões disponíveis que podem fazer o trabalho: <br><br><ul><li>  <a href="https://github.com/swoole/swoole-src">Swoole</a> , uma estrutura assíncrona de alto desempenho para PHP.  Usado por gigantes da Internet como Alibaba e Baidu.  Desde a versão 4.1.0, o incrível gancho de tempo de execução <i>Swoole \ Runtime :: enableCoroutine ()</i> apareceu, permitindo "transformar bibliotecas de rede PHP síncronas em bibliotecas co-rotineiras usando uma única linha de código". </li><li>  Async, uma extensão muito promissora para trabalho assíncrono em PHP até recentemente.  Por que até recentemente?  Infelizmente, por razões que não conheço, o autor excluiu o repositório e o futuro do projeto é questionável.  Vou usar <a href="https://github.com/dreamsxin/ext-async">um</a> dos garfos.  Como o Swoole, essa extensão facilita a ativação do modo assíncrono, substituindo as implementações de fluxo padrão do PHP por suas contrapartes assíncronas.  Isso é feito através da opção " <i>async.tcp = 1</i> ". </li><li>  <a href="https://github.com/krakjoe/parallel">Paralelamente</a> , uma extensão bastante nova do conhecido Joe Watkins, autor de bibliotecas como phpdbg, apcu, pthreads, pcov, uopz.  A extensão fornece uma API multi-threading para PHP e é posicionada como um substituto para pthreads.  Uma limitação significativa da biblioteca é que ela funciona apenas com a versão ZTS (Zend Thread Safe) do PHP. </li></ul><br><h2>  Como vamos testar? </h2><br>  Executaremos uma instância do Tarantool com o registro write-ahead desativado ( <i>wal_mode = none</i> ) e um buffer de rede estendido ( <i>readahead = 1 * 1024 * 1024</i> ).  A primeira opção impedirá operações de E / S na unidade de disco, a segunda permitirá a leitura de mais solicitações do buffer do sistema operacional e, assim, minimizará o número de chamadas do sistema. <br><br>  Para benchmarks que funcionam com dados (inserção, exclusão, leitura etc.), um espaço memtx será (re) criado antes do início do benchmark, e os valores iniciais de índice para esse espaço serão criados pelo gerador de sequência. <br><br>  DDL do espaço é o seguinte: <br><br><pre><code class="lua hljs">space = box.schema.space.<span class="hljs-built_in"><span class="hljs-built_in">create</span></span>(<span class="hljs-built_in"><span class="hljs-built_in">config</span></span>.space_name, { id = <span class="hljs-built_in"><span class="hljs-built_in">config</span></span>.space_id, temporary = <span class="hljs-literal"><span class="hljs-literal">true</span></span> }) space:create_index(<span class="hljs-string"><span class="hljs-string">'primary'</span></span>, { <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> = <span class="hljs-string"><span class="hljs-string">'tree'</span></span>, parts = {<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-string"><span class="hljs-string">'unsigned'</span></span>}, sequence = <span class="hljs-literal"><span class="hljs-literal">true</span></span> }) space:<span class="hljs-built_in"><span class="hljs-built_in">format</span></span>({ {name = <span class="hljs-string"><span class="hljs-string">'id'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> = <span class="hljs-string"><span class="hljs-string">'unsigned'</span></span>}, {name = <span class="hljs-string"><span class="hljs-string">'name'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> = <span class="hljs-string"><span class="hljs-string">'string'</span></span>, is_nullable = <span class="hljs-literal"><span class="hljs-literal">false</span></span>} })</code> </pre> <br>  Se necessário, antes de iniciar o benchmark, o espaço é preenchido com 10.000 tuplas do seguinte formulário: <br><br><pre> <code class="lua hljs">{id, <span class="hljs-string"><span class="hljs-string">'tuple_'</span></span> .. id}</code> </pre> <br>  As tuplas são acessadas usando o valor da chave aleatória. <br><br>  O benchmark é uma solicitação única para o servidor que é executada 10.000 vezes (revoluções), que por sua vez são executadas em iterações.  As iterações são repetidas até que todos os desvios de tempo entre 5 iterações estejam dentro da margem de erro de 3% *.  Depois disso, o resultado médio é obtido.  Entre as iterações, há uma pausa de 1 segundo para impedir que a CPU estrangule.  O coletor de lixo Lua é desativado antes de cada iteração e é forçado a iniciar após o término da iteração.  O processo PHP é iniciado apenas com extensões necessárias para o benchmark, com o buffer de saída ativado e o coletor de lixo desativado. <br><br>  <i>* O número de rotações, iterações e limite de erro pode ser alterado nas configurações de benchmark.</i> <br><br><h2>  Ambiente de teste </h2><br>  Os resultados publicados abaixo foram feitos no MacBookPro (meados de 2015) com o Fedora 30 (versão 5.3.8-200.fc30.x86_64 do kernel).  O Tarantool foi lançado no docker com a <i>configuração</i> " <i>--network host</i> ". <br><br>  <b>Versões do pacote:</b> <br><br>  Tarantool: 2.3.0-115-g5ba5ed37e <br>  Docker: 19/03/3, compilação a872fc2f86 <br>  PHP: 7.3.11 (cli) (construído: 22 de outubro de 2019 08:11:04) <br>  tarantool / cliente: 0.6.0 <br>  rybakit / msgpack: 0.6.1 <br>  ext-tarantool: 0.3.2 (corrigido) * <br>  ext-msgpack: 2.0.3 <br>  ext-async: 0.3.0-8c1da46 <br>  ext-swoole: 4.4.12 <br>  paralelo ext: 1.1.3 <br><br>  <i>* Infelizmente, o conector oficial não funciona com PHP&gt; 7.2.</i>  <i>Para compilar e executar a extensão no PHP 7.3, tive que usar um <a href="https://github.com/tarantool/tarantool-php/pull/148/files">patch</a> .</i> <br><br><h2>  Resultados </h2><br><h4>  Sincronizar (padrão) </h4><br>  O protocolo Tarantool usa o formato binário <a href="https://msgpack.org/">MessagePack</a> para serializar mensagens.  No conector PECL, a serialização está oculta dentro da biblioteca, portanto <a href="https://github.com/tarantool/tarantool-php/issues/89">, parece impossível</a> afetar o processo de codificação do código da terra do usuário.  Por outro lado, o conector PHP puro fornece a capacidade de personalizar o processo de codificação, estendendo um dos codificadores padrão ou usando sua própria implementação.  Dois codificadores estão disponíveis <a href="https://github.com/msgpack/msgpack-php/">imediatamente</a> : um é baseado no <a href="https://github.com/msgpack/msgpack-php/">msgpack / msgpack-php</a> (a extensão oficial PECL da MessagePack) e o outro é baseado no <a href="https://github.com/rybakit/msgpack.php">rybakit / msgpack</a> (PHP puro). <br><br>  Antes de continuarmos a comparar os conectores, vamos medir o desempenho dos codificadores MessagePack para o conector PHP, para que possamos usar o melhor desempenho posteriormente em nossos testes: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/d72/e70/645/d72e70645fb9c1ec359eb6ac25ec5b57.png"></div><br>  Embora a versão PHP (Pure) não seja tão rápida quanto a extensão PECL, eu ainda recomendaria o uso do <a href="https://github.com/rybakit/msgpack.php">rybakit / msgpack</a> em projetos reais, porque a extensão oficial PECL implementa a especificação MessagePack apenas parcialmente (por exemplo, não há suporte para tipos de dados personalizados, e sem ele você não pode usar Decimal - um novo tipo de dados introduzido no Tarantool 2.3) e possui vários outros <a href="https://github.com/msgpack/msgpack-php/issues">problemas</a> (incluindo problemas de compatibilidade com o PHP 7.4).  E o projeto parece abandonado em geral. <br><br>  Então, vamos medir o desempenho dos conectores no modo síncrono: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/051/bb3/ed3/051bb3ed3341d0c19788325ea624f7c6.png"></div><br>  Como você pode ver no gráfico, o conector PECL (Tarantool) tem um desempenho melhor que o conector PHP (Client).  Isso não é surpreendente, considerando que o último, além de ser implementado em uma linguagem mais lenta, na verdade faz mais trabalho: um novo objeto de <i>Solicitação</i> e <i>Resposta</i> é criado com cada solicitação (no caso de Select, também há <i>Critérios</i> , e no No caso de Update / Upsert, existem <i>Operações</i> ), <i>Connection</i> , <i>Packer</i> e <i>Handler</i> também adicionam alguma sobrecarga.  É desnecessário dizer que uma maior flexibilidade traz um custo.  No entanto, o interpretador PHP mostra bom desempenho em geral.  Embora exista uma diferença, é insignificante e pode ficar ainda menos com o uso de pré-carregamento no PHP 7.4, sem mencionar o JIT no PHP 8. <br><br>  Seguindo em frente agora.  O Tarantool 2.0 introduziu o suporte SQL.  Vamos tentar executar as operações Selecionar, Inserir, Atualizar e Excluir usando o protocolo SQL e comparar os resultados com os equivalentes noSQL (binários): <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/8d0/4e5/308/8d04e5308574fb007c8fa1480987a92e.png"></div><br>  Os resultados do SQL não são tão impressionantes (deixe-me lembrá-lo de que ainda estamos testando o modo síncrono).  No entanto, não ficaria chateado com isso antes: o suporte ao SQL ainda está em desenvolvimento ativo (por exemplo, o suporte a <a href="https://github.com/tarantool/tarantool/commit/ff2091e09b5a7e9b7aa3f3e996dc7a06189889f3">instruções preparadas</a> foi adicionado há pouco tempo) e, de acordo com a lista de <a href="https://github.com/tarantool/tarantool/issues%3Fq%3Dis%253Aissue%2Bis%253Aopen%2Bsql%2Blabel%253Aperformance">problemas</a> , o mecanismo do SQL obtenha várias otimizações no futuro. <br><br><h4>  Assíncrono </h4><br>  Bem, vamos ver agora como a extensão Async pode nos ajudar a melhorar os resultados acima.  Para programação assíncrona, a extensão fornece uma API baseada em corotinas, que vamos usar aqui.  Primeiro, como descobrimos por meio de testes, o número ideal de corotinas para nosso ambiente é 25: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/578/89f/32d/57889f32d5370c1074ca1ff637807acf.png"></div><br>  Em seguida, distribuímos 10.000 operações em 25 corotinas e verificamos o resultado: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/53e/e14/337/53ee143371549b9f11c70b1305901e7e.png"></div><br>  O número de operações por segundo aumentou mais de 3 vezes para o conector PHP!  Infelizmente, o conector PECL falhou ao iniciar com ext-async. <br><br>  E o SQL? <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/4bc/e45/cad/4bce45caddc5079eb38ac26498aa0dfc.png"></div><br>  Como você pode ver, no modo assíncrono, a diferença entre o protocolo binário e o SQL está dentro da margem de erro. <br><br><h4>  Swoole </h4><br>  Novamente, vamos determinar o número ideal de corotinas, desta vez para Swoole: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/452/d71/3b2/452d713b2d513c9cd97a1fbce3f706ef.png"></div><br>  Vamos pegar 25. Agora, repetindo o mesmo truque da extensão Async: distribua 10.000 operações entre 25 corotinas.  Além disso, vamos adicionar mais um teste, onde dividimos tudo em dois processos (ou seja, cada processo executará 5.000 operações em 25 corotinas).  Os processos serão criados com a ajuda de <i>Swoole \ Process</i> . <br><br>  Resultados: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/763/606/55c/76360655ca3480a8e57aff8cd55ad53c.png"></div><br>  Swoole mostra um desempenho ligeiramente inferior ao Async ao executar em um processo, mas em 2 processos a imagem muda drasticamente (2 não é escolhido por acidente, na minha máquina esse número exato de processos apresentou o melhor resultado). <br><br>  <i>A propósito, também há uma API para trabalhar com processos na extensão Async, mas não notei diferença entre o lançamento de benchmarks em um único processo ou em vários processos (é possível que eu tenha cometido alguns erros).</i> <i><br></i> <br>  SQL versus protocolo binário: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/f1b/0c6/ed1/f1b0c6ed18c9a2dd153d2307564937ab.png"></div><br>  Como no Async, a diferença entre operações binárias e SQL é nivelada no modo assíncrono. <br><br><h4>  Paralela </h4><br>  Como a extensão Parallel é sobre threads, não coroutines, devemos medir o número ideal de threads paralelos: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/f44/7a6/c2f/f447a6c2f9bc50be507bfd56c70f5b2c.png"></div><br>  São 16 na minha máquina.  Agora vamos comparar os conectores em 16 threads paralelos: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/6db/5f7/489/6db5f7489dcb97871993cdb7476a764a.png"></div><br>  Como você pode ver, o resultado é ainda melhor do que com extensões assíncronas (exceto Swoole lançado com 2 processos).  Observe que, para o conector PECL, as operações Update e Upsert não possuem barra.  Isso ocorre porque essas operações falharam com um erro, e não tenho certeza do que é o culpado: ext-parallel, ext-tarantool ou ambos. <br><br>  Agora vamos adicionar o desempenho do SQL à comparação: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/d86/59c/8c2/d8659c8c25b466fc5cc538b08e6d2441.png"></div><br>  Você notou semelhanças com o gráfico para os conectores iniciados de forma síncrona? <br><br><h4>  Tudo em um </h4><br>  Por fim, vamos combinar todos os resultados em um gráfico para ver a imagem inteira das extensões em teste.  Vamos adicionar apenas um novo teste ao gráfico, o que ainda não fizemos: inicie as rotinas assíncronas em paralelo usando Parallel *.  A idéia de integrar as extensões mencionadas acima já foi <a href="https://github.com/krakjoe/parallel/issues/25">discutida</a> pelos autores, mas não foi alcançado um consenso; portanto, teremos que fazer isso sozinhos. <br><br>  <i>* Falha ao iniciar as rotinas da Swoole com Parallel;</i>  <i>parece que essas extensões são incompatíveis.</i> <br><br>  Agora, os resultados finais: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/15a/23e/81c/15a23e81c9d330223990c6e60f127369.png"></div><br><h2>  Conclusão </h2><br>  Na minha opinião, os resultados são bastante decentes, mas há algo que me faz acreditar que ainda não chegamos!  Se você tiver alguma idéia de como melhorar os benchmarks, teremos prazer em revisar sua solicitação de recebimento.  Todo o código com instruções de lançamento e resultados é publicado em um <a href="https://github.com/tarantool-php/benchmarks">repositório</a> dedicado. <br><br>  Deixando você decidir se precisaria disso em um projeto real, eu diria apenas que foi um experimento empolgante que me permitiu estimar quanto se poderia obter de um conector TCP síncrono com o mínimo de esforço. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt480032/">https://habr.com/ru/post/pt480032/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt480018/index.html">Desenvolvimento de aplicativos móveis em Python. Biblioteca KivyMD</a></li>
+<li><a href="../pt480022/index.html">Instanciação Python</a></li>
+<li><a href="../pt480024/index.html">Pervinca: processador de instrução única</a></li>
+<li><a href="../pt480026/index.html">Anunciando a visualização das Máquinas Virtuais Spot do Azure</a></li>
+<li><a href="../pt480028/index.html">A revolução mais pacífica</a></li>
+<li><a href="../pt480034/index.html">Habraiting 2019: estatísticas e classificação de autores para 2019</a></li>
+<li><a href="../pt480038/index.html">Mova-se com o Xamarin.Forms 4.4</a></li>
+<li><a href="../pt480040/index.html">O que significa o Rambler Group atingindo a Nginx e os fundadores e como isso afetará o setor on-line</a></li>
+<li><a href="../pt480042/index.html">Projetos independentes e próprios. Seguindo o Nginx</a></li>
+<li><a href="../pt480044/index.html">Um segundo ano de Q #</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

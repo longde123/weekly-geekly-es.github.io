@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👍🏾 🚕 📍 Monitorar pings entre hosts Kubernetes é a nossa receita 👇🏽 🖱️ ⛏️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Ao diagnosticar problemas em um cluster Kubernetes, geralmente observamos que algumas vezes um dos nós do cluster chove * e, é claro, isso é raro e es...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Monitorar pings entre hosts Kubernetes é a nossa receita</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/442798/"><img src="https://habrastorage.org/webt/ee/gf/ep/eegfep91l7o5l1gkj9mlwefkwmu.png"><br><br>  Ao diagnosticar problemas em um cluster Kubernetes, geralmente observamos que algumas vezes um dos nós do cluster chove * e, é claro, isso é raro e estranho.  Portanto, chegamos à necessidade de uma ferramenta que faça <b>ping de cada nó para cada nó</b> e apresente os resultados de seu trabalho na forma <b>de métricas do Prometheus</b> .  Teríamos apenas que desenhar gráficos no Grafana e localizar rapidamente o nó com falha (e, se necessário, remover todos os pods dele e, em seguida, fazer o trabalho correspondente **) ... <a name="habracut"></a><br><br>  <i>* Por "chuvisco", entendo que o nó pode entrar no status <code>NotReady</code> e retornar repentinamente ao trabalho.</i>  <i>Ou, por exemplo, parte do tráfego nos pods pode não alcançar os pods nos nós vizinhos.</i> <br><br>  <i>** Por que essas situações surgem?</i>  <i>Uma das causas comuns pode ser problemas de rede no comutador no data center.</i>  <i>Por exemplo, uma vez na Hetzner, configuramos o vswitch, mas em um momento maravilhoso um dos nós deixou de estar acessível nessa porta vswitch: por causa disso, verificou-se que o nó estava completamente inacessível na rede local.</i> <br><br>  Além disso, gostaríamos de <b>lançar esse serviço diretamente no Kubernetes</b> , para que toda a implantação ocorra usando a instalação do Helm-chart.  (Antecipando perguntas - se usássemos o mesmo Ansible, teríamos que escrever funções para vários ambientes: AWS, GCE, bare metal ...) Depois de pesquisar um pouco na Internet por ferramentas prontas para a tarefa, não encontramos nada adequado.  Portanto, eles fizeram os seus próprios. <br><br><h2>  Script e configurações </h2><br>  Portanto, o principal componente de nossa solução é um <b>script</b> que monitora a alteração em qualquer nó do campo <code>.status.addresses</code> e, se um nó alterou esse campo (ou seja, um novo nó foi adicionado), envia valores Helm para o gráfico usando esta lista de nós no formato do ConfigMap: <br><br><pre> <code class="plaintext hljs">--- apiVersion: v1 kind: ConfigMap metadata: name: node-ping-config namespace: kube-prometheus data: nodes.json: &gt; {{ .Values.nodePing.nodes | toJson }}</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Script Python em si:</b> <div class="spoiler_text"><pre> <code class="python hljs"><span class="hljs-comment"><span class="hljs-comment">#!/usr/bin/env python3 import subprocess import prometheus_client import re import statistics import os import json import glob import better_exchook import datetime better_exchook.install() FPING_CMDLINE = "/usr/sbin/fping -p 1000 -A -C 30 -B 1 -q -r 1".split(" ") FPING_REGEX = re.compile(r"^(\S*)\s*: (.*)$", re.MULTILINE) CONFIG_PATH = "/config/nodes.json" registry = prometheus_client.CollectorRegistry() prometheus_exceptions_counter = \ prometheus_client.Counter('kube_node_ping_exceptions', 'Total number of exceptions', [], registry=registry) prom_metrics = {"sent": prometheus_client.Counter('kube_node_ping_packets_sent_total', 'ICMP packets sent', ['destination_node', 'destination_node_ip_address'], registry=registry), "received": prometheus_client.Counter( 'kube_node_ping_packets_received_total', 'ICMP packets received', ['destination_node', 'destination_node_ip_address'], registry=registry), "rtt": prometheus_client.Counter( 'kube_node_ping_rtt_milliseconds_total', 'round-trip time', ['destination_node', 'destination_node_ip_address'], registry=registry), "min": prometheus_client.Gauge('kube_node_ping_rtt_min', 'minimum round-trip time', ['destination_node', 'destination_node_ip_address'], registry=registry), "max": prometheus_client.Gauge('kube_node_ping_rtt_max', 'maximum round-trip time', ['destination_node', 'destination_node_ip_address'], registry=registry), "mdev": prometheus_client.Gauge('kube_node_ping_rtt_mdev', 'mean deviation of round-trip times', ['destination_node', 'destination_node_ip_address'], registry=registry)} def validate_envs(): envs = {"MY_NODE_NAME": os.getenv("MY_NODE_NAME"), "PROMETHEUS_TEXTFILE_DIR": os.getenv("PROMETHEUS_TEXTFILE_DIR"), "PROMETHEUS_TEXTFILE_PREFIX": os.getenv("PROMETHEUS_TEXTFILE_PREFIX")} for k, v in envs.items(): if not v: raise ValueError("{} environment variable is empty".format(k)) return envs @prometheus_exceptions_counter.count_exceptions() def compute_results(results): computed = {} matches = FPING_REGEX.finditer(results) for match in matches: ip = match.group(1) ping_results = match.group(2) if "duplicate" in ping_results: continue splitted = ping_results.split(" ") if len(splitted) != 30: raise ValueError("ping returned wrong number of results: \"{}\"".format(splitted)) positive_results = [float(x) for x in splitted if x != "-"] if len(positive_results) &gt; 0: computed[ip] = {"sent": 30, "received": len(positive_results), "rtt": sum(positive_results), "max": max(positive_results), "min": min(positive_results), "mdev": statistics.pstdev(positive_results)} else: computed[ip] = {"sent": 30, "received": len(positive_results), "rtt": 0, "max": 0, "min": 0, "mdev": 0} if not len(computed): raise ValueError("regex match\"{}\" found nothing in fping output \"{}\"".format(FPING_REGEX, results)) return computed @prometheus_exceptions_counter.count_exceptions() def call_fping(ips): cmdline = FPING_CMDLINE + ips process = subprocess.run(cmdline, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True) if process.returncode == 3: raise ValueError("invalid arguments: {}".format(cmdline)) if process.returncode == 4: raise OSError("fping reported syscall error: {}".format(process.stderr)) return process.stdout envs = validate_envs() files = glob.glob(envs["PROMETHEUS_TEXTFILE_DIR"] + "*") for f in files: os.remove(f) labeled_prom_metrics = [] while True: with open("/config/nodes.json", "r") as f: config = json.loads(f.read()) if labeled_prom_metrics: for node in config: if (node["name"], node["ipAddress"]) not in [(metric["node_name"], metric["ip"]) for metric in labeled_prom_metrics]: for k, v in prom_metrics.items(): v.remove(node["name"], node["ipAddress"]) labeled_prom_metrics = [] for node in config: metrics = {"node_name": node["name"], "ip": node["ipAddress"], "prom_metrics": {}} for k, v in prom_metrics.items(): metrics["prom_metrics"][k] = v.labels(node["name"], node["ipAddress"]) labeled_prom_metrics.append(metrics) out = call_fping([prom_metric["ip"] for prom_metric in labeled_prom_metrics]) computed = compute_results(out) for dimension in labeled_prom_metrics: result = computed[dimension["ip"]] dimension["prom_metrics"]["sent"].inc(computed[dimension["ip"]]["sent"]) dimension["prom_metrics"]["received"].inc(computed[dimension["ip"]]["received"]) dimension["prom_metrics"]["rtt"].inc(computed[dimension["ip"]]["rtt"]) dimension["prom_metrics"]["min"].set(computed[dimension["ip"]]["min"]) dimension["prom_metrics"]["max"].set(computed[dimension["ip"]]["max"]) dimension["prom_metrics"]["mdev"].set(computed[dimension["ip"]]["mdev"]) prometheus_client.write_to_textfile( envs["PROMETHEUS_TEXTFILE_DIR"] + envs["PROMETHEUS_TEXTFILE_PREFIX"] + envs["MY_NODE_NAME"] + ".prom", registry)</span></span></code> </pre> </div></div><br>  Ele <b>é executado em cada nó</b> e envia pacotes ICMP para todas as outras instâncias do cluster Kubernetes 2 vezes por segundo, e os resultados são gravados nos arquivos de texto. <br><br>  O script está incluído na <b>imagem</b> do <b>Docker</b> : <br><br><pre> <code class="plaintext hljs">FROM python:3.6-alpine3.8 COPY rootfs / WORKDIR /app RUN pip3 install --upgrade pip &amp;&amp; pip3 install -r requirements.txt &amp;&amp; apk add --no-cache fping ENTRYPOINT ["python3", "/app/node-ping.py"]</code> </pre> <br>  Além disso, uma <b>ServiceAccount</b> foi criada e uma função para ela, que permite que apenas uma lista de nós seja recebida (para conhecer seus endereços): <br><br><pre> <code class="plaintext hljs">--- apiVersion: v1 kind: ServiceAccount metadata: name: node-ping namespace: kube-prometheus --- kind: ClusterRole apiVersion: rbac.authorization.k8s.io/v1 metadata: name: kube-prometheus:node-ping rules: - apiGroups: [""] resources: ["nodes"] verbs: ["list"] --- kind: ClusterRoleBinding apiVersion: rbac.authorization.k8s.io/v1 metadata: name: kube-prometheus:kube-node-ping subjects: - kind: ServiceAccount name: node-ping namespace: kube-prometheus roleRef: apiGroup: rbac.authorization.k8s.io kind: ClusterRole name: kube-prometheus:node-ping</code> </pre> <br>  Por fim, você precisa do <b>DaemonSet</b> , que é executado em todas as instâncias do cluster: <br><br><pre> <code class="plaintext hljs">--- apiVersion: extensions/v1beta1 kind: DaemonSet metadata: name: node-ping namespace: kube-prometheus labels: tier: monitoring app: node-ping version: v1 spec: updateStrategy: type: RollingUpdate template: metadata: labels: name: node-ping spec: terminationGracePeriodSeconds: 0 tolerations: - operator: "Exists" serviceAccountName: node-ping priorityClassName: cluster-low containers: - resources: requests: cpu: 0.10 image: private-registry.flant.com/node-ping/node-ping-exporter:v1 imagePullPolicy: Always name: node-ping env: - name: MY_NODE_NAME valueFrom: fieldRef: fieldPath: spec.nodeName - name: PROMETHEUS_TEXTFILE_DIR value: /node-exporter-textfile/ - name: PROMETHEUS_TEXTFILE_PREFIX value: node-ping_ volumeMounts: - name: textfile mountPath: /node-exporter-textfile - name: config mountPath: /config volumes: - name: textfile hostPath: path: /var/run/node-exporter-textfile - name: config configMap: name: node-ping-config imagePullSecrets: - name: antiopa-registry</code> </pre> <br>  Resumo de traços em palavras: <br><br><ul><li>  Resultados do script Python - ou seja,  os arquivos de texto colocados na máquina host no diretório <code>/var/run/node-exporter-textfile</code> textfile entram no DaemonSet node-exportador.  Os argumentos para executá-lo indicam <code>--collector.textfile.directory /host/textfile</code> , em que <code>/host/textfile</code> é o hostPath em <code>/var/run/node-exporter-textfile</code> .  <i>(Você pode ler sobre o coletor de arquivos de texto no nó-exportador <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">aqui</a> .)</i> </li><li>  Como resultado, o nó-exportador lê esses arquivos e o Prometheus coleta todos os dados do nó-exportador. </li></ul><br><h2>  O que aconteceu? </h2><br>  Agora - para o tão esperado resultado.  Quando essas métricas foram criadas, podemos examiná-las e, é claro, desenhar gráficos visuais.  É assim que parece. <br><br>  Primeiramente, existe um bloco geral com a capacidade (usando o seletor) de selecionar uma lista de nós a <b>partir dos</b> quais o ping é executado e <b>em</b> qual.  Esta é a <b>tabela de resumo</b> para o ping entre os nós selecionados para o período especificado no painel Grafana: <br><br><img src="https://habrastorage.org/webt/xx/xp/n8/xxxpn8ypr4mbkfvsgppfjvunoys.png"><br><br>  E aqui estão os gráficos com informações gerais <b>sobre os nós selecionados</b> : <br><br><img src="https://habrastorage.org/webt/jd/wt/ck/jdwtcknjfdiqwsv6u6v3ehsz0zy.png"><br><br>  Também temos uma lista de linhas, cada uma das quais é um gráfico <b>para um nó separado</b> do seletor do <i>nó de origem</i> : <br><br><img src="https://habrastorage.org/webt/za/rc/vv/zarcvvxqjzvi-yvvwllnxgkzo2m.png"><br><br>  Se você expandir essa linha, poderá ver informações sobre pings <b>de um nó específico para todos os outros</b> que foram selecionados no seletor de <i>Nós de destino</i> : <br><br><img src="https://habrastorage.org/webt/ia/wz/tu/iawztuct03is7ifnlouuap7_qrs.png"><br><br>  Esta informação está em gráficos: <br><br><img src="https://habrastorage.org/webt/p5/h5/es/p5h5escgjrmatgcnjra1jf-eijk.png"><br><br>  Finalmente, como serão os gráficos estimados com ping baixo entre os nós? <br><br><img src="https://habrastorage.org/webt/kj/ci/xv/kjcixvt7jmflry4xx8vpakwbrcy.png"><br><br><img src="https://habrastorage.org/webt/kp/x4/cc/kpx4ccown25u2l-byqjez7i-3je.png"><br><br>  Se você observar isso em um ambiente real - é hora de descobrir os motivos. <br><br><h2>  PS </h2><br>  Leia também em nosso blog: <br><br><ul><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Monitoramento e Kubernetes (revisão e reportagem em vídeo)</a> ”; </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">O dispositivo e mecanismo de operação do Operador Prometheus em Kubernetes</a> ”; </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Monitoramento com Prometheus em Kubernetes em 15 minutos</a> ”; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Melhorando a confiabilidade do Kubernetes: como perceber rapidamente que um nó caiu</a> ." </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt442798/">https://habr.com/ru/post/pt442798/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt442786/index.html">7 dicas úteis para usar o quarto</a></li>
+<li><a href="../pt442788/index.html">Por que precisamos de um sistema de monitoramento em um chip</a></li>
+<li><a href="../pt442790/index.html">As inscrições estão abertas para o Allure Server Meetup em São Petersburgo</a></li>
+<li><a href="../pt442794/index.html">Convidamos você para a conferência “arquiteto (TI) em projetos e organizações de TI”</a></li>
+<li><a href="../pt442796/index.html">Pesquisa: Tecnologias em nuvem em serviços de GIS e dados geográficos</a></li>
+<li><a href="../pt442800/index.html">Bot simples de telegrama em Python em 30 minutos</a></li>
+<li><a href="../pt442804/index.html">MVCC-1. Isolamento</a></li>
+<li><a href="../pt442806/index.html">O programa preliminar DUMP-2019 está pronto. Palestrantes do Evil Marcianos, Tinkoff.ru, HTML Academy, SkyEng, 2GIS</a></li>
+<li><a href="../pt442808/index.html">Convidamos você para a Festa Droid - uma reunião dedicada a questões práticas do desenvolvimento de aplicativos e dispositivos Android</a></li>
+<li><a href="../pt442810/index.html">Mitos da Física Popular, continuação: Gravidade</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
