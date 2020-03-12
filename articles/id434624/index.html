@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏿‍🤝‍👩🏽 🚅 😓 Bagaimana saya menemukan bug di GNU Tar 🍵 🕵🏼 🙅🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Diposting oleh Chris Siebenmann , Administrator Sistem Unix di University of Toronto 
+
+ Dari waktu ke waktu, sesuatu yang aneh terjadi dalam pekerjaan...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Bagaimana saya menemukan bug di GNU Tar</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/434624/"> <i><font color="gray">Diposting oleh <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Chris Siebenmann</a> , Administrator Sistem Unix di University of Toronto</font></i> <br><br>  Dari waktu ke waktu, sesuatu yang aneh terjadi dalam pekerjaan saya yang membuat saya berpikir.  Bahkan jika tidak segera jelas kesimpulan yang mengikuti.  Baru-baru ini saya menyebutkan bahwa kami menemukan bug di GNU Tar, dan kisah bagaimana ini terjadi adalah salah satu kasusnya. <br><br>  Untuk server file cadangan, kami menggunakan Amanda dan GNU Tar.  Seiring waktu, kami terkadang memiliki masalah yang agak jarang terjadi di mana tar menjadi gila ketika membuat cadangan sistem file dengan direktori <code>/var/mail</code> , menghasilkan sejumlah besar output.  Biasanya proses ini berjalan hingga tak terbatas dan harus membunuh tempat sampah;  dalam kasus lain, itu masih berakhir dengan mengeluarkan terabyte (s) data yang tampaknya terkompresi dengan sempurna.  Ketika saya sekali lagi menemukan file tar raksasa, saya memeriksanya - dan menemukan bahwa itu sebagian terdiri dari nol byte, yang benar-benar tidak disukai oleh tim pengujian <code>tar -t</code> , setelah semuanya kembali normal. <br><br>  (Karena ini, saya bertanya-tanya apakah byte nol muncul secara alami pada orang-orang di kotak surat. Ternyata <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">menemukan byte nol dalam file teks</a> tidak begitu sederhana dan ya, mereka ada di sana). <br><a name="habracut"></a><br>  Kami baru-baru ini memindahkan sistem file dari <code>/var/mail</code> ke server file Linux baru di bawah Ubuntu 18.04 dan karenanya beralih ke versi GNU Tar yang lebih baru dan lebih standar daripada di mesin OmniOS.  Kami berharap ini akan menyelesaikan masalah kami, tetapi kejadian yang sama segera terjadi.  Kali ini GNU Tar bekerja pada mesin Ubuntu, di mana saya sangat mengenal semua alat debugging yang tersedia, jadi saya memeriksa proses <code>tar</code> sedang berjalan.  Pengujian menunjukkan bahwa <code>tar</code> menghasilkan aliran <code>read()</code> tanpa akhir menghasilkan 0 byte: <br><br><pre> <code class="plaintext hljs">read(6, "", 512) = 0 read(6, "", 512) = 0 [...] read(6, "", 512) = 0 write(1, "\0\0\0\0\0"..., 10240) = 10240 read(6, "", 512) = 0 [...]</code> </pre> <br>  <code>lsof</code> mengatakan file deskriptor 6 adalah kotak surat orang lain. <br><br>  Menggunakan <code>apt-get source tar</code> saya mengunduh kode sumber dan mulai mencari panggilan sistem <code>read()</code> di dalamnya yang tidak memeriksa penyelesaian file.  Setelah memeriksa beberapa tingkat pengalamatan tidak langsung, saya menemukan tempat yang jelas di mana tampaknya cek semacam itu dihilangkan, yaitu dalam fungsi <code>sparse_dump_region</code> dari file <a href="">sparse.cs</a> .  Dan kemudian saya teringat sesuatu. <br><br>  Beberapa bulan yang lalu, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">kami mengalami masalah NFS di Alpine</a> .  Saat mengerjakan bug ini, saya melacak proses Alpine dan memperhatikan, di antaranya, bahwa ia menggunakan <code>ftruncate()</code> untuk mengubah ukuran kotak surat;  kadang-kadang memperluas mereka, sementara membuat bagian file yang jarang sampai mengisinya, dan mungkin kadang-kadang mengompresnya.  Ini tampaknya bertepatan dengan situasi saat ini: area jarang terhubung, dan mengurangi ukuran file menggunakan <code>ftruncate()</code> menciptakan situasi di mana tar tiba-tiba menemui penyelesaian file. <br><br>  (Ini bahkan menjelaskan mengapa tar kadang-kadang dikembalikan; jika email baru tiba-tiba tiba di kotak surat kemudian, ia kembali ke ukuran yang diharapkan, dan tar tidak lagi menemukan penghentian file yang tidak terduga). <br><br>  Saya sedikit kacau di GDB dengan simbol debugging Ubuntu dan kode sumber paket tar yang saya terima, dan mampu mereproduksi kesalahan, meskipun agak berbeda dari teori asli saya.  Ternyata <code>sparse_dump_region</code> tidak mengatur ulang area jarang pada file, tetapi me-reset area non-jarang (tentu saja), dan digunakan untuk semua file (jarang atau tidak) jika Anda menjalankan tar dengan argumen - <code>--sparse</code> .  Dengan demikian, kesalahan sebenarnya adalah bahwa <b>jika Anda menjalankan GNU Tar dengan argumen <code>--sparse</code> dan file dikompresi saat sedang dibaca, tar tidak dapat dengan benar menangani akhir file yang diterima lebih awal dari yang diharapkan</b> .  Jika file tumbuh lagi, tar mengembalikan. <br><br>  (Kecuali ketika file jarang di akhir dan dikompresi hanya di tempat ini. Dalam hal ini, semuanya beres). <br><br>  Saya berpikir bahwa semua sama saya dapat memeriksa bertahun-tahun yang lalu di server file OmniOS kami.  Ada beberapa cara untuk melacak panggilan sistem dari program dan analognya, dan saya dapat menemukan dan melihat kode sumber versi GNU Tar saya dan menjalankannya dengan debugger OmniOS (walaupun kami tampaknya tidak memiliki GDB yang diinstal di sana), dan seterusnya.  Tapi saya tidak melakukannya.  Sebaliknya, kami mengangkat bahu dan melanjutkan.  Saya perlu memindahkan sistem file di bawah Ubuntu sehingga saya akan menggerakkan jari saya dan mencari tahu masalahnya. <br><br>  (Ini bukan hanya tentang alat dan lingkungan; kami secara otomatis mengasumsikan bahwa OmniOS memiliki beberapa versi lama GNU Tar, yang tidak masuk akal untuk diselidiki, karena tentu saja masalahnya diselesaikan dalam versi yang lebih baru). <br><br>  PS: Mungkin, sebagai perbaikan cepat, kami cukup melarang Amanda menggunakan opsi tar - <code>--sparse</code> saat mencadangkan.  Kotak surat tidak boleh jarang, dan jika ini terjadi, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">kami masih memampatkan cadangan sistem file</a> , sehingga semua nol byte ini terkompresi dengan baik. <br><br>  PPS: Saya tidak mencoba melaporkan bug ke pengembang GNU Tar, karena saya menemukannya hanya pada hari Jumat, dan universitas sedang liburan musim dingin sekarang.  Jangan ragu untuk melakukannya sebelum saya. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id434624/">https://habr.com/ru/post/id434624/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id434604/index.html">Bagaimana tidak menulis template untuk bootstrap</a></li>
+<li><a href="../id434616/index.html">Soviet HI-FI dan penciptanya: rekaman suara digital di Uni Soviet - satu langkah lagi dari kemenangan</a></li>
+<li><a href="../id434618/index.html">MVP dan Belati 2 - Kerangka Aplikasi Android - Bagian 2</a></li>
+<li><a href="../id434620/index.html">Buat air terjun penuh gaya dari RiME langsung di Unity atau UE4</a></li>
+<li><a href="../id434622/index.html">Dunia apa yang bisa bertahan hidup setelah kematian matahari?</a></li>
+<li><a href="../id434626/index.html">Pengunduh Buhtrap Baru</a></li>
+<li><a href="../id434628/index.html">bitContainer (untuk makanan) - Yandex buatan rumah. Stasiun</a></li>
+<li><a href="../id434634/index.html">Peretas Radio Universal - Cara Mudah Menjelajahi Protokol Radio Digital</a></li>
+<li><a href="../id434636/index.html">Bagaimana cara mengeksploitasi anak-anak</a></li>
+<li><a href="../id434638/index.html">Peluncuran roket dari Timur dengan mata kepala Anda sendiri</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

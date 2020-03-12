@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👸🏾 🈷️ 🙍🏿 Comment j'ai trouvé un bug dans GNU Tar 👉🏻 🧑🏽‍🤝‍🧑🏻 👩🏿‍✈️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Publié par Chris Siebenmann , administrateur de systèmes Unix à l'Université de Toronto 
+
+ De temps en temps, quelque chose d'étrange se produit dans ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Comment j'ai trouvé un bug dans GNU Tar</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/434624/"> <i><font color="gray">Publié par <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Chris Siebenmann</a> , administrateur de systèmes Unix à l'Université de Toronto</font></i> <br><br>  De temps en temps, quelque chose d'étrange se produit dans mon travail qui me fait réfléchir.  Même s'il n'est pas immédiatement clair quelles conclusions s'en suivent.  J'ai récemment mentionné que nous avons trouvé un bogue dans GNU Tar, et l'histoire de la façon dont cela s'est produit en est un exemple. <br><br>  Pour les serveurs de fichiers de sauvegarde, nous utilisons Amanda et GNU Tar.  Au fil du temps, nous avons parfois eu un problème assez rare où tar est devenu fou lors de la sauvegarde du système de fichiers avec le répertoire <code>/var/mail</code> , produisant une énorme quantité de sortie.  Habituellement, ce processus allait à l'infini et devait tuer le dépotoir;  dans d'autres cas, elle a fini par émettre des téraoctets de données qui semblaient parfaitement compressés.  Quand j'ai rencontré une fois de plus un fichier tar géant, je l'ai vérifié - et j'ai découvert qu'il se compose en partie de zéro octet, ce que l'équipe de test <code>tar -t</code> n'aime vraiment pas, après quoi tout revient à la normale. <br><br>  (Pour cette raison, je me demandais si les octets nuls apparaissent naturellement chez les personnes dans les boîtes aux lettres. Il s'est avéré que <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">trouver des octets nuls dans les fichiers texte n'est</a> pas si simple et oui, ils sont là). <br><a name="habracut"></a><br>  Nous avons récemment déplacé le système de fichiers de <code>/var/mail</code> vers les nouveaux serveurs de fichiers Linux sous Ubuntu 18.04 et sommes donc passés à une version plus récente et plus standard de GNU Tar que sur les machines OmniOS.  Nous espérions que cela résoudrait nos problèmes, mais le même incident s'est produit presque immédiatement.  Cette fois, GNU Tar a travaillé sur une machine Ubuntu, où je connais bien tous les outils de débogage disponibles, j'ai donc vérifié le processus <code>tar</code> cours d'exécution.  Le test a montré que <code>tar</code> produit un flux sans fin de <code>read()</code> retournant 0 octet: <br><br><pre> <code class="plaintext hljs">read(6, "", 512) = 0 read(6, "", 512) = 0 [...] read(6, "", 512) = 0 write(1, "\0\0\0\0\0"..., 10240) = 10240 read(6, "", 512) = 0 [...]</code> </pre> <br>  <code>lsof</code> ledit descripteur de fichier 6 est la boîte aux lettres de quelqu'un d'autre. <br><br>  À l'aide d' <code>apt-get source tar</code> j'ai téléchargé le code source et j'ai commencé à rechercher des appels système <code>read()</code> qui ne vérifiaient pas l'achèvement du fichier.  Après avoir examiné plusieurs niveaux d'adressage indirect, j'ai trouvé un endroit évident où il semble qu'une telle vérification ait été omise, à savoir dans la fonction <a href="">sparse_dump_region du</a> fichier <a href="">sparse.cs</a> .  Et puis je me suis souvenu de quelque chose. <br><br>  Il y a quelques mois, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">nous avons rencontré un problème NFS dans Alpine</a> .  En travaillant sur ce bogue, j'ai retracé le processus Alpine et j'ai remarqué, entre autres, qu'il utilise <code>ftruncate()</code> pour redimensionner les boîtes aux lettres;  parfois, il les développe, créant temporairement une section clairsemée du fichier jusqu'à ce qu'il le remplisse, et peut-être parfois le compressant.  Cela semblait coïncider avec la situation actuelle: des zones éparses sont connectées et la réduction de la taille du fichier à l'aide de <code>ftruncate()</code> crée une situation où tar rencontre de manière inattendue la fin d'un fichier. <br><br>  (Cela explique même pourquoi tar est parfois restauré; si un nouveau courrier arrive soudainement dans la boîte aux lettres plus tard, il revient à la taille attendue et tar ne rencontre plus de fin de fichier inattendue). <br><br>  J'ai un peu gâché dans GDB avec les symboles de débogage Ubuntu et le code source du package tar que j'ai reçu, et j'ai pu reproduire l'erreur, bien qu'elle soit quelque peu différente de ma théorie d'origine.  Il s'est avéré que <code>sparse_dump_region</code> ne réinitialise pas les zones clairsemées du fichier, mais réinitialise les zones non clairsemées (bien sûr) et est utilisé pour tous les fichiers (clairsemés ou non) si vous exécutez tar avec l'argument <code>--sparse</code> .  Ainsi, l'erreur réelle est que <b>si vous exécutez GNU Tar avec l'argument <code>--sparse</code> et que le fichier est compressé pendant sa lecture, tar ne peut pas gérer correctement la fin du fichier reçu plus tôt que prévu</b> .  Si le fichier se développe à nouveau, tar restaure. <br><br>  (Sauf lorsque le fichier est rare à la fin et compressé uniquement à cet endroit. Dans ce cas, tout est en ordre). <br><br>  Je pensais tout de même que je pouvais vérifier il y a de nombreuses années sur nos serveurs de fichiers OmniOS.  Il existe des moyens de retracer les appels système du programme et des analogues <code>lsof</code> , et je pourrais trouver et regarder le code source de ma version de GNU Tar et l'exécuter avec le débogueur OmniOS (bien que nous ne semblions pas y avoir installé GDB), etc.  Mais je ne l'ai pas fait.  Au lieu de cela, nous avons haussé les épaules et sommes partis.  Il m'a fallu déplacer le système de fichiers sous Ubuntu pour pouvoir déplacer mon doigt et comprendre le problème. <br><br>  (Il ne s'agit pas seulement des outils et de l'environnement; nous supposons automatiquement qu'OmniOS possède une ancienne version non prise en charge de GNU Tar, ce qui n'a pas de sens à enquêter, car bien sûr, le problème a été résolu dans la nouvelle version). <br><br>  PS: Probablement, comme solution rapide, nous interdisons simplement à Amanda d'utiliser l' <code>--sparse</code> tar <code>--sparse</code> lors de la sauvegarde.  Les boîtes aux lettres ne doivent pas être rares, et si cela se produit, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">nous compressons toujours les sauvegardes du système de fichiers</a> , afin que tous ces octets zéro soient bien compressés. <br><br>  PPS: Je n'ai pas essayé de signaler le bogue aux développeurs de GNU Tar, car je ne l'ai trouvé que vendredi, et l'université est en vacances d'hiver maintenant.  N'hésitez pas à le faire avant moi. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr434624/">https://habr.com/ru/post/fr434624/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr434604/index.html">Comment ne pas écrire de modèles pour bootstrap</a></li>
+<li><a href="../fr434616/index.html">Le HI-FI soviétique et ses créateurs: l'enregistrement sonore numérique en URSS - à deux pas de la victoire</a></li>
+<li><a href="../fr434618/index.html">MVP et Dagger 2 - Squelette d'application Android - Partie 2</a></li>
+<li><a href="../fr434620/index.html">Créez une cascade élégante à partir de RiME directement dans Unity ou UE4</a></li>
+<li><a href="../fr434622/index.html">Quels mondes peuvent survivre après la mort du soleil?</a></li>
+<li><a href="../fr434626/index.html">Nouveau téléchargeur Buhtrap</a></li>
+<li><a href="../fr434628/index.html">bitContainer (pour la nourriture) - Yandex.Station fait maison</a></li>
+<li><a href="../fr434634/index.html">Universal Radio Hacker - Un moyen facile d'explorer les protocoles radio numériques</a></li>
+<li><a href="../fr434636/index.html">Comment exploiter les enfants</a></li>
+<li><a href="../fr434638/index.html">Lancement d'une fusée de l'Est de vos propres yeux</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

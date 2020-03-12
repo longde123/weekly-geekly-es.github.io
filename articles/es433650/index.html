@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐬 👩🏿‍💻 ℹ️ Istio y Kubernetes en producción. Parte 2. Rastreo 😧 ♎️ 🐳</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="En el último artículo, examinamos los componentes básicos de Service Mesh Istio, nos familiarizamos con el sistema y respondimos las preguntas básicas...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Istio y Kubernetes en producción. Parte 2. Rastreo</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/avito/blog/433650/">  En el último <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">artículo,</a> examinamos los componentes básicos de Service Mesh Istio, nos familiarizamos con el sistema y respondimos las preguntas básicas que generalmente surgen al comienzo del trabajo con Istio.  En esta parte veremos cómo organizar la recopilación de información de rastreo a través de la red. <br><br><img src="https://habrastorage.org/webt/dz/-l/6j/dz-l6j3yddyja_gjqgvw-3_da2m.png"><br><a name="habracut"></a><br>  Lo primero que encuentran muchos desarrolladores y administradores de sistemas cuando escuchan las palabras que rastrea Service Mesh.  De hecho, agregamos un servidor proxy especial a cada nodo de red a través del cual pasa todo el tráfico TCP.  Parece que ahora puede enviar fácilmente información sobre todas las interacciones de red en la red.  Desafortunadamente, en realidad hay muchos matices que deben tenerse en cuenta.  Miremos a ellos. <br><br><h3>  Concepto erróneo número uno: podemos obtener datos sobre viajes a través de la red de forma gratuita </h3><br>  De hecho, relativamente gratis, solo podemos conectar los nodos de nuestro sistema mediante flechas y la velocidad de datos que pasa entre los servicios (de hecho, solo el número de bytes por unidad de tiempo).  Sin embargo, en la mayoría de los casos, nuestros servicios se comunican mediante algún tipo de protocolo de nivel de aplicación, como HTTP, gRPC, Redis, etc.  Y, por supuesto, queremos ver la información de rastreo precisamente de acuerdo con estos protocolos, queremos ver la tasa de solicitudes, no la tasa de datos.  Queremos entender la latencia de las solicitudes de nuestro protocolo.  Finalmente, queremos ver la ruta completa por la que pasa la solicitud desde que ingresa a nuestro sistema hasta que recibe una respuesta del usuario.  Este problema no se resuelve tan fácilmente. <br><br>  Para comenzar, veamos cómo se ve el envío de trazos de rastreo desde el punto de vista de la arquitectura en Istio.  Como recordamos de la primera parte, Istio tiene un componente separado para recolectar telemetría, que se llama Mixer.  Sin embargo, en la versión actual 1.0. * El envío se realiza directamente desde servidores proxy, es decir, con proxy enviado.  El proxy de Envoy admite el envío de tramos de rastreo a través del protocolo zipkin fuera de la caja.  Se pueden conectar otros protocolos, pero solo a través del complemento.  Con Istio, obtenemos inmediatamente el proxy enviado enviado y configurado, que solo admite el protocolo zipkin.  Si queremos utilizar, por ejemplo, el protocolo Jaeger y enviar tramos de rastreo a través de UDP, entonces necesitaremos ensamblar nuestra imagen de istio-proxy.  Hay soporte para complementos personalizados para istio-proxy, sin embargo, todavía está en la versión alfa.  Por lo tanto, si queremos prescindir de una gran cantidad de configuraciones personalizadas, la gama de tecnologías utilizadas para almacenar y recibir tramos de rastreo se reduce.  De hecho, de los sistemas principales, ahora puede usar Zipkin, o Jaeger, pero enviar todo allí usando un protocolo compatible con Zipkin (que es mucho menos eficiente).  El protocolo zipkin implica enviar toda la información de rastreo a los recolectores que utilizan el protocolo HTTP, que es bastante costoso. <br><br>  Como dije, queremos rastrear protocolos a nivel de aplicación.  Y esto significa que los servidores proxy que están al lado de cada servicio deben comprender qué tipo de interacción está ocurriendo ahora.  De manera predeterminada, Istio establece el tipo para todos los puertos TCP simples, lo que significa que no se enviarán seguimientos.  Para poder enviar rastreos, primero debe habilitar esta opción en la configuración de malla principal y, lo que es más importante, cambiar el nombre de todos los puertos de las entidades de servicio kubernetes de acuerdo con el protocolo utilizado en el servicio.  Es decir, por ejemplo, así: <br><br><pre><code class="python hljs">apiVersion: v1 kind: Service metadata: name: nginx spec: ports: - port: <span class="hljs-number"><span class="hljs-number">80</span></span> targetPort: <span class="hljs-number"><span class="hljs-number">80</span></span> name: http selector: app: nginx</code> </pre> <br>  También puede usar nombres compuestos, como http-magic (Istio ve http y reconoce este puerto como punto final http).  El formato es: proto-extra. <br><br>  Para no parchear una gran cantidad de configuraciones para definir un protocolo, puede usar una solución alternativa sucia: parchear un componente Pilot en un momento en que solo <a href="">ejecuta la lógica de definición de protocolo</a> .  Al final, por supuesto, necesitará cambiar esta lógica a estándar e ir a la convención de nomenclatura para todos los puertos. <br><br>  Para entender si el protocolo está realmente definido correctamente, debe ingresar a cualquiera de los contenedores de sidecar con proxy enviado y realizar una solicitud al puerto de administración de la interfaz de enviado con location / config_dump.  En la configuración resultante, debe mirar la operación de campo de servicio deseada.  Se usa en Istio como un identificador de a dónde va la solicitud.  Para personalizar el valor de este parámetro en Istio (luego lo veremos en nuestro sistema de rastreo), es necesario especificar el indicador serviceCluster en la etapa de lanzamiento del contenedor del sidecar.  Por ejemplo, se puede calcular así a partir de variables obtenidas de los kubernetes API hacia abajo: <br><br> <code>--serviceCluster ${POD_NAMESPACE}.$(echo ${POD_NAME} | sed -e 's/-[a-z0-9]*-[a-z0-9]*$//g')</code> <br> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Aquí</a> hay un buen ejemplo para comprender cómo funciona el rastreo en el enviado. <br><br>  El punto final en sí mismo para enviar tramos de rastreo también debe especificarse en los indicadores de inicio del proxy del enviado, por ejemplo: <code>--zipkinAddress tracing-collector.tracing:9411</code> <br><br><h3>  Concepto erróneo número dos: podemos obtener de forma económica los rastros completos de la aprobación de solicitudes para el sistema </h3><br>  Lamentablemente, esto no es así.  La complejidad de la implementación depende de cómo ya haya implementado la interacción de los servicios.  Por qué <br><br>  El hecho es que para que istio-proxy comprenda la correspondencia de las solicitudes entrantes a un servicio con las que provienen del mismo servicio, no es suficiente solo interceptar todo el tráfico.  Necesita tener algún tipo de identificador de enlace.  El proxy HTTP de Envoy utiliza encabezados especiales, según los cuales el enviado comprende qué solicitud de servicio en particular genera solicitudes específicas para otros servicios.  Lista de tales encabezados: <br><br><ul><li>  x-request-id, </li><li>  x-b3-traceid, </li><li>  x-b3-spanid, </li><li>  x-b3-parentspanid, </li><li>  x-b3-muestreado, </li><li>  x-b3-flags, </li><li>  x-ot-span-context. </li></ul><br>  Si tiene un solo punto, por ejemplo, un cliente base donde puede agregar dicha lógica, entonces todo está bien, solo necesita esperar a que todos los clientes actualicen esta biblioteca.  Pero si tiene un sistema muy heterogéneo y no hay unificación en la campaña de los servicios a los servicios a través de la red, lo más probable es que este sea un gran problema.  Sin la adición de dicha lógica, toda la información de rastreo será solo "hermana".  Es decir, obtenemos todas las interacciones entre servicios, pero no se unirán en una sola cadena de paso a través de la red. <br><br><h3>  Conclusión </h3><br>  Istio proporciona una herramienta conveniente para recopilar información de rastreo a través de la red, sin embargo, debe comprender que para la implementación deberá adaptar su sistema y tener en cuenta las características de la implementación de Istio.  Como resultado, debe resolver dos puntos principales: determinar el protocolo de la capa de aplicación (que debe ser compatible con el proxy enviado) y configurar el reenvío de información sobre la conectividad de las solicitudes al servicio a partir de las solicitudes del servicio (utilizando encabezados, en el caso del protocolo HTTP).  Cuando se resuelven estos problemas, obtenemos una herramienta poderosa que le permite recopilar información de la red de forma transparente, incluso en sistemas muy heterogéneos escritos en muchos idiomas y marcos diferentes. <br><br>  En el próximo artículo sobre Service Mesh, consideraremos uno de los mayores problemas de Istio: el alto consumo de memoria de cada contenedor proxy de sidecar y discutiremos cómo lidiar con él. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/es433650/">https://habr.com/ru/post/es433650/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es433638/index.html">Descomposición del proyecto para frontend</a></li>
+<li><a href="../es433642/index.html">¿No te gustan los sistemas CRM? Simplemente no sabes cómo cocinarlos</a></li>
+<li><a href="../es433644/index.html">"Programación en vivo": ¿Cómo funcionó la Semifinal Regional de ICPC en la Universidad ITMO?</a></li>
+<li><a href="../es433646/index.html">Staffcop: vista lateral</a></li>
+<li><a href="../es433648/index.html">El primer beneficio en la historia de los servicios de streaming occidentales: por qué estas no son tan buenas noticias</a></li>
+<li><a href="../es433652/index.html">5G a través de los ojos de los usuarios. Expectativas y preocupaciones</a></li>
+<li><a href="../es433658/index.html">TI en Alemania: cómo buscar trabajo en las grandes ciudades de Alemania</a></li>
+<li><a href="../es433660/index.html">Cómo hablé en DefCamp por quinta vez</a></li>
+<li><a href="../es433664/index.html">SATA SSD Enterprise en Infortrend 2-Storage Storage - Medición del rendimiento</a></li>
+<li><a href="../es433666/index.html">Diccionario Funcorp</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

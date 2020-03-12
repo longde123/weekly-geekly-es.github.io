@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏴󠁧󠁢󠁥󠁮󠁧󠁿 🚶🏼 👩🏼‍💻 如何在Yandex。Cloud中扩展数据库而无停机时间。 三主机示例 🐋 🖕🏽 🙍</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="这篇文章是由Yandex.Cloud团队成员编写的：Ivan Vetkasov-建筑师，Leonid Klyuyev-编辑 
+
+
+ 最近，我们讨论了Yandex.Cloud的体系结构。 现在，让我们从理论转向实践。 云中有几种用于自动DBMS控制的服务：ClickHouse的托管服务，Postgre...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>如何在Yandex。Cloud中扩展数据库而无停机时间。 三主机示例</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/433814/"><h5>  <sub><sup><i>这篇文章是由Yandex.Cloud团队成员编写的：Ivan Vetkasov-建筑师，Leonid Klyuyev-编辑</i></sup></sub> </h5><br><p><img src="https://habrastorage.org/webt/2e/4l/kn/2e4lkn7th9ia7axxyt1gjbb32qg.png" align="right" width="400"> 最近，我们<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">讨论</a>了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Yandex.Cloud</a>的体系结构。 现在，让我们从理论转向实践。 云中有几种用于自动DBMS控制的服务：ClickHouse的托管服务，PostgreSQL的托管服务和MongoDB的托管服务。 所有这些都是基于平台的，使您可以专注于数据存储的任务，而不是基础架构的管理。 但是有时候控制集群虚拟机也很重要。 例如，缩放任务可能响应于负载的增加或减少而出现。 从实际的角度来看，这种情况通常是最耗时的。 今天，我们将介绍Yandex.Cloud如何使您自动执行复杂的扩展任务，并确保在调整集群大小的过程中数据库保持可用。 </p><br><p><a name="habracut"></a></p><h4> 问题陈述 </h4><br> 创建每个服务的群集时，用户可以确定群集主机的数量和对应于物理数据中心的可用区（AZ）。 现在，Yandex.Cloud使用位于俄罗斯中部地区的三个Yandex数据中心。 因此，推荐的配置是具有三台主机的DBMS集群，这与构建故障转移和抗灾体系结构的原则最一致。 <br><br> 因此，想象一下一种情况，即DBMS集群上的负载超出了数据库的功能，并且该是添加计算资源的时候了。 这既可以通过将主机添加到群集中来进行，也可以通过垂直方式（通过向每台群集计算机中添加资源）来完成。 考虑第二种选择，因为这是最耗时且有出错风险的方法。 为什么这种选择很费力？ 因为在一般情况下，添加资源的过程如下所示：切换主机的角色； 如有必要，请停止DBMS； 关闭虚拟机； 更改其配置； 我们开始； 更改DBMS参数； 我们启动一个DBMS； 我们正在等待累积数据更改的同步。 依次对所有三个主机进行。 步骤很多-错误的风险很高。 您可以自动化此过程-仅在必须启动所选的自动化解决方案之前进行测试。 通常没有足够的时间进行测试，但是在Yandex.Cloud中，它可以快速运行，而无需您执行不必要的操作。 让我们开始吧。 <br><br><h4> 初步步骤和测试过程 </h4><br><p> 为了准备，我们将需要： </p><br><ul><li> 访问平台。 现在，任何人都可以<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在Yandex.Cloud网站</a>上的网站<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">上</a>设置试用期。 </li><li> 一个云网络（在我的示例中将其称为testvpc）和位于不同可用区中的三个子网。 在这种情况下，子网地址的范围并不重要。 </li><li>堡垒主机。 尽管在Yandex.Cloud中您可以通过公共IP打开对DBMS的外部访问，但是以开放访问方式发布DBMS并不是正确的决定。 因此，我们向该方案添加了堡垒主机，从中我们将打开与主机的连接。 作为这样的主机，您可以使用部分（5％）使用内核的计算机。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Clickhouse-client</a>必须安装在虚拟机上。 另外，根据<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">连接</a>服务的说明，您需要下载SSL证书。 </li><li> 命令行界面 我们将不通过控制台而是通过命令行实用程序来使用Yandex.Cloud，该实用程序也需要根据<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文档</a>进行安装和启动。 </li></ul><br><p> 测试场景将很简单：打开三个将堡垒主机连接到数据库群集的每个主机的会话，以一个周期（例如1秒）的周期运行SQL查询，然后我们发送命令扩展群集并查看系统的行为。 </p><br><h4> 关键时刻 </h4><br><p> 选择一个DBMS演示扩展。 在PostgreSQL中，为主机分配了角色，但是在扩展时该服务尚未进行透明切换-此功能在我们的计划中。 因为否则，在所有三个DBMS的情况下，增加和减少群集的机制大致相同，例如，采用ClickHouse。 </p><br><p>让我们创建一个实验对象-一个由位于不同虚拟子网中的三个主机组成的集群。 为此，输入命令 <br>  <code>yc managed-clickhouse cluster create</code>带有必要参数。 参数的顺序与“ yc --help”输出中的列表匹配。 该命令的本质很简单：我们在生产环境中使用虚拟网络上的testvpc创建一个可更改大小的群集，设置名称和密码，10 GB磁盘空间以及最小类s1.nano。 此类对应以下特征：1个CPU，4 GB RAM。 将来，为了进行扩展，我们将继续使用s1.micro类，以便CPU和RAM的数量增加一倍。 要找出您可以分配的其他主机类别，只需输入以下命令 <br>  <code>yc managed-clickhouse resource-preset list</code> 。 </p><br><p> 因此，用于创建集群的命令应如下所示： </p><br><pre> <code class="plaintext hljs">yc managed-clickhouse cluster create --name ch-to-resize --environment production --network-name testvpc --host zone-id=ru-central1-a,subnet-id=e9bfnjacigdo9p6j7j2s,assign-public-ip=false,type=clickhouse --host zone-id=ru-central1-b,subnet-id=e2l8iamol3b9mrtskb8q,assign-public-ip=false,type=clickhouse --host zone-id=ru-central1-c,subnet-id=b0c6qit7u9e8r0egedvj,assign-public-ip=false,type=clickhouse --user name=test,password=test123123 --database name=testdb --clickhouse-disk-size 10 --clickhouse-resource-preset s1.nano --clickhouse-disk-type network-nvme –async</code> </pre> <br><p> 作为响应，我们获得集群ID和其主机的主机名列表： </p><br><pre> <code class="plaintext hljs">yc managed-clickhouse cluster list +----------------------+--------------+-----------------------------+--------+---------+ | ID | NAME | CREATED AT | HEALTH | STATUS | +----------------------+--------------+-----------------------------+--------+---------+ | c9q7cr4ji2fe462qej8p | ch-to-resize | 2018-12-10T08:59:09.100272Z | ALIVE | RUNNING | +----------------------+--------------+-----------------------------+--------+---------+ yc managed-clickhouse host list --cluster-id c9q7cr4ji2fe462qej8p +-------------------------------------------+----------------------+---------+---------------+ | NAME | CLUSTER ID | HEALTH | ZONE ID | +-------------------------------------------+----------------------+---------+---------------+ | rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net | c9q7cr4ji2fe462qej8p | ALIVE | ru-central1-a | | rc1a-sgxazra54xv6lhni.mdb.yandexcloud.net | c9q7cr4ji2fe462qej8p | UNKNOWN | ru-central1-a | | rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net | c9q7cr4ji2fe462qej8p | ALIVE | ru-central1-b | | rc1b-j1rtvsuz6t8x6ev2.mdb.yandexcloud.net | c9q7cr4ji2fe462qej8p | UNKNOWN | ru-central1-b | | rc1c-emo0f2990povj7ie.mdb.yandexcloud.net | c9q7cr4ji2fe462qej8p | UNKNOWN | ru-central1-c | | rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net | c9q7cr4ji2fe462qej8p | ALIVE | ru-central1-c | +-------------------------------------------+----------------------+---------+---------------+</code> </pre> <br><p> 让我们打开与每个主机的连接，然后对数据库运行查询： </p><br><pre> <code class="plaintext hljs">clickhouse-client --host rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net --secure --user test --password test123123 --database testdb --port 9440 -q "select concat(host_name, ' is alive\!') from system.clusters where replica_num = 1" clickhouse-client --host rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net --secure --user test --password test123123 --database testdb --port 9440 -q "select concat(host_name, ' is alive!') from system.clusters where replica_num = 2" clickhouse-client --host rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net --secure --user test --password test123123 --database testdb --port 9440 -q "select concat(host_name, ' is alive\!') from system.clusters where replica_num = 3"</code> </pre> <br><p> 最后，发送一个增加集群的请求： </p><br><pre> <code class="plaintext hljs">yc managed-clickhouse cluster update --id c9q7cr4ji2fe462qej8p --clickhouse-resource-preset s1.micro -–async</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">聚类约简说明</b> <div class="spoiler_text"><p> 如果要减少而不是增加资源量，则需要指定一个较小的类，并参考输出 <br>  <code>yc managed-clickhouse resource-preset list</code> -例如s1.nano。 同时，团队本身的结构保持不变。 </p></div></div><br><p> 我将查询输出重定向到文件。 这是一个简短的清单： </p><br><pre> <code class="plaintext hljs">rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net Mon Dec 10 12:47:35 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! Mon Dec 10 12:47:36 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! Mon Dec 10 12:47:37 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! Mon Dec 10 12:47:38 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! Mon Dec 10 12:47:39 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! Mon Dec 10 12:47:40 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.7:9440: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:47:51 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.7:9440: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:02 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.7:9440: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:11 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:12 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:13 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:14 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:15 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:16 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:17 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net:9440, 192.168.58.7) Mon Dec 10 12:48:18 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! Mon Dec 10 12:48:19 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! Mon Dec 10 12:48:20 UTC 2018 rc1c-wcxq53lq096m0o6h.mdb.yandexcloud.net is alive! rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net: Mon Dec 10 12:50:58 UTC 2018 rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net is alive! Mon Dec 10 12:50:59 UTC 2018 rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net is alive! Mon Dec 10 12:51:00 UTC 2018 rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net is alive! Mon Dec 10 12:51:01 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.6:9440: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:12 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.6:9440: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:23 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.6:9440: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:34 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.6:9440: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:35 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:36 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:37 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:38 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:39 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:40 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:41 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:42 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:43 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net:9440, 192.168.58.6) Mon Dec 10 12:51:44 UTC 2018 rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net is alive! Mon Dec 10 12:51:45 UTC 2018 rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net is alive! Mon Dec 10 12:51:46 UTC 2018 rc1a-qysm9t78x5ybdb78.mdb.yandexcloud.net is alive! rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net: Mon Dec 10 12:49:15 UTC 2018 rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net is alive! Mon Dec 10 12:49:16 UTC 2018 rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net is alive! Mon Dec 10 12:49:17 UTC 2018 rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net is alive! Mon Dec 10 12:49:18 UTC 2018 rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net is alive! Mon Dec 10 12:49:19 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.8:9440: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:49:30 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.8:9440: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:49:41 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.8:9440: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:49:52 UTC 2018 Code: 209. DB::NetException: Timeout: connect timed out: 192.168.58.8:9440: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:49:56 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:49:57 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:49:58 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:49:59 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:50:00 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:50:01 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:50:03 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:50:04 UTC 2018 Code: 210. DB::NetException: Connection refused: (rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net:9440, 192.168.58.8) Mon Dec 10 12:50:05 UTC 2018 rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net is alive! Mon Dec 10 12:50:06 UTC 2018 rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net is alive! Mon Dec 10 12:50:07 UTC 2018 rc1b-2t82xtpscgr4gi6j.mdb.yandexcloud.net is alive!</code> </pre> <br><p> 该清单显示了群集中每个主机关闭的时间（连接超时开始时），主机打开且ClickHouse开始加载的时间（连接被拒绝开始时）以及主机重新运行时的时间。 最重要的是分离主机不可用的时间段。 在不断扩展的同时，至少有两个主机可用于查询执行。 可以在图形中看到： </p><br><p><img src="https://habrastorage.org/webt/xg/u4/un/xgu4unmb8rsxd5sa2qhkr8ozy4s.png" alt="图片"></p><br><h4> 结论和最佳实践 </h4><br><p> 乍看之下，带有数据库的项目开发包括大量日常工作。 需要维护数据库，即创建备份副本，建立定期更新DBMS的过程，等等。出现云管理服务主要是为了从您身上删除这些耗时的功能。 但是，在实际的生产环境中，不仅可以从服务角度对系统进行管理，而且可以灵活地对系统进行响应（对负载的上升和下降做出响应），这是有用的。 我们讨论了如何在Yandex.Cloud中提高数据库性能，同时保持用户项目的工作能力。 如果正确配置了数据库，则随着流量的增加，可用资源的数量会增加，而经济衰退时则呈倍数减少的趋势，这也可以降低成本。 </p><br><hr><br><p>  <em>您想了解哪些基于云的方法，工具或技术？</em>  <em>在以下Yandex.Cloud帖子的评论中建议主题。</em> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN433814/">https://habr.com/ru/post/zh-CN433814/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN433802/index.html">我们如何以及为什么在Urban Tech Challenge Hackathon赢得大数据赛道</a></li>
+<li><a href="../zh-CN433804/index.html">混合物密度网络</a></li>
+<li><a href="../zh-CN433806/index.html">当在线档案忘记了</a></li>
+<li><a href="../zh-CN433808/index.html">程序员在面试中犯的5个最常见的错误</a></li>
+<li><a href="../zh-CN433810/index.html">面向问题的互联网营销项目方法</a></li>
+<li><a href="../zh-CN433816/index.html">在哪里发布移动应用程序</a></li>
+<li><a href="../zh-CN433818/index.html">在浏览器中编译并运行C＃和Blazor</a></li>
+<li><a href="../zh-CN433820/index.html">ECMAScript建议：Array.prototype。{Flat，flatMap}</a></li>
+<li><a href="../zh-CN433822/index.html">完整的CMake指南。 第三部分：测试和包装</a></li>
+<li><a href="../zh-CN433824/index.html">哈布罗自杀。 为什么1C程序员将拯救世界</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚲 📭 🎯 Istio和Kubernetes投入生产。 第2部分。跟踪 🧓🏻 🔩 👩‍🚀</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在上一篇文章中，我们检查了Service Mesh Istio的基本组件，熟悉了该系统，并回答了在开始使用Istio时通常出现的基本问题。 在这一部分中，我们将研究如何组织网络上的跟踪信息的收集。 
+
+
+
+ 许多开发人员和系统管理员在听到Service Mesh正在跟踪时遇到的第一件事。 实际上，我...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Istio和Kubernetes投入生产。 第2部分。跟踪</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/avito/blog/433650/"> 在上<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">一篇文章中，</a>我们检查了Service Mesh Istio的基本组件，熟悉了该系统，并回答了在开始使用Istio时通常出现的基本问题。 在这一部分中，我们将研究如何组织网络上的跟踪信息的收集。 <br><br><img src="https://habrastorage.org/webt/dz/-l/6j/dz-l6j3yddyja_gjqgvw-3_da2m.png"><br><a name="habracut"></a><br> 许多开发人员和系统管理员在听到Service Mesh正在跟踪时遇到的第一件事。 实际上，我们向所有TCP流量通过的每个网络节点添加了一个特殊的代理服务器。 看来现在您可以轻松地发送有关网络上所有网络交互的信息。 不幸的是，现实中必须考虑许多细微差别。 让我们看看它们。 <br><br><h3> 误解一：我们可以免费获取网络旅行数据 </h3><br> 实际上，相对而言，我们只能通过箭头和服务之间传递的数据速率来连接系统的节点（实际上，每单位时间只有字节数）。 但是，在大多数情况下，我们的服务使用某种应用程序级协议进行通信，例如HTTP，gRPC，Redis等。 而且，当然，我们希望根据这些协议准确地跟踪信息，我们希望查看请求的速率，而不是数据的速率。 我们想通过我们的协议了解请求的延迟。 最后，我们希望看到请求从进入系统到收到用户响应的完整路径。 这个问题不是那么容易解决。 <br><br> 首先，让我们从Istio的体系结构角度看一下发送跟踪范围。 我们在第一部分中还记得，Istio有一个用于收集遥测的独立组件，称为Mixer。 但是，在当前版本1.0中*发送是直接从代理服务器完成的，即使用envoy代理。  Envoy代理支持开箱即用zipkin协议发送跟踪范围。 可以连接其他协议，但只能通过插件连接。 使用Istio，我们立即获得组装和配置的特使代理，该代理仅支持zipkin协议。 例如，如果要使用Jaeger协议并通过UDP发送跟踪范围，则需要组装istio-proxy映像。 支持istio-proxy的自定义插件，但是仍为Alpha版本。 因此，如果我们要在没有大量自定义设置的情况下进行操作，则会减少用于存储和接收跟踪范围的技术范围。 实际上，在主要系统中，现在您可以使用Zipkin本身或Jaeger，但可以使用与zipkin兼容的协议（效率要低得多）将所有内容发送到那里。  zipkin协议本身涉及使用HTTP协议将所有跟踪信息发送到收集器，这非常昂贵。 <br><br> 正如我所说，我们想跟踪应用程序级协议。 这意味着每个服务旁边的代理服务器必须了解现在正在发生哪种交互。 默认情况下，Istio设置所有普通TCP端口的类型，这意味着将不发送任何跟踪。 为了发送跟踪，必须首先在主网格配置中启用此选项，并且非常重要的是，根据服务中使用的协议重命名kubernetes服务实体的所有端口。 也就是说，例如： <br><br><pre><code class="python hljs">apiVersion: v1 kind: Service metadata: name: nginx spec: ports: - port: <span class="hljs-number"><span class="hljs-number">80</span></span> targetPort: <span class="hljs-number"><span class="hljs-number">80</span></span> name: http selector: app: nginx</code> </pre> <br> 您也可以使用复合名称，例如http-magic（Istio看到http并将该端口识别为http端点）。 格式为：原型附加。 <br><br> 为了不对用于定义协议的大量配置进行修补，可以使用一种肮脏的解决方法：仅在<a href="">执行协议定义逻辑</a>时对Pilot组件进行修补。 当然，最后，您将需要将此逻辑更改为标准，并使用所有端口的命名约定。 <br><br> 为了了解协议是否确实正确定义，您需要使用envoy代理进入任何sidecar容器，并使用location / config_dump向envoy接口的admin端口发出请求。 在结果配置中，您需要查看所需的服务字段操作。 在Istio中，它用作请求要去向的标识符。 为了在Istio中自定义此参数的值（然后将在跟踪系统中看到它），有必要在启动sidecar容器的阶段指定serviceCluster标志。 例如，可以从向下的API kubernetes获得的变量中像这样计算： <br><br> <code>--serviceCluster ${POD_NAMESPACE}.$(echo ${POD_NAME} | sed -e 's/-[a-z0-9]*-[a-z0-9]*$//g')</code> <br> <br> 这里有一个很好的例子，可以理解跟踪在特使中的工作原理。 <br><br> 还必须在特使代理的开始标志中指定用于发送跟踪范围的端点本身，例如：-- <code>--zipkinAddress tracing-collector.tracing:9411</code> <br><br><h3> 误解二：开箱即用，我们可以廉价地获取有关系统请求通过的完整痕迹 </h3><br> 不幸的是，事实并非如此。 实现的复杂性取决于您已经实现了服务交互的方式。 为什么这样 <br><br> 事实是，为了使istio-proxy能够理解到服务的传入请求与来自同一服务的请求之间的对应关系，仅拦截所有流量是不够的。 您需要具有某种链接标识符。  Envoy代理HTTP使用特殊的标头，通过这些标头，envoy可以了解哪个特定服务请求生成对其他服务的特定请求。 此类标题的列表： <br><br><ul><li>  x-request-id， </li><li>  x-b3-血流素 </li><li>  x-b3-spanid， </li><li>  x-b3-父母父母， </li><li>  x-b3采样， </li><li>  x-b3标志， </li><li>  x-ot-span-context。 </li></ul><br> 如果您只有一个点，例如可以在其中添加这种逻辑的基本客户端，那么一切都很好，您只需要等待所有客户端更新此库即可。 但是，如果您的系统非常异构，并且活动中的服务从网络到网络的服务都没有统一，那么这很可能是个大问题。 如果不添加此类逻辑，则所有跟踪信息将只是“同级”。 也就是说，我们获得了所有的服务间交互，但是它们不会被粘贴到通过网络的单个通道链中。 <br><br><h3> 结论 </h3><br>  Istio提供了一种方便的工具，可用于通过网络收集跟踪信息，但是，您必须了解，对于实现，您将需要调整系统并考虑Istio的实现功能。 因此，您需要解决两个主要问题：确定应用程序层协议（应该由envoy代理支持）以及设置有关来自服务请求的请求到服务的连接性信息的转发（在HTTP协议的情况下使用标头）。 解决这些问题后，我们将提供一个功能强大的工具，即使在以多种不同语言和框架编写的异构系统中，您也可以透明地从网络中收集信息。 <br><br> 在下一篇有关Service Mesh的文章中，我们将考虑Istio的最大问题之一-每个Sidecar代理容器占用大量内存，并讨论如何处理它。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN433650/">https://habr.com/ru/post/zh-CN433650/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN433638/index.html">前端项目分解</a></li>
+<li><a href="../zh-CN433642/index.html">不喜欢CRM系统吗？ 你只是不知道怎么做</a></li>
+<li><a href="../zh-CN433644/index.html">“实时编程”：ITMO大学的ICPC地区半决赛如何进行</a></li>
+<li><a href="../zh-CN433646/index.html">Staffcop：侧视图</a></li>
+<li><a href="../zh-CN433648/index.html">西方流媒体服务历史上的第一笔利润：为什么这不是一个好消息</a></li>
+<li><a href="../zh-CN433652/index.html">通过用户眼中的5G。 期望与担忧</a></li>
+<li><a href="../zh-CN433658/index.html">德国的IT-如何在德国的大城市中寻找工作</a></li>
+<li><a href="../zh-CN433660/index.html">我第五次在DefCamp演讲</a></li>
+<li><a href="../zh-CN433664/index.html">Infortrend 2控制器存储中的SATA SSD Enterprise-性能评估</a></li>
+<li><a href="../zh-CN433666/index.html">Funcorp字典</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

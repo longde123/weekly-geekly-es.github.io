@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕓 🌄 ⛹🏼 SFUs em cascata: aprimorando a escalabilidade e a qualidade da mídia em aplicativos WebRTC ✴️ 👐🏾 👊🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Há duas dificuldades na implantação de servidores de mídia para o WebRTC: dimensionamento, ou seja, indo além do uso de um servidor e otimizando atras...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>SFUs em cascata: aprimorando a escalabilidade e a qualidade da mídia em aplicativos WebRTC</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/Voximplant/blog/432708/">  Há duas dificuldades na implantação de servidores de mídia para o WebRTC: dimensionamento, ou seja,  indo além do uso de um servidor e otimizando atrasos para todos os usuários da conferência.  Embora o sharding simples, no espírito de "enviar todos os usuários da conferência X para o servidor Y", seja facilmente escalável horizontalmente, está longe de ser o ideal em termos de atrasos.  Distribuir a conferência entre servidores não apenas próximos dos usuários, mas também interconectados - parece uma solução para ambos os problemas.  Hoje, preparamos uma tradução detalhada de Boris Grozev da Jitsi: problemas de SFUs em cascata, com uma descrição da abordagem e algumas dificuldades, além de detalhes de implementação.  Vale dizer que as conferências Voximplant <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">também usam SFU</a> ;  Atualmente, estamos trabalhando na cascata do SFU, que deve aparecer em nossa plataforma no próximo ano. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/yg/nu/on/ygnuonxaklzagcy26fi8ga3hj1u.jpeg"></div><br>  <font color="gray">Neurônios do mouse.</font>  <font color="gray">Imagem <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">NIHD</a> ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">CC-BY-2.0</a> )</font> <br><a name="habracut"></a><br>  As comunicações em tempo real são muito sensíveis à rede: largura de banda, latência e perda de pacotes.  Uma diminuição na taxa de bits leva a uma diminuição na qualidade do vídeo, um longo atraso na rede leva a um longo atraso para os usuários finais.  A perda de pacotes pode tornar o som intermitente e levar a congelamentos no vídeo (devido a pulos de quadros). <br><br>  Portanto, é muito importante para a conferência escolher a rota ideal entre os dispositivos / usuários finais.  Quando há apenas dois usuários, é fácil: o WebRTC usa <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">o protocolo ICE</a> para estabelecer uma conexão entre os participantes.  Se possível, os participantes se conectam diretamente, caso contrário, um servidor TURN é usado.  O WebRTC pode resolver um nome de domínio para obter o endereço de um servidor TURN, para que você possa selecionar facilmente um TURN local com base no DNS, por exemplo, usando as propriedades do <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">AWS Route53</a> . <br><br>  No entanto, quando o roteamento de vários participantes ocorre por meio de um servidor de mídia central, a situação se torna complicada.  Muitos serviços WebRTC usam SFUs (Selective Forwarding Units) para transferir áudio e vídeo entre 3 ou mais participantes com mais eficiência. <br><br><h2>  Problema com uma estrela </h2><br>  Na topologia em estrela, todos os participantes se conectam a um único servidor através do qual trocam fluxos de mídia.  Obviamente, a escolha do local do servidor é de grande importância: se todos os participantes estiverem nos EUA, usar um servidor em Sydney não é uma boa ideia. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ql/kc/om/qlkcomjzkd6g2ouz09pkdzhlvpw.png"></div><br>  Muitos serviços usam uma abordagem simples que funciona bem na maioria dos casos: eles escolhem um servidor mais próximo do primeiro participante da conferência.  No entanto, há momentos em que essa solução não é ótima.  Imagine que temos três participantes da figura acima.  Se um australiano (chamador C) for o primeiro a ingressar na conferência, o algoritmo escolherá um servidor na Austrália; no entanto, o servidor 1 nos EUA será a melhor escolha, porque  ele está mais perto da maioria dos participantes. <br><br>  O cenário descrito não é muito frequente, mas ocorre.  Se assumirmos que o usuário está conectado em uma ordem aleatória, a situação descrita ocorre com ⅓ de todas as conferências com 3 participantes, um dos quais é muito excluído. <br><br>  Outro cenário e mais frequente: temos dois grupos de participantes em locais diferentes.  Nesse caso, a ordem de conexão não é importante; sempre teremos um grupo de participantes próximos que são forçados a trocar mídia com um servidor remoto.  Por exemplo, 2 participantes da Austrália (C&amp;D) e 2 dos EUA (A&amp;B). <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/uh/t9/me/uht9mexxe1vpojj608kyvf1ccb8.png"></div><br>  Mudar para o Servidor 1 não será ideal para membros de C&amp;D.  O servidor 2 não é ideal para A&amp;B.  Ou seja, não importa qual servidor seja usado, sempre haverá participantes conectados ao servidor remoto (= não otimizado). <br><br>  Mas se não tivéssemos um único limite de servidor?  Poderíamos conectar cada participante ao servidor mais próximo, restaria apenas conectar esses servidores. <br><br><h2>  Solução: Em cascata </h2><br>  Adiamos a questão de como conectar os servidores;  vamos primeiro ver qual será o efeito. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/qc/lk/nj/qclknjbtsc5nkj5sp1evoqavla8.png"></div><br>  A conexão SFU entre C e D não mudou - o Servidor 2. ainda é usado, o Servidor 1 é usado para os participantes A e B, e isso é obviamente melhor.  O mais interessante é a conexão entre, por exemplo, A e C: em vez de A &lt;=&gt; Servidor 2 &lt;=&gt; C, a rota A &lt;=&gt; Servidor 1 &lt;=&gt; Servidor 2 &lt;=&gt; C é usada. <br><br><h2>  Efeito implícito na taxa de câmbio </h2><br>  O mix SFU tem seus prós e contras.  Por um lado, na situação descrita, o tempo de troca entre os participantes se torna mais longo quando novos saltos na rede são adicionados.  Por outro lado, há uma diminuição nesse momento quando falamos sobre a conexão “cliente” - “primeiro servidor”, porque podemos restaurar o fluxo de mídia com um atraso menor pelo princípio do salto por salto. <br><br>  Como isso funciona?  O WebRTC usa RTP (geralmente sobre UDP) para transmitir mídia.  Isso significa que o transporte não é confiável.  Quando um pacote UDP é perdido, você pode ignorar a perda ou solicitar um reenvio (retransmissão) usando o pacote <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">RTCP NACK</a> - a opção já está na consciência do aplicativo.  Por exemplo, um aplicativo pode ignorar a perda de pacotes de áudio e solicitar a retransmissão de alguns (mas não todos) pacotes de vídeo, dependendo se eles são necessários para decodificar os quadros subseqüentes ou não. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ia/ly/oi/ialyoi-naszu3kclgng8r6i6kx4.png"></div><br>  <font color="gray">Retransmissão de pacotes RTP, servidor único</font> <br><br>  Quando há cascata, a retransmissão pode ser limitada ao servidor local, ou seja, realizado em cada site individual.  Por exemplo, na rota A-S1-S2-C, se um pacote for perdido entre A e S1, então S1 notará isso e solicitará uma retransmissão;  semelhante à perda entre S2 e C. E mesmo se o pacote for perdido entre servidores, o lado receptor também poderá solicitar uma retransmissão. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/si/zs/ak/sizsaktt0nq72ymcfvkkojwfjq0.png"></div><br>  <font color="gray">Retransmissão de pacotes RTP, dois servidores.</font>  <font color="gray">Observe que o servidor 2 não solicita o pacote 2, porque o NACK chegou logo após o envio do pacote.</font> <br><br>  O cliente usa um buffer de tremulação para atrasar a reprodução do vídeo e conseguir receber pacotes atrasados ​​/ retransmitidos.  O tamanho do buffer muda dinamicamente, dependendo do tempo de troca entre as partes.  Quando ocorrem retransmissões de salto por salto, o atraso diminui e, como resultado, o buffer pode ser menor - como resultado, o atraso geral também diminui. <br><br>  Resumidamente: mesmo que o tempo de troca entre os participantes seja maior, isso pode levar a uma diminuição no atraso na transferência de mídia entre os participantes.  Ainda temos que estudar esse efeito na prática. <br><br><h2>  Apresentando SFUs em cascata: Jitsi Meet Case </h2><br><h3>  Alarme vs.  Mídia </h3><br>  Vamos dar uma olhada no alarme.  Desde o início, o Jitsi Meet compartilhou o conceito de servidor de sinalização ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Jicofo</a> ) e servidor de mídia / SFU.  Isso permitiu a introdução de suporte em cascata é relativamente simples.  Primeiro, poderíamos lidar com toda a lógica de sinalização em um só lugar;  segundo, já tínhamos um protocolo de sinalização entre Jicofo e o servidor de mídia.  Precisávamos apenas expandir um pouco a funcionalidade: já suportávamos várias SFUs conectadas a um servidor de sinalização, tivemos que adicionar a capacidade de uma SFU para conectar-se a muitos servidores de sinalização. <br><br>  Como resultado, dois pools de servidores independentes apareceram: um para instâncias jicofo e outro para instâncias de servidor de mídia, consulte o diagrama: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/zu/vm/j-/zuvmj-aptvmxeaz_-_2dpy0gnxs.png"></div><br>  <font color="gray">Um exemplo de organização de servidores na AWS com a possibilidade de uma cascata entre diferentes data centers.</font> <br><br>  A segunda parte do sistema é a comunicação ponte a ponte.  Queríamos tornar essa parte o mais simples possível, para que não haja sinalização complicada entre as pontes.  Todo alarme varia entre jicofo e jitsi-videobridge;  A conexão de ponte é usada apenas para mensagens de áudio / vídeo e link de dados. <br><br><h3>  Protocolo Octo </h3><br>  Para gerenciar essa interação, adotamos o protocolo Octo, que agrupa pacotes RTP em cabeçalhos simples de tamanho fixo e também permite enviar mensagens de texto.  Na implementação atual, as pontes são conectadas por uma topologia de malha completa (malha completa), mas outras topologias também são possíveis.  Por exemplo, use um servidor central (estrela para pontes) ou uma estrutura em árvore para cada ponte. <br><br>  <i>Explicação: Em vez de agrupá-lo em um cabeçalho Octo, você pode usar a extensão de cabeçalho RTP, que fará fluxos entre pontes no RTP puro (S).</i>  <i>Versões futuras do Octo podem usar essa abordagem.</i> <i><br><br></i>  <i>Segunda Explicação: Octo não significa nada.</i>  <i>Inicialmente, queríamos usar um servidor central e isso nos lembrou um polvo.</i>  <i>Então, o nome do projeto apareceu.</i> <i><br></i> <br><div style="text-align:center;"><img src="https://habrastorage.org/webt/xt/vv/ln/xtvvlnyyumqkz65qlvsxweuss94.png"></div>  <font color="gray">Octo Header Format</font> <br><br>  Na terminologia do Jitsi, quando uma ponte faz parte de uma conferência com várias pontes, ela possui um canal Octo adicional (de fato, um canal para áudio e outro para vídeo).  Este canal é responsável por enviar / receber mídia de / para outras pontes.  Cada ponte possui uma porta livre para Octo (4096 por padrão), portanto, precisamos do campo ID da conferência para lidar com várias conferências. <br><br>  No momento, o protocolo não possui mecanismos de segurança internos e delegamos essa responsabilidade nos níveis mais baixos.  Essa é a coisa mais próxima que faremos no futuro próximo, mas por enquanto as pontes devem estar em uma rede segura (por exemplo, uma instância separada do AWS VPC). <br><br><h3>  Simulcast </h3><br>  O Simulcast permite que cada participante envie vários fluxos de mídia com taxas de bits diferentes, enquanto a ponte ajuda a determinar quais são necessárias.  Para que isso funcione corretamente, transferimos todos os fluxos de simulcast entre as pontes.  Graças a isso, você pode alternar rapidamente entre fluxos, porque a ponte local não precisa solicitar um novo fluxo.  Entretanto, isso não é ideal do ponto de vista do tráfego ponte a ponte, pois  alguns threads raramente são usados ​​e carregam apenas a largura de banda sem nenhum objetivo. <br><br><h3>  Seleção de membro ativo </h3><br>  Também queríamos a oportunidade de assinar um participante / orador ativo da conferência.  Acabou sendo simples - ensinamos cada ponte a determinar independentemente o participante principal e, em seguida, notificamos nossos clientes locais.  Isso significa que a determinação ocorre várias vezes, mas não é onerosa e permite simplificar alguns pontos (por exemplo, você não precisa decidir qual ponte deve ser responsável pelo <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">DSI</a> e se preocupar com o roteamento de mensagens). <br><br><h3>  Seleção de ponte </h3><br>  Na implementação atual, esse algoritmo é simples.  Quando um novo participante ingressa na conferência, Jicofo deve determinar qual ponte atribuir a ele.  Isso é feito com base na região do participante e no congestionamento das pontes.  Se na mesma região houver uma ponte livre, ela será designada.  Caso contrário, alguma outra ponte será usada. <br><br>  Para mais informações sobre o Octo, consulte a <a href="">documentação</a> . <br><br><h2>  Expandir o SFU em cascata </h2><br>  Para implantação, usamos máquinas no Amazon AWS.  Tínhamos servidores (alarmes e mídia) em 6 regiões: <br><br><ul><li>  us-east-1 (Virgínia do Norte); </li><li>  us-west-2 (Oregon); </li><li>  eu-oeste-1 (Irlanda); </li><li>  eu-central-1 (Frankfurt); </li><li>  ap-se-1 (Singapura); </li><li>  ap-se-2 (Sydney). </li></ul><br>  Usamos instâncias <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">HAProxy</a> georreferenciadas para determinar a região membro.  O domínio meet.jit.si é gerenciado pelo <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Route53</a> e <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">resolve</a> a instância HAProxy, que adiciona a região aos cabeçalhos HTTP da solicitação enviada.  Posteriormente, o cabeçalho é usado como o valor da variável <code>config.deploymentInfo.userRegion</code> , disponível no cliente, graças ao arquivo <code>/config.js</code> . <br><br>  A interface jitsi mostra quantas pontes são usadas e a quais usuários específicos estão conectados - para fins de diagnóstico e demonstração.  Passar o mouse sobre o canto superior esquerdo do vídeo local mostrará o número total de servidores e o servidor ao qual você está conectado.  Da mesma forma, você pode ver os parâmetros do segundo participante.  Você também verá o tempo de troca entre o navegador e o navegador do interlocutor (parâmetro E2E RTT). <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/up/hs/r3/uphsr3-ddqg6cjkhcu6sgis1g9s.png"></div><br>  <font color="gray">Ao ver quem está conectado a qual servidor, você pode ver se a cascata é usada.</font> <br><br><h2>  Conclusão </h2><br>  Octo apareceu originalmente como um teste A / B.  Os primeiros resultados foram bons, agora o Octo está disponível para todos.  Ainda há muito tráfego para passar por ele e uma análise mais detalhada do desempenho;  também está planejado usar esses desenvolvimentos para apoiar conferências ainda maiores (quando um SFU não é mais suficiente). </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt432708/">https://habr.com/ru/post/pt432708/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt432698/index.html">Timlids fantásticos e onde eles moram</a></li>
+<li><a href="../pt432700/index.html">Venha! @ # Com sua "toxicidade"</a></li>
+<li><a href="../pt432702/index.html">Conteúdo 2018: olhe mais amplo, vá mais fundo</a></li>
+<li><a href="../pt432704/index.html">Usando um termômetro sem fio externo Buro H999 com dispositivos caseiros</a></li>
+<li><a href="../pt432706/index.html">Equipe um para muitos no sucesso do cliente: por que você precisa?</a></li>
+<li><a href="../pt432710/index.html">Chamadas de spam. É possível combatê-los?</a></li>
+<li><a href="../pt432714/index.html">Semana da Segurança 50: 2019 Previsões</a></li>
+<li><a href="../pt432716/index.html">Traili. Gpuhub. Cybercortex</a></li>
+<li><a href="../pt432718/index.html">Controlador, vá com calma! Retiramos o código no UIView</a></li>
+<li><a href="../pt432720/index.html">China baniu a Apple</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

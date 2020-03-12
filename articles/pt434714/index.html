@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏜️ 🚣🏽 🌙 Sincronização de solicitação de cliente no Spring 💆🏽 🌴 👶🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hoje, sugiro que você analise uma tarefa prática sobre a corrida de solicitações de clientes que encontrei no MaximTelecom ao desenvolver o back-end p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Sincronização de solicitação de cliente no Spring</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/maximatelecom/blog/434714/">  Hoje, sugiro que você analise uma tarefa prática sobre a corrida de solicitações de clientes que encontrei no MaximTelecom ao desenvolver o back-end para nosso aplicativo móvel MT_FREE. <br><br>  Na inicialização, o aplicativo cliente envia assincronamente um "pacote" de solicitações para a API.  O aplicativo possui o identificador clientId, com base no qual é possível distinguir entre solicitações de um cliente de outro.  Para cada solicitação no servidor, um código do formulário é executado: <br><br><pre><code class="java hljs"><span class="hljs-comment"><span class="hljs-comment">//      Client client = clientRepository.findByClientId(clientId); //      if(client == null){ client = clientRepository.save(new Client(clientId)); } //   </span></span></code> </pre> <br>  onde a entidade Cliente possui um campo clientId, que deve ser exclusivo e ter uma restrição exclusiva no banco de dados para isso.  Como no Spring cada solicitação executará esse código em um thread separado, mesmo que sejam solicitações do mesmo aplicativo cliente, um erro do formulário será exibido: <br><blockquote>  violação de restrição de integridade: restrição exclusiva ou violação de índice;  Tabela UK_BFJDOY2DPUSSYLQ7G1S3S1TN8: CLIENT </blockquote><br>  O erro ocorre por um motivo óbvio: 2 ou mais threads com o mesmo clientId recebem o cliente == entidade nula e começam a criá-lo, após o que recebem um erro ao confirmar. <br><br><h3>  Desafio: </h3><br>  É necessário sincronizar solicitações de um clientId para que apenas a primeira solicitação conclua a criação da entidade Cliente, e o restante seja bloqueado no momento da criação e receba o objeto que já criou. <br><a name="habracut"></a><br><h3>  Solução 1 </h3><br><pre> <code class="java hljs"> <span class="hljs-comment"><span class="hljs-comment">//      if(client == null){ //   synchronized (this){ //    client = clientRepository.findByClientId(clientId); if(client == null){ client = clientRepository.save(new Client(clientId)); } } }</span></span></code> </pre><br>  Essa solução está funcionando, mas é muito cara, pois todas as solicitações (threads) que precisam ser criadas são bloqueadas, mesmo que elas criem Client com clientId diferente e não concorram entre si. <br><br>  Observe que a combinação de sincronização com a anotação @Transactional <br><br><pre> <code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@Transactional</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">synchronized</span></span></span><span class="hljs-function"> Client </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">getOrCreateUser</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String clientId)</span></span></span></span>{ <span class="hljs-comment"><span class="hljs-comment">//      Client client = clientRepository.findByClientId(clientId); //      if(client == null){ client = clientRepository.save(new Client(clientId)); } return client; }</span></span></code> </pre><br>  o mesmo erro ocorrerá novamente.  O motivo é que o monitor (sincronizado) é liberado primeiro e o próximo encadeamento entra na área sincronizada e somente depois que a transação é confirmada pelo primeiro encadeamento no objeto proxy.  Para resolver este problema é simples - você precisa que o monitor seja liberado após a confirmação, portanto, sincronizado deve ser chamado acima: <br><br><pre> <code class="java hljs"> <span class="hljs-keyword"><span class="hljs-keyword">synchronized</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">this</span></span>){ client = clientService.getOrCreateUser(clientId); }</code> </pre><br><h3>  Decisão 2 </h3><br>  Eu realmente gostaria de usar um design do formulário: <br><br><pre> <code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">synchronized</span></span> (clientId)</code> </pre> <br>  mas o problema é que um novo objeto clientId será criado para cada solicitação, mesmo que seus valores sejam equivalentes; portanto, a sincronização não pode ser executada dessa maneira.  Para resolver o problema com diferentes objetos clientId, você precisa usar o pool: <br><br><pre> <code class="java hljs">Client client = clientRepository.findByClientId(clientId); <span class="hljs-comment"><span class="hljs-comment">//      if(client == null){ //   synchronized (clientId.intern()){ //    client = clientRepository.findByClientId(clientId); if(client == null){ client = clientRepository.save(new Client(clientId)); } } }</span></span></code> </pre><br>  Esta solução usa o pool de strings java, respectivamente, solicitações com o clientId equivalente, chamando clientId.intern (), receberão o mesmo objeto.  Infelizmente, na prática, esta solução não é aplicável, pois é impossível gerenciar o clientId "rotting", que mais cedo ou mais tarde levará ao OutOfMemory. <br><br><h3>  Decisão 3 </h3><br>  Para usar o ReentrantLock, você precisa de um pool do formulário: <br><br><pre> <code class="java hljs"><span class="hljs-keyword"><span class="hljs-keyword">private</span></span> <span class="hljs-keyword"><span class="hljs-keyword">final</span></span> ConcurrentMap&lt;String, ReentrantLock&gt; locks;</code> </pre> <br>  e então: <br><br><pre> <code class="java hljs">Client client = clientRepository.findByClientId(clientId); <span class="hljs-comment"><span class="hljs-comment">//      if(client == null){ //   ReentrantLock lock = locks.computeIfAbsent(clientId, (k) -&gt; new ReentrantLock()); lock.lock(); try{ //    client = clientRepository.findByClientId(clientId); if(client == null){ client = clientRepository.save(new Client(clientId)); } } finally { //   lock.unlock(); } }</span></span></code> </pre><br>  O único problema é o gerenciamento do clientId "obsoleto", que pode ser resolvido usando a implementação não-padrão do ConcurrentMap, que já suporta expirar, por exemplo, tomar cache da goiaba: <br><br><pre> <code class="java hljs">locks = CacheBuilder.newBuilder() .concurrencyLevel(<span class="hljs-number"><span class="hljs-number">4</span></span>) .expireAfterWrite(Duration.ofMinutes(<span class="hljs-number"><span class="hljs-number">1</span></span>)) .&lt;String, ReentrantLock&gt;build().asMap();</code> </pre><br><h3>  Decisão 4 </h3><br>  As soluções acima sincronizam solicitações em uma única instância.  O que fazer se seu serviço estiver girando em N nós e as solicitações puderem ser diferentes ao mesmo tempo?  Para essa situação, o uso da biblioteca <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Redisson</a> é perfeito como solução: <br><br><pre> <code class="java hljs"> Client client = clientRepository.findByClientId(clientId); <span class="hljs-comment"><span class="hljs-comment">//      if(client == null){ //   RLock lock = redissonClient.getFairLock(clientId); lock.lock(); try{ //    client = clientRepository.findByClientId(clientId); if(client == null){ client = clientRepository.save(new Client(clientId)); } } finally { //   lock.unlock(); } }</span></span></code> </pre><br>  A biblioteca resolve o problema de bloqueios distribuídos usando redis como repositório. <br><br><h2>  Conclusão </h2><br>  A decisão de aplicar certamente depende da escala do problema: as soluções 1 a 3 são bastante adequadas para pequenos serviços de instância única, a solução 4 visa serviços distribuídos.  Também é importante observar separadamente que resolver esse problema usando Redisson ou análogos (por exemplo, o Zookeeper clássico) é, obviamente, um caso especial, pois eles são projetados para uma gama muito maior de tarefas para sistemas distribuídos. <br><br>  No nosso caso, optamos pela solução 4, pois nosso serviço é distribuído e a integração Redisson foi a mais fácil em comparação com os análogos. <br><br>  Amigos, sugiram nos comentários suas opções para resolver este problema, ficarei muito feliz! <br>  O código fonte dos exemplos está disponível no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">GitHub</a> . <br><br>  By the way, estamos constantemente expandindo a equipe de desenvolvimento, vagas relevantes podem ser encontradas em nossa <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">página de carreira</a> . <br><br><h3>  UPD 1. Solução dos leitores 1 </h3><br>  Esta solução propõe não sincronizar solicitações, mas no caso de um erro do formulário: <br><blockquote>  violação de restrição de integridade: restrição exclusiva ou violação de índice;  Tabela UK_BFJDOY2DPUSSYLQ7G1S3S1TN8: CLIENT </blockquote><br>  deve ser processado e recuperado <br><pre> <code class="java hljs">client = clientRepository.findByClientId(clientId);</code> </pre><br>  ou faça isso por meio de nova tentativa de mola: <br><pre> <code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@Retryable</span></span>(value = { SQLException.class }, maxAttempts = <span class="hljs-number"><span class="hljs-number">3</span></span>, backoff = <span class="hljs-meta"><span class="hljs-meta">@Backoff</span></span>(delay = <span class="hljs-number"><span class="hljs-number">1000</span></span>)) <span class="hljs-meta"><span class="hljs-meta">@Transactional</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> Client </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">getOrCreateUser</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(String clientId)</span></span></span></span></code> </pre><br>  (graças a <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" class="user_link">Throwable,</a> por <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">exemplo</a> ) <br>  Nesse caso, haverá consultas "extras" no banco de dados, mas, na prática, a criação da entidade Cliente não ocorrerá com frequência, e se a sincronização for necessária apenas para resolver o problema de inserção no banco de dados, essa solução poderá ser dispensada. <br><br><h3>  UPD 2. Solução dos leitores 2 </h3><br>  Esta solução propõe fazer a sincronização através da sessão: <br><pre> <code class="java hljs">HttpSession session = request.getSession(<span class="hljs-keyword"><span class="hljs-keyword">false</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (session != <span class="hljs-keyword"><span class="hljs-keyword">null</span></span>) { Object mutex = WebUtils.getSessionMutex(session); <span class="hljs-keyword"><span class="hljs-keyword">synchronized</span></span> (mutex) { ... } }</code> </pre><br>  Essa solução funcionará para serviços de instância única, mas será necessário resolver o problema para que todas as solicitações de um cliente para a API sejam realizadas na mesma sessão. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt434714/">https://habr.com/ru/post/pt434714/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt434704/index.html">Razões para o declínio no custo do tráfego móvel na Rússia e a previsão para 2019</a></li>
+<li><a href="../pt434706/index.html">UDB. O que é isso? Parte 3. Datapath FIFO</a></li>
+<li><a href="../pt434708/index.html">HL 2018. Resumo do relatório “Torne as senhas ótimas novamente! Como vencer a força bruta e deixar os hackers sem nada ”</a></li>
+<li><a href="../pt434710/index.html">Blog RUVDS sobre Habr: ano em três</a></li>
+<li><a href="../pt434712/index.html">Terceiro teste de Turing em russo</a></li>
+<li><a href="../pt434716/index.html">Movendo-se para o data center: Preparação</a></li>
+<li><a href="../pt434718/index.html">Dois anos depois, ainda sinto falta do fone de ouvido</a></li>
+<li><a href="../pt434720/index.html">Verso do conhecimento zero: um backdoor no zk-SNARK que não pode ser detectado</a></li>
+<li><a href="../pt434722/index.html">Dor, pílulas e duas ambulâncias, ou Como todos subimos para o quinto lugar do IronStar 226 em Sochi</a></li>
+<li><a href="../pt434724/index.html">Agricultores chineses fazem transmissão ao vivo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
