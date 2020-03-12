@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😰 🏂🏽 🍺 Wie wir eine kritische Sicherheitslücke von AspNetCore.Mvc gefunden und auf unsere eigene Serialisierung umgestellt haben 🧚🏿 🚘 🙎🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hallo Habr! 
+
+ In diesem Artikel möchten wir unsere Erfahrungen bei der Optimierung der Leistung und der Erkundung der Funktionen von AspNetCore.Mvc t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Wie wir eine kritische Sicherheitslücke von AspNetCore.Mvc gefunden und auf unsere eigene Serialisierung umgestellt haben</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/retailrocket/blog/435626/">  Hallo Habr! <br><br>  In diesem Artikel möchten wir unsere Erfahrungen bei der Optimierung der Leistung und der Erkundung der Funktionen von AspNetCore.Mvc teilen. <br><br><img src="https://habrastorage.org/webt/da/rm/2b/darm2bah850jodxea3wgdjr60qk.jpeg"><br><br><h2>  Hintergrund </h2><br>  Vor einigen Jahren haben wir bei einem unserer geladenen Dienste einen erheblichen Verbrauch an CPU-Ressourcen festgestellt.  Es sah seltsam aus, da die Aufgabe des Dienstes darin bestand, die Nachricht tatsächlich in die Warteschlange zu stellen, nachdem zuvor einige Vorgänge wie Validierung, Datenaddition usw. ausgeführt worden waren. <br><br>  Als Ergebnis der Profilerstellung stellten wir fest, dass die Deserialisierung den größten Teil der Prozessorzeit „verschlingt“.  Wir haben einen Standard-Serializer herausgeschmissen und unseren eigenen auf Jil geschrieben, wodurch der Ressourcenverbrauch um ein Vielfaches gesunken ist.  Alles hat so funktioniert, wie es sollte und wir haben es geschafft, es zu vergessen. <br><a name="habracut"></a><br><h2>  Das Problem </h2><br>  Wir verbessern ständig unseren Service in allen Bereichen, einschließlich Sicherheit, Leistung und Fehlertoleranz. Daher führt das "Sicherheitsteam" verschiedene Tests unserer Services durch.  Und vor einiger Zeit "fliegt" eine Warnung über einen Fehler im Protokoll zu uns - irgendwie haben wir eine ungültige Nachricht weiter verpasst. <br><br>  Bei einer detaillierten Analyse sah alles ziemlich seltsam aus.  Es gibt ein Anforderungsmodell (hier werde ich ein vereinfachtes Codebeispiel geben): <br><br><pre><code class="json hljs">public class RequestModel { public string Key { get; set; } FromBody] Required] public PostRequestModelBody Body { get; set; } } public class PostRequestModelBody { [Required] [MinLength(1)] public IEnumerable&lt;long&gt; ItemIds { get; set; } }</code> </pre> <br>  Es gibt einen Controller mit der Aktion Post, zum Beispiel: <br><br><pre> <code class="json hljs">[Route(<span class="hljs-string"><span class="hljs-string">"api/[controller]"</span></span>)] public class HomeController : Controller { [HttpPost] public async Task&lt;ActionResult&gt; Post(RequestModel request) { if (this.ModelState.IsValid) { return this.Ok(); } return this.BadRequest(); } }</code> </pre> <br>  Alles scheint logisch.  Wenn eine Anfrage aus der Body-Ansicht kommt <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  Die API gibt BadRequest zurück, und es gibt Tests dafür. <br><br>  Trotzdem sehen wir im Log das Gegenteil.  Wir haben die Nachricht aus den Protokollen genommen, an die API gesendet und den Status OK erhalten ... und ... einen neuen Fehler im Protokoll.  Wir trauten unseren Augen nicht, machten einen Fehler und stellten sicher, dass ja, tatsächlich ModelState.IsValid == true.  Gleichzeitig stellten sie eine ungewöhnlich lange Ausführungszeit für Abfragen von etwa 500 ms fest, während die übliche Antwortzeit selten 50 ms überschreitet und dies in der Produktion ist, die Tausende von Anfragen pro Sekunde bedient! <br><br>  Der Unterschied zwischen dieser Anfrage und unseren Tests bestand nur darin, dass die Anfrage mehr als 600 leere Zeilen enthielt ... <br><br>  Als nächstes wird viel Bukaf-Code kommen. <br><br><h2>  Grund </h2><br>  Sie begannen zu verstehen, was los war.  Um den Fehler zu beseitigen, haben sie eine saubere Anwendung geschrieben (von der ich ein Beispiel gegeben habe), mit der wir die beschriebene Situation reproduziert haben.  Insgesamt haben wir ein paar Manntage mit Recherchen, Tests und dem mentalen Debug-Code AspNetCore.Mvc verbracht, und es stellte sich heraus, dass das Problem in <a href="">JsonInputFormatter liegt</a> . <br><br>  JsonInputFormatter verwendet einen JsonSerializer, der beim Abrufen eines Streams zur Deserialisierung und zum Typ versucht, jede Eigenschaft zu serialisieren, wenn es sich um ein Array handelt - jedes Element dieses Arrays.  Wenn während der Serialisierung ein Fehler auftritt, speichert JsonInputFormatter jeden Fehler und seinen Pfad und markiert ihn als verarbeitet, damit Sie den Versuch fortsetzen können, die Deserialisierung fortzusetzen. <br><br>  Unten finden Sie den Code für die JsonInputFormatter-Fehlerbehandlungsroutine (verfügbar auf Github unter dem obigen Link): <br><br><pre> <code class="json hljs">void ErrorHandler(object sender, Newtonsoft.Json.Serialization.ErrorEventArgs eventArgs) { successful = false; // When ErrorContext.Path does not include ErrorContext.Member, add Member to form full path. var path = eventArgs.ErrorContext.Path; var member = eventArgs.ErrorContext.Member?.ToString(); var addMember = !string.IsNullOrEmpty(member); if (addMember) { // Path.Member case (path.Length &lt; member.Length) needs no further checks. if (path.Length == member.Length) { // Add Member in Path.Memb case but not for Path.Path. addMember = !string.Equals(path, member, StringComparison.Ordinal); } else if (path.Length &gt; member.Length) { // Finally, check whether Path already ends with Member. if (member[0] == '[') { addMember = !path.EndsWith(member, StringComparison.Ordinal); } else { addMember = !path.EndsWith(<span class="hljs-attr"><span class="hljs-attr">"."</span></span> + member, StringComparison.Ordinal); } } } if (addMember) { path = ModelNames.CreatePropertyModelName(path, member); } // Handle path combinations such as <span class="hljs-string"><span class="hljs-string">""</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, or <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"[12]"</span></span>. var key = ModelNames.CreatePropertyModelName(context.ModelName, path); exception = eventArgs.ErrorContext.Error; var metadata = GetPathMetadata(context.Metadata, path); var modelStateException = WrapExceptionForModelState(exception); context.ModelState.TryAddModelError(key, modelStateException, metadata); _logger.JsonInputException(exception); // Error must always be marked as handled // Failure to do so can cause the exception to be rethrown at every recursive level and // overflow the stack for x<span class="hljs-number"><span class="hljs-number">6</span></span><span class="hljs-number"><span class="hljs-number">4</span></span> CLR processes eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; }</code> </pre><br>  Markierungsfehler als verarbeitet werden ganz am Ende des Prozessors gemacht <br><br><pre> <code class="json hljs">eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>;</code> </pre> <br><br>  Somit ist eine Funktion implementiert, mit der alle Deserialisierungsfehler und Pfade zu ihnen ausgegeben werden können, auf welchen Feldern / Elementen sie sich befanden, na ja ... fast alle ... <br><br>  Tatsache ist, dass JsonSerializer ein Limit von 200 Fehlern hat, wonach es abstürzt, während der gesamte Code abstürzt und ModelState ... gültig wird! ... Fehler ebenfalls verloren gehen. <br><br><h2>  Lösung </h2><br>  Ohne zu zögern haben wir unseren Json-Formatierer für Asp.Net Core mit dem Jil Deserializer implementiert.  Da die Anzahl der Fehler im Körper für uns absolut nicht wichtig ist, ist nur die Tatsache ihres Vorhandenseins wichtig (und es ist im Allgemeinen schwierig, sich eine Situation vorzustellen, in der es wirklich nützlich wäre), erwies sich der Serializer-Code als recht einfach. <br><br>  Ich werde den Hauptcode des benutzerdefinierten JilJsonInputFormatter geben: <br><br><pre> <code class="json hljs">using (var reader = context.ReaderFactory(request.Body, encoding)) { try { var result = JSON.Deserialize( reader: reader, type: context.ModelType, options: this.jilOptions); if (result == <span class="hljs-literal"><span class="hljs-literal">null</span></span> &amp;&amp; !context.TreatEmptyInputAsDefaultValue) { return await InputFormatterResult.NoValueAsync(); } else { return await InputFormatterResult.SuccessAsync(result); } } catch { // -   } return await InputFormatterResult.FailureAsync(); }</code> </pre> <br>  <b>Achtung!</b>  Jil unterscheidet zwischen Groß- und Kleinschreibung, dh dem Inhalt des Körpers <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"ItemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  und <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  nicht das gleiche.  Wenn im ersten Fall camelCase verwendet wird, ist die ItemIds-Eigenschaft nach der Deserialisierung null. <br><br>  Da dies jedoch unsere API ist, verwenden und steuern wir sie. Für uns ist dies nicht kritisch.  Das Problem kann auftreten, wenn es sich um eine öffentliche API handelt und diese bereits von jemandem aufgerufen wird, wobei der Parametername nicht in camelCase übergeben wird. <br><br><h2>  Ergebnis </h2><br>  Das Ergebnis hat sogar unsere Erwartungen übertroffen. Die API hat BadRequest erwartungsgemäß auf die angeforderte Anforderung zurückgesetzt und dies sehr schnell getan.  Unten finden Sie Screenshots einiger unserer Diagramme, die Änderungen der Antwortzeit und der CPU vor und nach der Bereitstellung deutlich zeigen. <br>  Vorlaufzeit anfordern: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/62d/412/60a/62d41260a72b6a3c07c9aeb1e990a3ad.png" alt="Bild"><br><br>  Gegen 16:00 Uhr gab es einen Einsatz.  Vor der Bereitstellung betrug die Ausführungszeit von p99 30-57 ms, nach der Bereitstellung 9-15 ms.  (Sie können nicht auf die wiederholten Spitzen von 18:00 achten - dies war ein weiterer Einsatz) <br><br>  So hat sich das CPU-Diagramm geändert: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/09c/95b/b8c/09c95bb8cf8bc500d0e7383ddbca8827.png" alt="Bild"><br><br>  Aus diesem Grund haben wir Github ein <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Problem gebracht.</a> Zum Zeitpunkt des Schreibens wurde es als Fehler mit Meilenstein 3.0.0-Vorschau3 gekennzeichnet. <br><br><h2>  Abschließend </h2><br>  Bis das Problem behoben ist, halten wir es für besser, die Verwendung der Standarddeserialisierung aufzugeben, insbesondere wenn Sie über eine öffentliche API verfügen.  Wenn ein Angreifer dieses Problem kennt, kann er Ihren Dienst leicht einschalten und eine Reihe ähnlicher ungültiger Anforderungen in ihn werfen. Je größer das fehlerhafte Array, desto mehr Body, desto länger findet die Verarbeitung in JsonInputFormatter statt. <br><br>  <b>Artyom Astashkin, Leiter des Entwicklungsteams</b> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de435626/">https://habr.com/ru/post/de435626/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de435614/index.html">Rust News # 4 (Dezember 2018)</a></li>
+<li><a href="../de435616/index.html">Wie Peer Zoning unser Leben vereinfacht und dazu beigetragen hat, die Belastung durch EMC VPLEX auszugleichen</a></li>
+<li><a href="../de435618/index.html">Meine Google Employment Prep-Erfahrung</a></li>
+<li><a href="../de435620/index.html">Die Ideen von Zukunftsforschern, die wahr wurden</a></li>
+<li><a href="../de435624/index.html">Eine Auswahl interessanter Berichte von der 35C3-Konferenz</a></li>
+<li><a href="../de435628/index.html">Der in Chrome Browser integrierte Werbeblocker startet am 9. Juli</a></li>
+<li><a href="../de435630/index.html">Netzwerk IB in der Cloud: 5 Trends von 2019</a></li>
+<li><a href="../de435636/index.html">Wie man mit maschinellem Lernen von Experten in Dota 2 lernt</a></li>
+<li><a href="../de435638/index.html">Über das Glück der Entwickler und wo es zu finden ist</a></li>
+<li><a href="../de435640/index.html">Die Zusammenfassung der Ereignisse für HR-Experten im Bereich IT für Januar 2019</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

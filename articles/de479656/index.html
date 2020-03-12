@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😕 😘 🛀 PostgreSQL Antipatterns: Statistiken rund um den Kopf 🙅🏾 🐋 👩🏼‍✈️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="PostgreSQL verwendet akkumulierte Statistiken zur Verteilung der Datenwerte in den Zieltabellen, um den effizientesten Abfrageausführungsplan auszuwäh...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: Statistiken rund um den Kopf</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/479656/">  <a href="https://postgrespro.ru/docs/postgresql/12/planner-stats">PostgreSQL verwendet akkumulierte Statistiken</a> zur Verteilung der Datenwerte in den Zieltabellen, um den effizientesten Abfrageausführungsplan auszuwählen. <br><br>  Die Aktualisierung erfolgt durch explizite Ausführung der Befehle <b>ANALYZE</b> und <b>VACUUM ANALYZE</b> oder im Hintergrund durch die <i>automatische Vakuum- / Autoanalyse</i> .  Wenn die Statistiken jedoch nicht aktualisiert werden können, kann dies zu Problemen führen. <br><br>  Wie kann man ein solches Problem erkennen und beheben? <br><a name="habracut"></a><br>  Die Hauptoption, wenn eine solche Situation überhaupt eintreten kann, ist, wenn sich der Datensatz in der Tabelle dramatisch geändert hat.  Das heißt, es wurde <i>eine große Anzahl von INSERT / UPDATE / DELETE-Vorgängen ausgeführt oder die Daten einfach</i> in eine leere Tabelle <i>"gegossen"</i> - beispielsweise <b>beim Wiederherstellen von einer Sicherung</b> . <br><br>  In der Hilfe zum Standard- <a href="https://postgrespro.ru/docs/postgresql/12/app-pgrestore">Wiederherstellungsdienstprogramm pg_restore heißt es</a> sogar explizit: <br><blockquote>  Nach der Wiederherstellung ist es sinnvoll, ANALYZE für jede wiederhergestellte Tabelle auszuführen, damit der Optimierer aktuelle Statistiken erhält. <br></blockquote>  Wenn Sie also etwas Ähnliches mit der Datenbank tun - seien Sie nicht faul, führen Sie <a href="https://postgrespro.ru/docs/postgresql/12/sql-analyze">ANALYZE</a> sofort für die " <a href="https://postgrespro.ru/docs/postgresql/12/sql-analyze">fettesten</a> " Tabellen oder für die gesamte Datenbank aus. <br><br><h3>  Wir stellen fest, ob ein Problem vorliegt </h3><br>  Wodurch sieht die "alles schlechte" Situation genau aus?  Normalerweise ungefähr so: <br><img src="https://habrastorage.org/webt/88/oq/j_/88oqj_7rh-kkdso8uxjkezopfga.png"><br><br>  Die <b>Verhältnisspalte</b> zeigt nur die Beziehung "zu Zeiten" zwischen der Anzahl der auf der Grundlage von Statistiken geplanten Datensätze und der tatsächlich gelesenen Anzahl: <br><br><pre><code class="plaintext hljs">Bitmap Heap Scan on ... (... rows=14831 ...) (actual ... rows=9 ...)</code> </pre> <br>  <b>Je höher dieser Wert, desto schlechter</b> spiegeln die Statistiken die tatsächliche Situation in Ihrer Tabelle wider.  Normalerweise <i>überschreitet es Hunderte nicht</i> , in diesem Beispiel <i>eineinhalbtausend Mal</i> . <br><br>  Dies führt zur Wahl eines ineffektiven Plans und damit zur <u>wildesten Belastung der Basis</u> .  Um es schnell zu entfernen, müssen Sie sich nur die Empfehlungen des Handbuchs anhören und <b>ANALYZE</b> in den <b>Haupttabellen</b> durchgehen. <br><br>  Hier ist die CPU-Last auf dem Datenbankserver vor und nach dieser Operation für das obige Beispiel: <br><br><img src="https://habrastorage.org/webt/1d/z1/_t/1dz1_tjab_zmcwy-ir0ei2_tjte.png"><br><br><h3>  Häufig aktualisierte Tabelle </h3><br>  Aber was ist, wenn die Tabelle wirklich eine große Anzahl von Datensätzen ändert?  Dies ist beispielsweise eine Art Puffer oder Verarbeitungswarteschlange, in der ständig neue Datensätze hinzugefügt und alte gelöscht werden. <br><br>  In diesem Fall helfen uns die folgenden <a href="https://postgrespro.ru/docs/postgresql/12/runtime-config-autovacuum">Konfigurationsparameter</a> : <br><blockquote>  <b>autovacuum_naptime</b> (integer) <br>  Legt die Mindestverzögerung zwischen zwei automatischen Bereinigungsläufen für eine einzelne Datenbank fest.  Der Daemon für die automatische Bereinigung durchsucht die Datenbank in dem angegebenen Zeitintervall und gibt die Befehle VACUUM und ANALYZE aus, wenn dies für die Tabellen in dieser Datenbank erforderlich ist.  Wenn dieser Wert ohne Einheiten angegeben wird, wird er als in Sekunden festgelegt betrachtet.  Standardmäßig beträgt die Verzögerung eine Minute (1 Minute).  Dieser Parameter kann nur in postgresql.conf oder in der Befehlszeile festgelegt werden, wenn der Server gestartet wird. <br><br>  <b>autovacuum_analyze_threshold</b> (integer) <br>  Legt die minimale Anzahl von hinzugefügten, geänderten oder gelöschten Tupeln fest, bei denen ANALYZE für eine einzelne Tabelle ausgeführt wird.  Der Standardwert ist 50 Tupel.  Dieser Parameter kann nur in postgresql.conf oder in der Befehlszeile festgelegt werden, wenn der Server gestartet wird.  Dieser Wert <u>kann jedoch für ausgewählte Tabellen überschrieben werden,</u> indem deren Speichereinstellungen geändert werden. <br><br>  <b>autovacuum_analyze_scale_factor</b> (Gleitkomma) <br>  Gibt den Prozentsatz der Tabellengröße an, der zu autovacuum_analyze_threshold hinzugefügt wird, wenn der Befehlsschwellenwert ANALYZE ausgewählt wird.  Der Standardwert ist 0.1 (10% der Tabellengröße).  Sie können diesen Parameter nur in postgresql.conf oder in der Befehlszeile festlegen, wenn der Server gestartet wird.  Dieser Wert <u>kann jedoch für ausgewählte Tabellen überschrieben werden,</u> indem deren Speichereinstellungen geändert werden. </blockquote><br><h3>  SWSS </h3><br>  Manchmal wird <i>autovacuum_naptime</i> beim Einrichten eines Servers auf "einmal pro Tag" (1d) " <i>komprimiert</i> ", sodass <b>autoVACUUMs seltener in der Datenbank unterwegs sind</b> und weniger Ressourcen <b>verbrauchen</b> . <br><br>  Manchmal, wenn auch sehr selten, kann dies sogar gerechtfertigt sein - zum Beispiel, wenn Sie <i>Tausende von Tabellen / Abschnitten</i> in einer Datenbank haben (auch wenn sie in unterschiedlichen Mustern angeordnet sind). <br><br>  Da bei der Initialisierung des automatischen Vakuumprozesses genau festgelegt wird, welche bestimmten Tabellen aus der gesamten Liste verarbeitet werden müssen, <b>kann dies einen erheblichen Teil der Ressourcen in</b> Anspruch <b>nehmen und den Server verlangsamen</b> . <br><br>  In diesem Fall haben Sie Probleme mit einer häufig geänderten Tabelle. <br><br>  Hier - entweder ein angemesseneres Startintervall einstellen oder ANALYZE anhand einer solchen Tabelle im manuellen Modus aus bestimmten Gründen (z. B. einem externen Timer oder nach dem Ende der nächsten Stufe der Warteschlangenverarbeitung) ausführen. <br><br>  <i>Genosse, halten Sie die Statistiken auf dem neuesten Stand!</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de479656/">https://habr.com/ru/post/de479656/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de479642/index.html">Wie dumme Entscheidungen beim Entwerfen eines Flugzeugs aus dem Zweiten Weltkrieg zur Schaffung des Macintosh führten</a></li>
+<li><a href="../de479644/index.html">Einfache Worte zu Programmatic</a></li>
+<li><a href="../de479646/index.html">Schlechte Ratschläge oder Gründe, um nach der Mittelstufe weiter Englisch zu lernen</a></li>
+<li><a href="../de479650/index.html">Top 12 der interessantesten dynamischen IT-Infografiken</a></li>
+<li><a href="../de479654/index.html">Django Vue Generator</a></li>
+<li><a href="../de479660/index.html">3. Malware-Analyse mit Check Point Forensics. Sandstrahl-Handy</a></li>
+<li><a href="../de479662/index.html">Wie Yandex künstliche Intelligenz lehrte, Fehler in den Nachrichten zu finden</a></li>
+<li><a href="../de479664/index.html">So funktionieren verwaltete Kubernetes und verwaltetes OpenShift in der IBM Cloud. Teil 1 - Architektur und Sicherheit</a></li>
+<li><a href="../de479666/index.html">Golang: Worauf verlässt sich ein Go-Spezialist in einem Meer von IT-Spezialitäten?</a></li>
+<li><a href="../de479668/index.html">QA für Anfänger: Wie teste ich eine Rakete oder ein Flugzeug?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤨 👨‍👨‍👦 📩 Entwicklung eines monolithischen Unix-ähnlichen Betriebssystems - Kernel System Log (3) 👩‍🚀 🛢️ 🖕🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Im vorherigen Artikel, dem zweiten in Folge, haben wir die erforderlichen Funktionen für die Arbeit mit Zeichenfolgen aus der C-Bibliothek entwickelt....">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Entwicklung eines monolithischen Unix-ähnlichen Betriebssystems - Kernel System Log (3)</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/466765/">  Im <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">vorherigen</a> Artikel, dem zweiten in Folge, haben wir die erforderlichen Funktionen für die Arbeit mit Zeichenfolgen aus der C-Bibliothek entwickelt. In dieser Lektion implementieren wir eine vollständige Debugging-Ausgabe auf dem Bildschirm - das Kernel-Systemprotokoll. <br><a name="habracut"></a><br><h4>  Inhaltsverzeichnis </h4><br><ol><li>  Build-System (make, gcc, gas).  Erster Start (Multiboot).  Starten Sie (qemu).  C-Bibliothek (strcpy, memcpy, strext). </li><li>  C-Bibliothek (sprintf, strcpy, strcmp, strtok, va_list ...).  Erstellen der Bibliothek im Kernelmodus und im Benutzeranwendungsmodus. </li><li>  Das Kernel-Systemprotokoll.  Videospeicher  Ausgabe an das Terminal (kprintf, kpanic, kassert). </li><li>  Dynamischer Speicher, Heap (kmalloc, kfree). </li><li>  Organisation der Speicher- und Interrupt-Behandlung (GDT, IDT, PIC, Syscall).  Ausnahmen </li><li>  Virtueller Speicher (Seitenverzeichnis und Seitentabelle). </li><li>  Prozess.  Planer  Multitasking.  Systemaufrufe (kill, exit, ps). </li><li>  Das Dateisystem des Kernels (initrd), elf und seiner Interna.  Systemaufrufe (exec). </li><li>  Zeichengerätetreiber.  Systemaufrufe (ioctl, fopen, fread, fwrite).  C-Bibliothek (fopen, fclose, fprintf, fscanf). </li><li>  Shell als komplettes Programm für den Kernel. </li><li>  Benutzerschutzmodus (Ring3).  Aufgabenstatussegment (tss). </li></ol><br><h4>  Kernel-Systemprotokoll </h4><br>  Bevor wir beginnen, müssen wir einige nützliche Funktionen für die Arbeit mit E / A-Ports einführen.  E / A-Ports für einen Programmierer unterscheiden sich nicht von normalen Zellen im Speicher, außer dass es separate Befehle gibt, um sie zu bedienen.  Geräte, die an diesen Ports arbeiten, sind mit dem Speicherbus verbunden.  Es gibt auch einen eigenen Adressraum für sie.  Wir benötigen zwei Assembler-Funktionen, um mit Eingabe- / Ausgabeports arbeiten zu können, da ich, wie Sie sich bereits erinnern, keine Assembler-Einfügungen toleriere. <br><br><pre><code class="plaintext hljs">extern u_char asm_read_port(u_char port); extern void asm_write_port(u_int port, u_char data);</code> </pre> <br>  Ebenso zwei Befehle zum Steuern maskierter Prozessor-Interrupts. <br><br><pre> <code class="plaintext hljs">extern void asm_lock(); extern void asm_unlock();</code> </pre> <br>  Um nach schwerwiegenden Fehlern Energie zu sparen, benötigen Sie einen Prozessor-Stopp-Befehl. <br><br><pre> <code class="plaintext hljs">extern void asm_hlt();</code> </pre> <br>  Wie Sie sich erinnern, beginnt der Videospeicher bei 0xB8000, aber ich empfehle, zuerst Nachrichten im Nur-Text-Format in den Puffer zu schreiben.  Und dann kopieren Sie diesen Puffer einfach unter Berücksichtigung der Farbattribute in den Videospeicher.  Zu diesem Zweck habe ich mehrere Dienstprogramme für die Arbeit mit diesen Puffern implementiert.  Ein Puffer ist für das Kernel-Syslog und der Rest für virtuelle Terminals.  Das Scrollen des Bildschirms wird auch für den Puffer ausgeführt.  Und nur die Funktion video_flush kopiert den Puffer in den Videospeicher und erweitert ihn um Attribute. <br><br><pre> <code class="plaintext hljs">extern void video_init(); extern void video_disable_cursor(); extern void* video_scroll(char const* video_buff, char* pos); extern char* video_clear(char const* video_buff); extern void video_flush(char const* video_buff);</code> </pre><br>  Jetzt ist es an der Zeit, die am häufigsten verwendeten Funktionen vorzustellen.  Die letzten beiden werden zum Debuggen des Kernels verwendet, wenn Faulheit vom Debugger debuggt wird.  Glauben Sie mir, ich habe noch nie einen Debugger verwendet, als ich diesen Kernel geschrieben habe. <br><br><pre> <code class="plaintext hljs">extern void kpanic(char* message, ...); extern void kassert(const char* file, u_int line, bool expr); extern void kunreachable(const char* file, u_int line);</code> </pre><br>  Nun, eigentlich Funktionen für die Arbeit mit dem Kernel-Systemprotokoll.  Um zu steuern, was auf dem Bildschirm angezeigt wird, habe ich die kmode-Funktion im Systemprotokoll oder in der Benutzerkonsole eingegeben.  Und um das Systemprotokoll in den Puffer einzulesen, benötigen Sie die Funktion klog, da Benutzerprozesse nur über Systemaufrufe Zugriff auf den Kernel haben. <br><br><pre> <code class="plaintext hljs">extern void kclear(); extern void kprintf(const char* format, ...); extern void kvprintf(const char* format, va_list list); extern void kmode(bool is_early); extern void klog(char* buf, u_int n);</code> </pre><br>  Ich gebe hier die interessantesten Funktionen: <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Api - Scroll video buffer up * Returns new position */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">extern</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function">* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">video_scroll</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params">* video_buff, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params">* pos)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span>* ptr = (<span class="hljs-keyword"><span class="hljs-keyword">void</span></span>*)video_buff; <span class="hljs-comment"><span class="hljs-comment">/* scroll up */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">1</span></span>; i &lt; VIDEO_SCREEN_HEIGHT; ++i) { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH; ++j) { ptr[(i - <span class="hljs-number"><span class="hljs-number">1</span></span>) * VIDEO_SCREEN_WIDTH + j] = ptr[i * VIDEO_SCREEN_WIDTH + j]; } } <span class="hljs-comment"><span class="hljs-comment">/* empty last line */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH; ++j) { ptr[(VIDEO_SCREEN_HEIGHT - <span class="hljs-number"><span class="hljs-number">1</span></span>) * VIDEO_SCREEN_WIDTH + j] = <span class="hljs-string"><span class="hljs-string">' '</span></span>; } <span class="hljs-comment"><span class="hljs-comment">/* move position up */</span></span> pos -= VIDEO_SCREEN_WIDTH; <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> pos; }</code> </pre><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Api - Print kernel message */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">extern</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">kvprintf</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params">* format, va_list </span></span><span class="hljs-built_in"><span class="hljs-function"><span class="hljs-params"><span class="hljs-built_in">list</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> buff[VIDEO_SCREEN_WIDTH]; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> len = <span class="hljs-built_in"><span class="hljs-built_in">vsprintf</span></span>(buff, format, <span class="hljs-built_in"><span class="hljs-built_in">list</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; len; ++i) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (buff[i] != <span class="hljs-string"><span class="hljs-string">'\n'</span></span>) { kputc(buff[i]); } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> line_pos = (syslog_pos - syslog) % VIDEO_SCREEN_WIDTH; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH - line_pos; ++j) { kputc(<span class="hljs-string"><span class="hljs-string">' '</span></span>); } } } kflush(); }</code> </pre><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Put character to syslog */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">kputc</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> ch)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> ((<span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span>)syslog_pos - (<span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span>)syslog + <span class="hljs-number"><span class="hljs-number">1</span></span> &lt; VIDEO_SCREEN_SIZE) { *syslog_pos++ = ch; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { syslog_pos = video_scroll(syslog, syslog_pos); kputc(ch); } }</code> </pre><br>  Siehe das ausführliche Tutorial im Video-Tutorial. <br><br><h4>  Referenzen </h4><br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Video-Tutorial zu diesem Artikel</a> <br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Quellcode</a> (Sie benötigen einen Lektion3-Zweig) <br><br><h4>  Referenzliste </h4><br><ol><li>  James Molloy.  Rollen Sie Ihr eigenes UNIX-Klon-Betriebssystem. </li><li>  Zubkov.  Assembler für DOS, Windows, Unix </li><li>  Kalaschnikow.  Assembler ist einfach! </li><li>  Tanenbaum.  Betriebssysteme.  Implementierung und Entwicklung. </li><li>  Robert Love.  Linux-Kernel  Beschreibung des Entwicklungsprozesses. </li></ol></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de466765/">https://habr.com/ru/post/de466765/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de466755/index.html">Der Computer wird Sie lecker machen</a></li>
+<li><a href="../de466757/index.html">Der erste Flutter Mitap in St. Petersburg - 26. September</a></li>
+<li><a href="../de466759/index.html">Über Partnerprogramme von Hosting-Unternehmen</a></li>
+<li><a href="../de466761/index.html">Pascals Dreieck gegen Ketten vom Typ "000 ... / 111 ..." in binären Zeilen und neuronalen Netzen</a></li>
+<li><a href="../de466763/index.html">DataLine Insight Brut Day, 3. Oktober, Moskau</a></li>
+<li><a href="../de466769/index.html">Dolch 2 ist elementar (Teil 2)</a></li>
+<li><a href="../de466773/index.html">Sicherheitswoche 37: Sicherheitslücke in Android, Microsoft versus Deepfakes, Popularität von Windows 7</a></li>
+<li><a href="../de466775/index.html">So funktioniert es: Frequenzauswahl für 5G</a></li>
+<li><a href="../de466777/index.html">Empfehlungen zum Erstellen von Anwendungen in React Native. Teil 1</a></li>
+<li><a href="../de466779/index.html">Englisch lernen: 8 Möglichkeiten, höflich Nein zu sagen</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

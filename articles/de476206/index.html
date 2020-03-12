@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧘🏻 🌪️ ❇️ Postgresql inkrementelle Backups mit pgbackrest - ein junger Kampfkurs vom Entwickler 🔈 ♌️ 👩🏿‍🏭</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Haftungsausschluss 
+
+ Ich bin ein Entwickler. Ich schreibe Code, interagiere nur als Benutzer mit der Datenbank. In keinem Fall gebe ich vor, ein Syst...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Postgresql inkrementelle Backups mit pgbackrest - ein junger Kampfkurs vom Entwickler</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/476206/">  <b>Haftungsausschluss</b> <br><br>  Ich bin ein Entwickler.  Ich schreibe Code, interagiere nur als Benutzer mit der Datenbank.  In keinem Fall gebe ich vor, ein Systemadministrator und insbesondere dba zu sein.  Aber ... <br><br>  Es passierte, dass ich eine Sicherung der postgresql-Datenbank organisieren musste.  Keine Wolken - behalte SSH und lass es funktionieren und bitte nicht um Geld.  Was machen wir in solchen Fällen?  Richtig, wir haben pgdump in cron gepusht, jeden Tag sichern wir alles im Archiv und wenn wir völlig verstreut sind, senden wir dieses Archiv irgendwohin in die Hölle. <br><br>  Diesmal bestand die Schwierigkeit darin, dass die Basis laut Plan um etwa + - 100 MB pro Tag wachsen sollte.  Natürlich wird der Wunsch, alles mit pgdump zu sichern, in ein paar Wochen verschwinden.  Hier kommen inkrementelle Backups zum Einsatz. <br><br>  Interessant?  Willkommen bei Katze. <br><a name="habracut"></a><br><blockquote>  Inkrementelle Sicherung ist eine Sicherungsart, bei der nicht alle Quelldateien gesichert werden, sondern nur neue und geänderte aus dem Moment der vorherigen Sicherung. </blockquote>  Wie jeder Entwickler, der (zu dieser Zeit) die Feinheiten von Postgres nicht verstehen wollte, wollte ich einen grünen Knopf finden.  Nun, Sie wissen, wie in AWS, DigitalOcean: Klicken Sie auf eine Schaltfläche - Replikation erhalten, klicken Sie auf die zweite - Backups einrichten, die dritte - es wurde vor ein paar Stunden zurückgesetzt.  Schaltflächen und ein schönes GUI-Tool habe ich nicht gefunden.  Wenn Sie dies wissen (kostenlos oder günstig) - schreiben Sie darüber in den Kommentaren. <br><br>  Googeln, fand ich zwei Werkzeuge <b>pgbarman</b> und <b>pgbackrest</b> .  Ich hatte gerade kein Problem mit der ersten (sehr dürftige Dokumentation, ich habe versucht, alles gemäß alten Handbüchern zu erhöhen), aber die zweite erwies sich als auf dem Niveau, aber nicht ohne Mängel.  Um die Arbeit für diejenigen, die mit einer ähnlichen Aufgabe konfrontiert sind, zu vereinfachen, wurde dieser Artikel verfasst. <br><blockquote>  Nachdem Sie diesen Artikel gelesen haben, erfahren Sie, wie Sie inkrementelle Sicherungen erstellen, auf einem Remoteserver (einem Repository mit Sicherungen) speichern und bei Datenverlust oder anderen Problemen auf dem Hauptserver wiederherstellen. </blockquote><h2>  Vorbereitung </h2><br>  Um das Handbuch zu spielen, benötigen Sie zwei VPS.  Das erste ist das Repository (das Repository, in dem sich die Sicherungen befinden) und das zweite der Server selbst mit postgres (in meinem Fall Version 11 von postgres). <br><br>  Es wird davon ausgegangen, dass auf dem Server mit postgres root, sudo user, postgres user und postgres selbst installiert sind (postgres user wird bei der Installation von postgresql automatisch erstellt) und auf dem Repository-Server root und sudo user vorhanden sind (im Handbuch wird der Benutzername pgbackrest verwendet). . <br><br>  Damit Sie bei der Wiedergabe der Anleitung weniger Probleme haben - ich schreibe kursiv auf, <i>wo, von welchem ​​Benutzer und mit welchen Rechten ich den Befehl</i> beim Schreiben und Prüfen des Artikels ausgeführt habe. <br><br><h3>  Installieren Sie die Rückenlehne </h3><br>  <i>Repository (Benutzer pgbackrest):</i> <br><br>  1. Laden Sie das Archiv mit pgbackrest herunter und übertragen Sie den Inhalt in den Ordner / build: <br><br><pre><code class="bash hljs">sudo mkdir /build sudo wget -q -O - \ https://github.com/pgbackrest/pgbackrest/archive/release/2.18.tar.gz | \ sudo tar zx -C /build</code> </pre> <br>  2. Installieren Sie die für die Assembly erforderlichen Abhängigkeiten: <br><br><pre> <code class="bash hljs">sudo apt-get update sudo apt-get install build-essential libssl-dev libxml2-dev libperl-dev zlib1g-dev \ libpq-dev</code> </pre> <br>  3. Wir sammeln pgbackrest: <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> /build/pgbackrest-release-2.18/src &amp;&amp; sudo ./configure sudo make -s -C /build/pgbackrest-release-2.18/src</code> </pre> <br>  4. Kopieren Sie die ausführbare Datei in das Verzeichnis / usr / bin: <br><br><pre> <code class="bash hljs">sudo cp /build/pgbackrest-release-2.18/src/pgbackrest /usr/bin sudo chmod 755 /usr/bin/pgbackrest</code> </pre> <br>  5. Pgbackrest benötigt Perl.  Installieren Sie: <br><br><pre> <code class="bash hljs">sudo apt-get install perl</code> </pre> <br>  6. Erstellen Sie Verzeichnisse für Protokolle, und geben Sie ihnen bestimmte Rechte: <br><br><pre> <code class="bash hljs">sudo mkdir -p -m 770 /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo chown pgbackrest:pgbackrest /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo mkdir -p /etc/pgbackrest sudo mkdir -p /etc/pgbackrest/conf.d sudo touch /etc/pgbackrest/pgbackrest.conf sudo chmod 640 /etc/pgbackrest/pgbackrest.conf sudo chown pgbackrest:pgbackrest /etc/pgbackrest/pgbackrest.conf</code> </pre> <br>  7. Überprüfen Sie: <br><br><pre> <code class="bash hljs">pgbackrest version</code> </pre> <br>  <i>Postgres-Server (sudo-Benutzer oder root):</i> <br><br>  Die Installation von pgbackrest auf einem Server mit postgres ähnelt der Installation auf einem Repository (ja, pgbackrest sollte sich auf beiden Servern befinden), <b>aber im sechsten Absatz</b> lautet <b>der zweite und letzte Befehl:</b> <br><br><pre> <code class="bash hljs">sudo chown pgbackrest:pgbackrest /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo chown pgbackrest:pgbackrest /etc/pgbackrest/pgbackrest.conf</code> </pre> <br>  <b>ersetzen durch:</b> <br><br><pre> <code class="bash hljs">sudo chown postgres:postgres /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo chown postgres:postgres /etc/pgbackrest/pgbackrest.conf</code> </pre> <br><h3>  Konfiguration der Kommunikation zwischen Servern über passwortloses SSH </h3><br>  Damit pgbackrest ordnungsgemäß funktioniert, müssen Sie die Interaktion zwischen dem Postgres-Server und dem Repository mithilfe der Schlüsseldatei konfigurieren. <br><br>  <i>Repository (Benutzer pgbackrest):</i> <i><br></i> <br>  Erstellen Sie ein Schlüsselpaar: <br><br><pre> <code class="bash hljs">mkdir -m 750 /home/pgbackrest/.ssh ssh-keygen -f /home/pgbackrest/.ssh/id_rsa \ -t rsa -b 4096 -N <span class="hljs-string"><span class="hljs-string">""</span></span></code> </pre> <br>  <b>Achtung!</b>  Wir führen die obigen Befehle ohne sudo aus. <br><br>  <i>Postgres-Server (sudo-Benutzer oder root):</i> <br><br>  Erstellen Sie ein Schlüsselpaar: <br><br><pre> <code class="bash hljs">sudo -u postgres mkdir -m 750 -p /var/lib/postgresql/.ssh sudo -u postgres ssh-keygen -f /var/lib/postgresql/.ssh/id_rsa \ -t rsa -b 4096 -N <span class="hljs-string"><span class="hljs-string">""</span></span></code> </pre> <br>  <i>Repository (sudo-Benutzer):</i> <br><br>  Kopieren Sie den öffentlichen Schlüssel des Postgres-Servers auf den Repository-Server: <br><br><pre> <code class="bash hljs">(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'no-agent-forwarding,no-X11-forwarding,no-port-forwarding,'</span></span> &amp;&amp; \ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'command="/usr/bin/pgbackrest ${SSH_ORIGINAL_COMMAND#* }" '</span></span> &amp;&amp; \ sudo ssh root@&lt;postgres_server_ip&gt; cat /var/lib/postgresql/.ssh/id_rsa.pub) | \ sudo -u pgbackrest tee -a /home/pgbackrest/.ssh/authorized_keys</code> </pre> <br>  In diesem Schritt werden Sie vom Root-Benutzer nach dem Passwort gefragt.  Sie müssen das root-Passwort des postgres-Serverbenutzers eingeben! <br><br>  <i>Postgres-Server (sudo-Benutzer):</i> <br><br>  Kopieren Sie den öffentlichen Schlüssel des Repositorys mit postgres auf den Server: <br><br><pre> <code class="bash hljs">(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'no-agent-forwarding,no-X11-forwarding,no-port-forwarding,'</span></span> &amp;&amp; \ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'command="/usr/bin/pgbackrest ${SSH_ORIGINAL_COMMAND#* }" '</span></span> &amp;&amp; \ sudo ssh root@&lt;repository_server_ip&gt; cat /home/pgbackrest/.ssh/id_rsa.pub) | \ sudo -u postgres tee -a /var/lib/postgresql/.ssh/authorized_keys</code> </pre><br>  In diesem Schritt werden Sie vom Root-Benutzer nach dem Passwort gefragt.  Sie müssen das Root-Passwort des Repository-Benutzers eingeben! <br><br>  Wir prüfen: <br><br>  <i>Repository (Root-Benutzer, für die Reinheit des Experiments):</i> <br><br><pre> <code class="bash hljs">sudo -u pgbackrest ssh postgres@&lt;postgres_server_ip&gt;</code> </pre> <br>  <i>Postgres-Server (Root-Benutzer, für die Reinheit des Experiments):</i> <br><br><pre> <code class="bash hljs">sudo -u postgres ssh pgbackrest@&lt;repository_server_ip&gt;</code> </pre> <br>  Wir sorgen dafür, dass wir ohne Probleme Zugang bekommen. <br><br><h3>  Postgres server einrichten </h3><br><br>  <i>Postgres-Server (sudo-Benutzer oder root):</i> <br><br>  1. Lass uns von einer externen IP auf dem Postgres-Server "klopfen".  Bearbeiten Sie dazu die Datei <u>postgresql.conf</u> (im Ordner / etc / postgresql / 11 / main) und fügen Sie die folgende Zeile hinzu: <br><br><pre> <code class="bash hljs">listen_addresses = <span class="hljs-string"><span class="hljs-string">'*'</span></span></code> </pre> <br>  Wenn eine solche Zeile bereits vorhanden ist, entfernen Sie das Kommentarzeichen oder setzen Sie den Parameterwert auf '*'. <br><br>  <u>Fügen Sie in der Datei pg_hba.conf</u> (die sich ebenfalls im Ordner <u>/ etc / postgresql / 11 / main befindet</u> ) die folgenden Zeilen hinzu: <br><br><pre> <code class="bash hljs">hostssl all all 0.0.0.0/0 md5 host all all 0.0.0.0/0 md5</code> </pre> <br>  wo: <br><br><pre> <code class="bash hljs">hostssl/host -   SSL ( ) all -      all -  ,    () 0.0.0.0/0 -       md5 -   </code> </pre> <br>  2. Wir nehmen die erforderlichen Einstellungen in <u>postgresql.conf vor</u> (diese befinden sich im Ordner <u>/ etc / postgresql / 11 / main</u> ), damit pgbackrest funktioniert: <br><br><pre> <code class="bash hljs">archive_command = <span class="hljs-string"><span class="hljs-string">'pgbackrest --stanza=main archive-push %p'</span></span> <span class="hljs-comment"><span class="hljs-comment">#  main -  .   postgres    main. archive_mode = on max_wal_senders = 3 wal_level = replica</span></span></code> </pre> <br>  3. Nehmen Sie die erforderlichen Einstellungen in der Konfigurationsdatei pgbackrest (/etc/pgbackrest/pgbackrest.conf) vor: <br><br><pre> <code class="bash hljs">[main] pg1-path=/var/lib/postgresql/11/main [global] <span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-file=detail repo1-host=&lt;repository_server_ip&gt;</code> </pre> <br>  4. Starten Sie postgresql neu: <br><br><pre> <code class="bash hljs">sudo service postgresql restart</code> </pre> <br><h3>  Repository-Server konfigurieren </h3><br>  <i>Repository (pgbackrest-Benutzer):</i> <br><br>  <u>Nehmen</u> Sie die erforderlichen Einstellungen in der Konfigurationsdatei von <u>pgbackrest vor</u> <br>  ( <u>/etc/pgbackrest/pgbackrest.conf</u> ): <br><br><pre> <code class="bash hljs">[main] pg1-host=&lt;postgres_server_ip&gt; pg1-path=/var/lib/postgresql/11/main [global] repo1-path=/var/lib/pgbackrest repo1-retention-full=2 <span class="hljs-comment"><span class="hljs-comment"># ,     . ..            -       . start-fast=y #    ,       https://postgrespro.ru/docs/postgrespro/9.5/continuous-archiving</span></span></code> </pre> <br><h3>  Speichererstellung </h3><br>  <i>Repository (pgbackrest-Benutzer):</i> <br><br>  Erstellen Sie einen neuen Speicher für den Hauptcluster: <br><br><pre> <code class="bash hljs">sudo mkdir -m 770 /var/lib/pgbackrest sudo chown -R pgbackrest /var/lib/pgbackrest/ sudo -u pgbackrest pgbackrest --stanza=main stanza-create</code> </pre><br><h3>  Überprüfen Sie </h3><br>  <i>Postgres-Server (sudo-Benutzer oder root):</i> <br><br>  Überprüfen Sie auf dem Postgres-Server: <br><br><pre> <code class="bash hljs">sudo -u postgres pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-console=info check</code> </pre> <br>  <i>Repository (pgbackrest-Benutzer):</i> <br><br>  Überprüfen Sie auf dem Repository-Server: <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-console=info check</code> </pre> <br>  Wir stellen sicher, dass in der Ausgabe die Zeile "check command end: completed successful" erscheint. <br><br>  <b>Bist du müde</b>  <b>Wir gehen zu den interessantesten über.</b> <br><br><h3>  Backup erstellen </h3><br>  <i>Repository (pgbackrest-Benutzer):</i> <i><br></i> <br><br>  1. Wir sichern: <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main backup</code> </pre><br>  2. Wir stellen sicher, dass das Backup erstellt wurde: <br><br><pre> <code class="bash hljs">ls /var/lib/pgbackrest/backup/main/</code> </pre> <br>  Pgbackrest erstellt die erste vollständige Sicherung.  Wenn Sie möchten, können Sie den Sicherungsbefehl erneut ausführen und sicherstellen, dass das System eine Teilsicherung erstellt. <br><br>  Wenn Sie erneut eine vollständige Sicherung durchführen möchten, geben Sie ein zusätzliches Flag an: <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">type</span></span>=full backup</code> </pre> <br>  Wenn Sie eine detaillierte Ausgabe an die Konsole wünschen, geben Sie außerdem Folgendes an: <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">type</span></span>=full --<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-console=info backup</code> </pre> <br><h3>  Backup wiederherstellen </h3><br>  <i>Postgres-Server (sudo-Benutzer oder root):</i> <br><br>  1. Stoppen Sie den Arbeitscluster: <br><br><pre> <code class="bash hljs">sudo pg_ctlcluster 11 main stop</code> </pre> <br>  2. Wir erholen uns von der Sicherung: <br><br><pre> <code class="bash hljs">sudo -u postgres pgbackrest --stanza=main --delta restore</code> </pre> <br>  3. Führen Sie den Cluster aus: <br><br><pre> <code class="bash hljs">sudo pg_ctlcluster 11 main start</code> </pre> <br>  Nach dem Wiederherstellen der Sicherung müssen wir eine zweite Sicherung durchführen: <br><br>  <i>Repository (pgbackrest-Benutzer):</i> <br><br><pre> <code class="bash hljs">sudo pgbackrest --stanza=main backup</code> </pre> <br>  Das ist alles.  Abschließend möchte ich Sie daran erinnern, dass ich in keinem Fall versuche, eine Senior-DBA aufzubauen, und bei der geringsten Gelegenheit Clouds verwenden werde.  Derzeit fange ich selbst an, mich mit verschiedenen Themen wie Sicherung, Replikation, Überwachung usw. zu befassen.  und ich schreibe kleine berichte über die ergebnisse, um einen kleinen beitrag für die gemeinschaft zu leisten und kleine krippen für mich zu hinterlassen. <br><br>  In den folgenden Artikeln werde ich versuchen, über zusätzliche Funktionen zu sprechen - Datenwiederherstellung auf einem sauberen Cluster, Verschlüsselung von Sicherungen und Veröffentlichung auf S3, Sicherungen über rsync. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de476206/">https://habr.com/ru/post/de476206/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de476186/index.html">Hilfe für PKI Implementation Devs</a></li>
+<li><a href="../de476188/index.html">Ein neuronales Netzwerk zur Definition von Hassern - "Nein, nun, es ist ein Verbot"</a></li>
+<li><a href="../de476192/index.html">Ein wichtiger Tweet zur Verlängerung des Lebens</a></li>
+<li><a href="../de476194/index.html">Habr Weekly # 27 / Chromebooks vs Macbooks, wie man coole Lebensläufe schreibt, welches Gehalt man verlangen muss, AR-Punkte für $ 3500</a></li>
+<li><a href="../de476198/index.html">Wie ich meine erste Website erstellt habe und was daraus wurde</a></li>
+<li><a href="../de476208/index.html">Web Almanac 2019: Verfügbarkeit</a></li>
+<li><a href="../de476210/index.html">Kryptografische Workstation basierend auf Public-Key-Standards. PKCS # 11-Token konfigurieren</a></li>
+<li><a href="../de476212/index.html">In der Praxis bewährt: Funktionen von Veeam Backup & Replication 9.5 Update 4 für die Arbeit mit Magnetbändern</a></li>
+<li><a href="../de476214/index.html">Die Geburt des Maskottchens Slurm</a></li>
+<li><a href="../de476216/index.html">Web Problemlösung mit r0ot-mi. Teil 2</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📰 🤦 🏩 VM-Leistungsanalyse in VMware vSphere. Teil 3: Lagerung ⏹️ 👀 💸</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Teil 1. Über die CPU 
+ Teil 2. Über den Speicher 
+
+ Heute werden wir die Metriken des Festplattensubsystems in vSphere analysieren. Das Problem mit de...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>VM-Leistungsanalyse in VMware vSphere. Teil 3: Lagerung</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/dataline/blog/461127/"><img src="https://habrastorage.org/webt/2z/yj/ri/2zyjri-ljt0oq1lfki5jwlxuyuc.png"><br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Teil 1. Über die CPU</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Teil 2. Über den Speicher</a> <br><br>  Heute werden wir die Metriken des Festplattensubsystems in vSphere analysieren.  Das Problem mit dem Speicher ist der häufigste Grund für eine langsame virtuelle Maschine.  Wenn in Fällen mit CPU und RAM die Fehlerbehebung auf Hypervisor-Ebene endet, müssen Sie sich bei Problemen mit der Festplatte möglicherweise mit dem Datennetz und den Speichersystemen befassen. <br><br>  Ich werde das Thema am Beispiel des Blockzugriffs auf den Speicher analysieren, obwohl die Zähler beim Dateizugriff ungefähr gleich sind. <br><a name="habracut"></a><br><h3>  Ein bisschen Theorie </h3><br>  Beachten Sie normalerweise drei verwandte Parameter, wenn Sie über die Leistung des Festplattensubsystems virtueller Maschinen sprechen: <br><br><ul><li>  Anzahl der Eingabe- / Ausgabeoperationen (Eingabe- / Ausgabeoperationen pro Sekunde, IOPS); </li><li>  Bandbreite (Durchsatz); </li><li>  Latenz der Eingabe- / Ausgabeoperationen (Latenz). </li></ul><br>  <b>Die Anzahl der IOPS ist</b> normalerweise wichtig für zufällige Workloads: Zugriff auf Blöcke auf der Festplatte an verschiedenen Orten.  Als Beispiel für eine solche Belastung können Datenbanken, Geschäftsanwendungen (ERP, CRM) usw. dienen. <br><br>  <b>Der Durchsatz ist</b> wichtig für sequentielle Lasten: Zugriff auf nacheinander angeordnete Blöcke.  Beispielsweise können Dateiserver (aber nicht immer) und Videoüberwachungssysteme eine solche Last erzeugen. <br><br>  Der Durchsatz hängt wie folgt mit der Anzahl der E / A-Vorgänge zusammen: <br><br>  <i>Durchsatz = IOPS *</i> Blockgröße, wobei Blockgröße die Größe des Blocks ist. <br><br>  Die Blockgröße ist ein ziemlich wichtiges Merkmal.  Moderne ESXi-Versionen ermöglichen Blöcke mit einer Größe von bis zu 32.767 KB.  Wenn der Block noch größer ist, wird er in mehrere unterteilt.  Nicht alle Speichersysteme können mit so großen Blöcken effektiv arbeiten, daher verfügt Advanced Settings ESXi über den Parameter DiskMaxIOSize.  Mit dieser Option können Sie die maximale Größe eines vom Hypervisor übersprungenen Blocks reduzieren (weitere Details <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">hier</a> ).  Ich empfehle, dass Sie sich vor dem Ändern dieses Parameters an den Hersteller von Speichersystemen wenden oder die Änderungen zumindest am Labortisch testen. <br><br>  Große Blockgrößen können die Speicherleistung beeinträchtigen.  Selbst wenn die Anzahl der IOPS und der Durchsatz relativ gering sind, können bei einer großen Blockgröße hohe Latenzen auftreten.  Achten Sie daher auf diesen Parameter. <br><br>  <b>Die Latenz</b> ist der interessanteste Leistungsparameter.  Die Latenz von E / A-Vorgängen für eine virtuelle Maschine ist die Summe aus: <br><br><ul><li>  Verzögerungen innerhalb des Hypervisors (KAVG, Average Kernel MilliSec / Read); </li><li>  Latenz durch Datennetz und Speicher (DAVG, Average Driver MilliSec / Command). </li></ul><br>  Die im Gastbetriebssystem sichtbare Gesamtverzögerung (GAVG, Average Guest MilliSec / Command) ist die Summe aus KAVG und DAVG. <br><br>  GAVG und DAVG werden gemessen und KAVG wird berechnet: GAVG - DAVG. <br><br><img src="https://habrastorage.org/webt/vl/nr/li/vlnrlisbs6bewpfc93um8pocz4c.png"><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><i>Quelle</i></a> <br><br>  Lassen Sie uns bei <b>KAVG</b> verweilen.  Im normalen Betrieb sollte der KAVG gegen Null tendieren oder zumindest viel kleiner als der DAVG sein.  Der einzige Fall, von dem ich weiß, wann KAVG voraussichtlich hoch sein wird, ist das IOPS-Limit auf der VM-Festplatte.  In diesem Fall erhöht sich der KAVG, wenn versucht wird, den Grenzwert zu überschreiten. <br><br>  Die wichtigste Komponente von KAVG ist QAVG - die Zeit in der Warteschlange für die Verarbeitung im Hypervisor.  Die übrigen Bestandteile von KAVG sind vernachlässigbar. <br><br>  Die Warteschlange im Festplattenadaptertreiber und in der Mondwarteschlange hat eine feste Größe.  In stark belasteten Umgebungen kann diese Größe nützlich sein, um sie zu erhöhen.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Es wird</a> beschrieben, wie die Warteschlange im Adaptertreiber vergrößert wird (gleichzeitig wird die Warteschlange zu den Monden vergrößert).  Diese Einstellung funktioniert, wenn nur eine VM mit dem Mond arbeitet, was selten vorkommt.  Wenn sich mehrere <i>VMs</i> auf dem Mond befinden, müssen Sie auch den Parameter <i>Disk.SchedNumReqOutstanding</i> erhöhen (Anweisungen <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">hier</a> ).  Durch Erhöhen der Warteschlange verringern Sie QAVG bzw. KAVG. <br><br>  Lesen Sie jedoch zunächst die Dokumentation des HBA-Anbieters und testen Sie die Änderungen am Labortisch. <br><br>  Die Größe der Warteschlange zum Mond kann durch die Einbeziehung des SIOC-Mechanismus (Storage I / O Control) beeinflusst werden.  Es bietet einen einheitlichen Zugriff auf den Mond von allen Servern im Cluster, indem die Warteschlange auf den Servern dynamisch auf den Mond geändert wird.  Das heißt, wenn eine VM auf einem Host ausgeführt wird, der eine unverhältnismäßige Leistung erfordert (verrauschte Nachbar-VM), reduziert SIOC die Länge der Warteschlange bis zum Mond auf diesem Host (DQLEN).  Weitere Details <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">hier</a> . <br><br>  KAVG hat sich darum <b>gekümmert</b> , jetzt ein wenig über <b>DAVG</b> .  Hier ist alles einfach: DAVG ist die Verzögerung, die durch die externe Umgebung (Datennetz und Speicher) verursacht wird.  Jedes moderne und nicht so Speichersystem hat seine eigenen Leistungsindikatoren.  Um Probleme mit DAVG zu analysieren, ist es sinnvoll, sie zu betrachten.  Wenn auf der ESXi- und Speicherseite alles in Ordnung ist, überprüfen Sie das Datennetz. <br><br>  Um Leistungsprobleme zu vermeiden, wählen Sie die richtige Pfadauswahlrichtlinie (PSP) für Ihren Speicher.  Fast alle modernen Speichersysteme unterstützen PSP Round-Robin (mit oder ohne ALUA, Asymmetric Logical Unit Access).  Mit dieser Richtlinie können Sie alle verfügbaren Speicherpfade verwenden.  Im Fall von ALUA werden nur die Pfade zu dem Controller verwendet, dem der Mond gehört.  Nicht alle Speichersysteme unter ESXi verfügen über Standardregeln, die die Round-Robin-Richtlinie festlegen.  Wenn für Ihr Speichersystem keine Regel vorhanden ist, verwenden Sie das Plug-In des Speicherherstellers, mit dem die entsprechende Regel auf allen Hosts im Cluster erstellt wird, oder erstellen Sie die Regel selbst.  Details <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">hier</a> . <br><br>  Einige Speicheranbieter empfehlen außerdem, die Anzahl der IOPS pro Pfad vom Standardwert 1000 auf 1 zu ändern. In unserer Praxis konnten wir dadurch mehr Leistung aus dem Speicher herausholen und die für das Failover bei einem Controller-Ausfall oder einer Aktualisierung erforderliche Zeit erheblich verkürzen.  Überprüfen Sie die Empfehlungen des Herstellers. Wenn keine Kontraindikationen vorliegen, ändern Sie diesen Parameter.  Details <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">hier</a> . <br><br><h3>  Grundlegende Leistungsindikatoren des Festplattensubsystems einer virtuellen Maschine </h3><br>  Die Leistungsindikatoren für das Festplattensubsystem in vCenter werden in den Abschnitten Datenspeicher, Festplatte, Virtuelle Festplatte erfasst: <br><br><img src="https://habrastorage.org/webt/vh/kw/s4/vhkws4yppe9rqfk5pogjaey0_im.png"><br><br>  Der Abschnitt Datenspeicher enthält Metriken für vSphere-Festplattenspeicher (Datenspeicher), auf denen sich VM-Festplatten befinden.  Hier finden Sie Standardzähler für: <br><br><ul><li>  IOPS (Durchschnittliche Lese- / Schreibanforderungen pro Sekunde), </li><li>  Bandbreite (Lese- / Schreibrate), </li><li>  Verzögerungen (Lesen / Schreiben / Höchste Latenz). </li></ul><br>  Aus den Namen der Zähler ist im Prinzip alles klar.  Ich möchte noch einmal darauf hinweisen, dass die Statistiken hier nicht für eine bestimmte VM (oder VM-Festplatte) gelten, sondern allgemein für den gesamten Datenspeicher.  Meiner Meinung nach ist es bequemer, diese Statistiken in ESXTOP zu betrachten, zumindest auf der Grundlage, dass die minimale Messdauer 2 Sekunden beträgt. <br><br>  Der Abschnitt <b>Datenträger</b> enthält Metriken für die von der VM verwendeten Blockgeräte.  Es gibt IOPS-Zähler vom Summationstyp (Anzahl der Eingabe- / Ausgabeoperationen pro Messperiode) und mehrere Zähler für den Blockzugriff (Befehle abgebrochen, Bus zurückgesetzt).  Meiner Meinung nach sind diese Informationen auch in ESXTOP bequemer anzusehen. <br><br>  Der Abschnitt " <b>Virtuelle Festplatte</b> " ist am nützlichsten für die Fehlerbehebung bei Leistungsproblemen des VM-Festplattensubsystems.  Hier sehen Sie die Leistung für jede virtuelle Festplatte.  Diese Informationen werden benötigt, um zu verstehen, ob eine bestimmte virtuelle Maschine ein Problem hat.  Zusätzlich zu den Standardzählern für die Anzahl der Eingabe- / Ausgabeoperationen, das Lese- / Schreibvolumen und die Verzögerungen enthält dieser Abschnitt nützliche Zähler, die die Blockgröße anzeigen: Lese- / Schreibanforderungsgröße. <br><br>  In der folgenden Abbildung sehen Sie eine grafische Darstellung der Leistung der VM-Festplatte, in der Sie die Anzahl der IOPS, die Latenz und die Blockgröße sehen können. <br><br><img src="https://habrastorage.org/webt/6_/1e/io/6_1eiop7odinrffnof8y6jkqoc4.png"><br><br>  Leistungsmetriken können auch im gesamten Datenspeicher angezeigt werden, wenn SIOC aktiviert ist.  Hier finden Sie einige grundlegende Informationen zu durchschnittlicher Latenz und IOPS.  Standardmäßig können diese Informationen nur in Echtzeit angezeigt werden. <br><br><img src="https://habrastorage.org/webt/3z/fu/2f/3zfu2fvddarsk_ki3lnavc8juqs.png"><br><br><h3>  ESXTOP </h3><br>  ESXTOP verfügt über mehrere Bildschirme, auf denen Informationen zum gesamten Host-Festplattensubsystem, zu einzelnen virtuellen Maschinen und deren Festplatten angezeigt werden. <br><br>  Beginnen wir mit Informationen zu virtuellen Maschinen.  Der Bildschirm „Disk VM“ wird mit der Taste „v“ aufgerufen: <br><br><img src="https://habrastorage.org/webt/x-/ix/kf/x-ixkfuuxxrv64gpsxezoo8lsci.png"><br><br>  <b>NVDISK</b> ist die Anzahl der VM-Festplatten.  Um Informationen auf jeder Festplatte anzuzeigen, drücken Sie "e" und geben Sie die GID der VM ein, an der Sie interessiert sind. <br><br>  Die Bedeutung der verbleibenden Parameter auf diesem Bildschirm ergibt sich aus ihren Namen. <br><br>  Ein weiterer nützlicher Bildschirm zur Fehlerbehebung ist der Festplattenadapter.  Es wird mit der Taste „d“ aufgerufen (im Bild unten sind die Felder A, B, C, D, E, G ausgewählt): <br><br><img src="https://habrastorage.org/webt/oo/yk/2n/ooyk2nk1kburs6exfrg1km9auum.png"><br><br>  <b>NPTH</b> ist die Anzahl der Mondpfade, die von diesem Adapter aus sichtbar sind.  Um Informationen zu den einzelnen Pfaden des Adapters zu erhalten, drücken Sie "e" und geben Sie den Namen des Adapters ein: <br><br><img src="https://habrastorage.org/webt/nb/rl/wr/nbrlwrvqdj95qy_qqna0ultn3tw.png"><br><br>  <b>AQLEN</b> - maximale Warteschlangengröße auf dem Adapter. <br><br>  Auf diesem Bildschirm befinden sich auch die Verzögerungszähler, über die ich oben gesprochen habe: <b>KAVG / cmd, GAVG / cmd, DAVG / cmd, QAVG / cmd</b> . <br><br>  Auf dem Bildschirm Festplattengerät, der mit der Taste „u“ aufgerufen wird, werden Informationen zu einzelnen Blockgeräten angezeigt - Monde (im Bild unten sind die Felder A, B, F, G, I ausgewählt).  Hier sehen Sie den Status der Warteschlange zu den Monden. <br><br><img src="https://habrastorage.org/webt/ik/e0/lk/ike0lkaa77navbia1n-sjfvqwci.png"><br><br>  <b>DQLEN</b> - Warteschlangengröße für ein Blockgerät. <br>  <b>ACTV</b> ist die Anzahl der E / A-Befehle im ESXi-Kern. <br>  <b>QUED</b> - Die Anzahl der E / A-Befehle in der Warteschlange. <br>  <b>% USD</b> - ACTV / DQLEN × 100%. <br>  <b>LOAD</b> - (ACTV + QUED) / DQLEN. <br><br>  Wenn% USD hoch ist, sollten Sie erwägen, die Aufstellung zu erweitern.  Je mehr Teams sich in der Warteschlange befinden, desto höher ist die QAVG und dementsprechend die KAVG. <br><br>  Auf dem Bildschirm des Festplattengeräts können Sie auch sehen, ob die VAAI (vStorage API for Array Integration) im Speicher ausgeführt wird.  Wählen Sie dazu die Felder A und O aus. <br><br>  Mit dem VAAI-Mechanismus können Sie einen Teil der Arbeit vom Hypervisor direkt auf das Speichersystem übertragen, z. B. Nullstellen, Kopieren von Blöcken oder Blockieren. <br><br><img src="https://habrastorage.org/webt/ue/ko/mf/uekomfb2nkqqtktz9xy2b_uarpa.png"><br><br>  Wie Sie im obigen Bild sehen können, arbeitet VAAI mit diesem Speichersystem: Null- und ATS-Grundelemente werden aktiv verwendet. <br><br><h3>  Tipps zur ESXi-Datenträgeroptimierung </h3><br><ul><li>  Achten Sie auf die Größe des Blocks. </li><li>  Stellen Sie die optimale Warteschlangengröße auf dem HBA ein. </li><li>  Denken Sie daran, SIOC in den Datenspeichern zu aktivieren. </li><li>  Wähle deine PSP gemäß den Empfehlungen des Herstellers. </li><li>  Stellen Sie sicher, dass VAAI funktioniert. </li></ul><br><div class="spoiler">  <b class="spoiler_title">Nützliche verwandte Artikel:</b> <div class="spoiler_text">  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">http://www.yellow-bricks.com/2011/06/23/disk-schednumreqoutstanding-the-story/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">http://www.yellow-bricks.com/2009/09/29/whats-that-alua-exactly/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">http://www.yellow-bricks.com/2019/03/05/dqlen-changes-what-is-going-on/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://www.codyhosterman.com/2017/02/understanding-vmware-esxi-queuing-and-the-flasharray/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://www.codyhosterman.com/2018/03/what-is-the-latency-stat-qavg/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://kb.vmware.com/s/article/1267</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://kb.vmware.com/s/article/1268</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://kb.vmware.com/s/article/1027901</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://kb.vmware.com/s/article/2069356</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://kb.vmware.com/s/article/2053628</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://kb.vmware.com/s/article/1003469</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">https://www.vmware.com/content/dam/digitalmarketing/vmware/en/pdf/techpaper/performance/vsphere-esxi-vcenter-server-67-performance-best-practices.pdf</a> <br></div></div></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de461127/">https://habr.com/ru/post/de461127/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de461105/index.html">5 nützliche Webpack-Plugins</a></li>
+<li><a href="../de461107/index.html">Dosimeter für Seryozha. Teil II Hundertjährige Röhren gegen friedliches Atom</a></li>
+<li><a href="../de461113/index.html">Fünf Jahre C ++ für Projekte für Mikrocontroller in der Produktion</a></li>
+<li><a href="../de461121/index.html">Kleine Multitasking-Experimente in einem Mikrocontroller</a></li>
+<li><a href="../de461125/index.html">Die Aufgabe, sequentielle numerische Codes zum Nummerieren von Nachrichten im Quellcode in Visual Studio zu erstellen (z. B. C #)</a></li>
+<li><a href="../de461129/index.html">Über Kote, Frau, zwei Söhne, die Idee ... und nicht nur. Geschichte mit Fortsetzung</a></li>
+<li><a href="../de461131/index.html">ROS Wagen LKW Teil 2. Software</a></li>
+<li><a href="../de461133/index.html">Testen von SQL Server-Code mit tSQLt</a></li>
+<li><a href="../de461137/index.html">Wie wir ein Gerät zur Überwachung der Aufmerksamkeit von Fahrern entwickelt haben. Erleben Sie Yandex.Taxi</a></li>
+<li><a href="../de461141/index.html">Mein erster Tag mit Haiku: Sie ist unerwartet gut</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

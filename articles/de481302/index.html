@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🃏 🚣🏼 🤑 "About, yes not a cluster" oder wie wir DBMS importiert haben 😬 👲🏻 🈵</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="(c) Yandex.Pictures 
+
+ Alle Charaktere sind fiktiv, Marken gehören ihren Eigentümern, Zufälle sind zufällig und im Allgemeinen ist dies mein "subjekti...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>"About, yes not a cluster" oder wie wir DBMS importiert haben</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/481302/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/j7/1m/jk/j71mjk8snfuh_6n_rtzp07y8a8i.jpeg" alt="Bild"></div><br>  (c) Yandex.Pictures <br><br>  Alle Charaktere sind fiktiv, Marken gehören ihren Eigentümern, Zufälle sind zufällig und im Allgemeinen ist dies mein "subjektives Werturteil, bitte nicht die Tür aufbrechen ...". <br><br>  Wir haben umfangreiche Erfahrungen mit der Übersetzung von Informationssystemen mit Logik in der Datenbank von einem DBMS in ein anderes.  Im Rahmen des Regierungsdekrets Nr. 1236 vom 16.11.2016 handelt es sich häufig um eine Übergabe von Oracle an Postgresql.  So organisieren Sie den Prozess so effizient und reibungslos wie möglich - wir können es Ihnen separat erklären. Heute werden wir über die Funktionen der Verwendung eines Clusters sprechen und über die Probleme, die beim Aufbau hoch ausgelasteter verteilter Systeme mit komplexer Logik in Prozeduren und Funktionen auftreten können. <br><a name="habracut"></a><br>  Spoiler - yes cap, RAC und pg multimaster sind sehr unterschiedliche Lösungen. <br><br>  Angenommen, Sie haben bereits die gesamte Logik von pl \ sql nach pg \ sql übertragen.  Und Ihre Regressionstests sind ganz in Ordnung, jetzt denken Sie natürlich über Skalierung nach, weil  Auslastungstests sind für Sie nicht sehr erfreulich, insbesondere bei der Hardware, die ursprünglich im Projekt unter diesem sehr unterschiedlichen DBMS festgelegt wurde.  Angenommen, Sie haben eine Lösung des inländischen Anbieters "Postgres Professional" mit der Option "multimaster" gefunden, die nur in der "maximum" -Version von "Postgres Pro Enterprise" verfügbar ist. Die Beschreibung ähnelt derjenigen, die Sie benötigen, und wenn Sie sie zum ersten Mal untersuchen in meinem Kopf der Gedanke: „Oh!  Anstelle von RAC also!  Ja und mit der technischen Pipeline in der Heimat! “ <br><br>  Aber beeilen Sie sich nicht, um sich zu freuen, und wir werden weiter beschreiben, warum Sie diese Nuancen kennen müssen, weil  Sie sind schwer vorstellbar, auch wenn Sie die Produktdokumentation gut gelesen haben.  Prüfen Sie, ob Sie bereit sind, die DBMS-Version regelmäßig direkt am Industriestandort zu aktualisieren  Einige Defekte sind nicht mit dem industriellen Betrieb vereinbar und beim Testen schwer zu erkennen. <br>  Lesen Sie zunächst den Abschnitt "Multimaster" - "Einschränkung" auf der Website des Herstellers sorgfältig durch. <br><br>  Das erste, worauf Sie stoßen können, sind die Merkmale des Vorgangs von Transaktionen, sogenannte  "Zwei-Phasen" -Modus, und manchmal, außer durch Umschreiben der gesamten Logik Ihrer Prozedur, kann dies nicht behoben werden.  Hier ist ein einfaches Beispiel: <br><br><pre><code class="plaintext hljs">create table test1 (id integer, id1 integer); insert into test1 values (1, 1),(1, 2); ALTER TABLE test1 ADD CONSTRAINT test1_uk UNIQUE (id,id1) DEFERRABLE INITIALLY DEFERRED; update test1 set id1 = case id1 when 1 then 2 else id1 - sign(2 - 1) end where id1 between 1 and 2;</code> </pre> <br>  Ein Fehler tritt auf: <br><br><pre> <code class="plaintext hljs">: [MTM] Transaction MTM-1-2435-10-605783555137701 (10654) is aborted on node 3. Check its log to see error details.</code> </pre> <br>  Dann können Sie in den Versionen 10.5, 10.6 lange gegen Deadlock kämpfen, und die einzige bekannte Rettung, die das gesamte Wesen des Clusters zunichte macht, besteht darin, die "Problem" -Tabellen aus dem Cluster zu entfernen, d. H.  Sie müssen make_table_local ausführen, aber zumindest können Sie damit arbeiten, und es wird nicht alles "abgesteckt", weil die Erwartungen an das Ausführen von Transaktionen hängen.  Nun, oder setzen Sie ein Update auf Version 11.2, die helfen sollte, oder vielleicht nicht, vergessen Sie nicht, zu überprüfen. <br><br>  In einigen Versionen können Sie eine noch mysteriösere Sperre erhalten: <br><br><pre> <code class="plaintext hljs">username= mtm  backend_type = background worker</code> </pre> <br>  Und in dieser Situation hilft es möglicherweise nicht, nur die DBMS-Version auf 11.2 oder höher zu aktualisieren. <br><br>  Einige Vorgänge mit Indizes können zu Fehlern führen, bei denen eindeutig angezeigt wird, dass das Problem in der bidirektionalen Replikation liegt. In MTM-Protokollen wird BDR direkt angezeigt.  Wirklich 2.Quadrant?  Oh nein ... wir haben einen Multimaster gekauft, es ist nur ein Zufall, es ist der Name der Technologie. <br><br><pre> <code class="plaintext hljs">[MTM] bdr doesn't support index rechecks [MTM] 12124: REMOTE begin abort transaction 4083 [MTM] 12124: send ABORT notification for transaction (5467) local xid=4083 to coordinator 3 [MTM] Receive ABORT_PREPARED logical message for transaction MTM-3-25030-83-605694076627780 from node 3 [MTM] Abort prepared transaction MTM-3-25030-83-605694076627780 status InProgress from node 3 originId=3 [MTM] MtmLogAbortLogicalMessage node=3 transaction=MTM-3-25030-83-605694076627780 lsn=9fff448</code> </pre> <br>  Wenn Sie trotz der Zusicherungen temporäre Tabellen verwenden: „Die Multimaster-Erweiterung repliziert Daten vollständig automatisch.  "Sie können auf jedem Knoten im Cluster gleichzeitig Transaktionen schreiben und mit temporären Tabellen arbeiten." <br><br>  In der Tat werden Sie dann feststellen, dass die Replikation nicht für alle in der Prozedur verwendeten Tabellen funktioniert, wenn der Code die Erstellung einer temporären Tabelle enthält und selbst die Verwendung von multimaster.remote_functions nicht hilft, müssen Sie Ihre Logik in der Prozedur aktualisieren oder neu schreiben.  Wenn Sie im Rahmen von Postgres Pro Enterprise 10.5 zwei Erweiterungen multimaster und pg_pathman gleichzeitig verwenden müssen, überprüfen Sie dies anhand des folgenden einfachen Beispiels: <br><br><pre> <code class="plaintext hljs">CREATE TABLE measurement ( city_id int not null, logdate date not null, peaktemp int, unitsales int ) PARTITION BY RANGE (logdate); CREATE TABLE measurement_y2019m06 PARTITION OF measurement FOR VALUES FROM ('2019-06-01') TO ('2019-07-01'); insert into measurement values (1, to_date('27.06.2019', 'dd.mm.yyyy'), 1, 1); insert into measurement values (2, to_date('28.06.2019', 'dd.mm.yyyy'), 1, 1); insert into measurement values (3, to_date('29.06.2019', 'dd.mm.yyyy'), 1, 1); insert into measurement values (4, to_date('30.06.2019', 'dd.mm.yyyy'), 1, 1);</code> </pre> <br>  Die folgenden Fehler beginnen, die Protokolle auf den DBMS-Knoten einzugeben: <br><br><pre> <code class="plaintext hljs">… PATHMAN_CONFIG doesn't contain relation 23245 &gt; find_in_dynamic_libpath: trying "/opt/…/ent-10/lib/pg_pathman" &gt; find_in_dynamic_libpath: trying "/opt//…/ent-10/lib/pg_pathman.so" &gt; : find_in_dynamic_libpath: trying "/opt/…/ent-10/lib/pg_pathman" &gt; find_in_dynamic_libpath: trying "/opt/…/ent-10/lib/pg_pathman.so" &gt; PrepareTransaction(1) name: unnamed; blockState: PREPARE; state: INPROGR, xid/subid/cid: 6919/1/40 &gt; StartTransaction(1) name: unnamed; blockState: DEFAULT; state: INPROGR, xid/subid/cid: 0/1/0 &gt; switched to timeline 1 valid until 0/0 … Transaction MTM-1-13604-7-612438856339841 (6919) is aborted on node 2. Check its log to see error details. ... [MTM] 28295: REMOTE begin abort transaction 7017 … [MTM] 28295: send ABORT notification for transaction (6919) local xid=7017 to coordinator 1</code> </pre><br>  Sie können herausfinden, was diese Fehler im technischen Support sind. Sie haben ihn nicht umsonst gekauft. <br><br>  Was zu tun ist?  Richtig!  Aktualisieren Sie auf Postgres Pro Enterprise auf Version 11.2 <br><br>  Sie müssen separat wissen, dass es als Objekt einer replizierten Datenbank keinen übergreifenden Wert im gesamten Cluster gibt, dass jede Sequenz für jeden Knoten lokal ist und dass Sie nur die Knotennummer erhöhen können, wenn Sie Felder mit eindeutigen Einschränkungen und einer eindeutigen Verwendungsreihenfolge haben Cluster, weil  Wie viele Knoten im Cluster sind so viel schneller, dass die Sequenz wächst und int schneller als erwartet endet.  Um das Arbeiten mit Sequenzen im Produkt zu vereinfachen, finden Sie sogar die Funktion alter_sequences, mit der die erforderlichen Inkremente für jede Sequenz auf allen Knoten vorgenommen werden, Sie müssen jedoch darauf vorbereitet sein, dass die Funktion nicht in allen Versionen funktioniert.  Natürlich können Sie es selbst schreiben, indem Sie den Code von github als Grundlage nehmen oder sich direkt im DBMS korrigieren.  Gleichzeitig funktionieren Felder vom Typ serial \ bigserial korrekter. Um sie jedoch zu verwenden, müssen Sie wahrscheinlich den Code Ihrer Prozeduren und Funktionen neu schreiben.  Vielleicht findet jemand die Funktion monotonic_sequences nützlich. <br><br>  Vor Version 11.2 von Postgres Pro Enterprise funktioniert die Replikation nur, wenn eindeutige Primärschlüssel vorhanden sind. Beachten Sie dies beim Entwerfen. <br><br>  Ich möchte auch die Funktionen von npgsql in einer Cluster-Lösung erwähnen, diese Probleme treten nicht auf einem einzelnen Knoten auf, sondern sind im Multimaster durchaus vorhanden. <br>  In einigen Versionen kann ein Fehler auftreten: <br><br><pre> <code class="plaintext hljs">Exception Details: Npgsql.PostgresException: 25001:  SET TRANSACTION ISOLATION LEVEL Description: An unhandled exception occurred during the execution of the current web request. Please review the stack trace for more information about the error and where it originated in the code.</code> </pre> <br>  Was kann getan werden?  Verwenden Sie nur einige Versionen nicht.  Sie müssen sie kennen, weil  Der Fehler tritt in einer Version nicht auf, und selbst nach der ersten Korrektur kann er später auftreten.  Sie müssen auch darauf vorbereitet sein und es ist am besten, alle vom Hersteller behobenen DBMS-Fehler zu identifizieren und sie mit separaten Regressionstests abzudecken.  Vertrauen sozusagen, aber verifizieren. <br><br>  Wenn die Anwendung npgsql verwendet und zwischen Knoten wechselt, die glauben, dass sie alle gleich sind, wird möglicherweise eine Fehlermeldung angezeigt: <br><br><pre> <code class="plaintext hljs">EXCEPTION:Npgsql.PostgresException (0x80004005): XX000: cache lookup failed for type ...</code> </pre> <br>  Ein solcher Fehler wird dadurch verursacht, dass die Bindung <br><br><pre> <code class="plaintext hljs">(NpgsqlConnection.GlobalTypeMapper.MapComposite&lt;SomeType&gt;("some_composite_type");)</code> </pre> <br>  zusammengesetzte Typen beim Start der Anwendung für alle Verbindungen.  Infolgedessen erhalten wir die Kennung von einem der Knoten, und wenn sie auf einem anderen Knoten angefordert wird, stimmt sie nicht überein, wodurch ein Fehler zurückgegeben wird, d. H.  Das transparente Arbeiten mit zusammengesetzten Typen in einem Cluster ist für einige Anwendungen ohne zusätzliche Überschreibungen auf der Anwendungsseite nicht möglich (sofern dies erfolgreich ist). <br><br>  Wie wir alle wissen, ist eine allgemeine Einschätzung des Status des Clusters für Diagnose- und Betriebsmaßnahmen während der Arbeit sehr wichtig. Im Produkt finden Sie einige Funktionen, die Ihnen das Leben erleichtern sollen, aber manchmal produzieren sie überhaupt nicht das, was Sie und sogar der Hersteller selbst daraus erwarten. <br><br>  Zum Beispiel: <br><br><pre> <code class="plaintext hljs">select mtm.collect_cluster_info();      : (1,Online,0,0,0,2,3,0,0,0,1,0,0,1,1,3,7,0,0,0,"2018-10-31 05:33:06") (2,Online,0,0,0,2,3,0,0,0,1,0,0,1,1,3,7,0,0,0,"2018-10-31 05:33:06") (3,Online,0,0,0,2,3,0,0,0,1,0,0,1,1,3,7,0,0,0,"2018-10-31 05:33:09")</code> </pre> <br>  Aber warum steht überall im Feld LiveNodes die Nummer 2, obwohl sie laut Beschreibung der Arbeit des Multimasters der Nummer AllNodes = 3 entsprechen sollte?  Antwort: Sie müssen die DBMS-Version aktualisieren. <br><br>  Und seien Sie bereit, Protokolle auf allen Knoten zu sammeln  In der Regel wird angezeigt, dass sich der Fehler im Protokoll eines anderen Knotens befindet.  TechSupport akzeptiert alle erkannten Fehler und teilt Ihnen mit, dass die nächste Version bereit ist, die manchmal bei angehaltenem Dienst, manchmal für längere Zeit (abhängig vom Umfang Ihres DBMS) installiert werden muss.  Es ist nicht zu hoffen, dass die Betriebsprobleme den Anbieter stark stören und die Aktualisierung aufgrund von festgestellten Fehlern unter Beteiligung der Vertreter des Anbieters durchgeführt wird, oder es ist nicht einmal erforderlich, die Vertreter des Anbieters einzubeziehen, da Sie am Ende einen zerlegten Cluster ohne Sicherung des Produkts erhalten können. <br><br>  Tatsächlich warnt der Hersteller in der Lizenz für ein kommerzielles Produkt ehrlich: „Diese Software wird„ wie besehen “bereitgestellt und die Postgres Professional GmbH ist nicht verpflichtet, Support, Support, Updates, Erweiterungen oder Änderungen bereitzustellen.“ <br><br>  Wenn Sie nicht erraten haben, um welche Art von Produkt es sich handelt, haben Sie all diese Erfahrungen durch den jährlichen Betrieb der Postgres Pro Enterprise-Basis gesammelt.  Sie können selbst eine Schlussfolgerung ziehen, so feucht, dass Pilze wachsen. <br><br>  Aber es wäre die halbe Mühe, wenn es rechtzeitig durchgeführt und die auftretenden Probleme umgehend beseitigt würden. <br><br>  Aber das passiert einfach nicht.  Offensichtlich reichen die Ressourcen des Herstellers nicht aus, um die erkannten Fehler schnell zu beheben. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de481302/">https://habr.com/ru/post/de481302/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de481286/index.html">Steig auf den Tisch! Bürokleinigkeiten, die überhaupt keine Kleinigkeiten sind</a></li>
+<li><a href="../de481288/index.html">Redux Toolkit als Werkzeug für eine effektive Redux-Entwicklung</a></li>
+<li><a href="../de481290/index.html">HOW-to / Network- und VLAN-Einstellungen auf einem dedizierten Hetzner- und Mikrotik-Server</a></li>
+<li><a href="../de481294/index.html">Die 10 besten Tools zur Softwaretestautomatisierung</a></li>
+<li><a href="../de481296/index.html">Wie schreibe ich Code, der wiederverwendet wird?</a></li>
+<li><a href="../de481304/index.html">Amerikanische Flagge sortieren</a></li>
+<li><a href="../de481306/index.html">Einführung von werf 1.0 stable: Was hat GitOps damit zu tun, Status und Pläne</a></li>
+<li><a href="../de481312/index.html">Santa's Lost Gifts: Ankündigung einer IT-Quest für den 6. Januar</a></li>
+<li><a href="../de481314/index.html">DIY Crawler Plattform für Roboter und Unterhaltung</a></li>
+<li><a href="../de481316/index.html">Erstellen eines Microservice-Blogs - Teil 4 Post-Service</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

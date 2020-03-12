@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙏🏽 🍢 💠 Redis Streams als saubere Datenstruktur 🥕 🙀 🚣🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Die neue Redis 5-Datenstruktur, Streams genannt, hat großes Interesse an der Community geweckt. Irgendwie werde ich mit denen sprechen, die Streams in...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Redis Streams als saubere Datenstruktur</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/444996/">  Die neue Redis 5-Datenstruktur, Streams genannt, hat großes Interesse an der Community geweckt.  Irgendwie werde ich mit denen sprechen, die Streams in der Produktion verwenden, und darüber schreiben.  Aber jetzt möchte ich ein etwas anderes Thema betrachten.  Es scheint mir, dass viele Leute Streams als eine Art surrealistisches Werkzeug zur Lösung schrecklich schwieriger Aufgaben betrachten.  Diese Datenstruktur bietet zwar * auch * Messaging, aber es ist eine unglaubliche Vereinfachung anzunehmen, dass die Funktionalität von Redis Streams nur dadurch eingeschränkt wird. <br><br>  Streams sind eine großartige Vorlage und ein „mentales Modell“, das mit großem Erfolg beim Systemdesign verwendet werden kann. In Wirklichkeit sind Streams jedoch wie die meisten Redis-Datenstrukturen eine allgemeinere Struktur und können für eine Reihe anderer Aufgaben verwendet werden.  In diesem Artikel werden Streams als reine Datenstruktur dargestellt, wobei Blockierungsvorgänge, Empfängergruppen und alle anderen Messaging-Funktionen vollständig ignoriert werden. <br><a name="habracut"></a><br><h1>  Streams - Dies ist CSV für Steroide </h1><br>  Wenn Sie eine Reihe strukturierter Datenelemente aufzeichnen möchten und der Meinung sind, dass die Datenbank hier einen Überschuss darstellt, können Sie die Datei einfach im <code>append only</code> Modus öffnen und jede Zeile als CSV (Comma Separated Value) schreiben: <br><br><pre> <code class="plaintext hljs">(open data.csv in append only) time=1553096724033,cpu_temp=23.4,load=2.3 time=1553096725029,cpu_temp=23.2,load=2.1</code> </pre> <br>  Es sieht einfach aus.  Die Leute haben das schon vor langer Zeit getan und tun es immer noch: Es ist eine zuverlässige Vorlage, wenn Sie wissen, was was ist.  Aber was wird das Äquivalent im Gedächtnis sein?  Im Speicher wird eine wesentlich erweiterte Datenverarbeitung möglich, und viele Einschränkungen von CSV-Dateien werden automatisch entfernt, z. <br><br><ol><li>  Es ist schwierig (ineffizient), Bereichsanforderungen zu erfüllen. <br></li><li>  Zu viele redundante Informationen: Jeder Datensatz hat fast dieselbe Zeit und die Felder werden dupliziert.  Gleichzeitig wird durch das Löschen von Daten das Format weniger flexibel, wenn ich zu einem anderen Satz von Feldern wechseln möchte. <br></li><li>  Element-Offsets sind einfach Byte-Offsets in der Datei: Wenn wir die Struktur der Datei ändern, werden die Offsets falsch, sodass es kein wirkliches Konzept für einen primären Bezeichner gibt.  Einträge können im Wesentlichen nicht eindeutig präsentiert werden. <br></li><li>  Ohne die Möglichkeit, Müll zu sammeln und das Protokoll neu zu schreiben, können Sie Einträge nicht löschen, sondern nur als ungültig markieren.  Das Umschreiben von Protokollen ist normalerweise aus mehreren Gründen zum Kotzen. Es ist ratsam, dies zu vermeiden. </li></ol><br>  Gleichzeitig ist ein solches CSV-Protokoll auf seine Weise gut: Es gibt keine feste Struktur, Felder können sich ändern, es ist trivial, es zu generieren, und es ist recht kompakt.  Die Idee mit Redis-Streams war, Tugenden zu bewahren, aber Einschränkungen zu überwinden.  Das Ergebnis ist eine hybride Datenstruktur, die den von Redis sortierten Mengen sehr ähnlich ist: Sie sehen aus wie die grundlegende Datenstruktur, verwenden jedoch mehrere interne Darstellungen, um diesen Effekt zu erzielen. <br><br><h1>  Einführung in Threads (Sie können überspringen, wenn Sie bereits mit den Grundlagen vertraut sind) </h1><br>  Redis-Streams werden als deltakomprimierte Makroknoten dargestellt, die durch einen Basisbaum verbunden sind.  Infolgedessen können Sie sehr schnell nach zufälligen Datensätzen suchen, Bereiche abrufen, alte Elemente löschen usw. Gleichzeitig ist die Benutzeroberfläche eines Programmierers einer CSV-Datei sehr ähnlich: <br><br><pre> <code class="plaintext hljs">&gt; XADD mystream * cpu-temp 23.4 load 2.3 "1553097561402-0" &gt; XADD mystream * cpu-temp 23.2 load 2.1 "1553097568315-0"</code> </pre> <br>  Wie Sie dem Beispiel entnehmen können, generiert der XADD-Befehl automatisch die Kennung des Datensatzes und gibt diese zurück. Diese erhöht sich monoton und besteht aus zwei Teilen: &lt;Zeit&gt; - &lt;Zähler&gt;.  Zeit in Millisekunden, und der Zähler wird für Datensätze mit derselben Zeit erhöht. <br><br>  Die erste neue Abstraktion für die Idee einer CSV-Datei im <code>append only</code> Modus besteht darin, das Sternchen als ID-Argument für XADD zu verwenden: Auf diese Weise erhalten wir die Datensatzkennung kostenlos vom Server.  Diese Kennung ist nicht nur nützlich, um ein bestimmtes Element im Stream anzugeben, sondern auch, wenn der Datensatz zum Stream hinzugefügt wurde.  Mit XRANGE können Sie Bereichsabfragen ausführen oder einzelne Elemente abrufen: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097561402-0 1553097561402-0 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3"</code> </pre> <br>  In diesem Fall habe ich dieselbe ID verwendet, um den Bereich zu starten und zu beenden, um einen Artikel zu identifizieren.  Ich kann jedoch einen beliebigen Bereich und ein beliebiges COUNT-Argument verwenden, um die Anzahl der Ergebnisse zu begrenzen.  Ebenso müssen keine vollständigen Bezeichner für einen Bereich angegeben werden. Ich kann einfach nur die Unix-Zeit verwenden, um Elemente in einem bestimmten Zeitbereich abzurufen: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097560000 1553097570000 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3" 2) 1) "1553097568315-0" 2) 1) "cpu-temp" 2) "23.2" 3) "load" 4) "2.1"</code> </pre> <br>  Im Moment müssen keine weiteren API-Funktionen angezeigt werden. Hierzu gibt es eine Dokumentation.  Konzentrieren wir uns zunächst nur auf dieses Verwendungsmuster: XADD zum Hinzufügen, XRANGE (und auch XREAD) zum Extrahieren von Bereichen (je nachdem, was Sie tun möchten), und lassen Sie uns sehen, warum Streams so leistungsfähig sind, dass sie als Datenstrukturen bezeichnet werden. <br><br>  Wenn Sie mehr über Streams und APIs erfahren möchten, lesen Sie unbedingt das <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Tutorial</a> . <br><br><h1>  Tennisspieler </h1><br>  Vor ein paar Tagen simulierten ein Freund von mir, der mit dem Studium von Redis begann, und ich eine Anwendung, um lokale Tennisplätze, Spieler und Spiele zu verfolgen.  Die Art und Weise, Spieler zu modellieren, ist offensichtlich. Der Spieler ist ein kleines Objekt, daher benötigen wir nur einen Hash mit Schlüsseln wie <code>player:&lt;id&gt;</code> .  Dann werden Sie sofort erkennen, dass Sie eine Möglichkeit benötigen, Spiele in bestimmten Tennisclubs zu verfolgen.  Wenn <code>player:1</code> und <code>player:2</code> untereinander gespielt und <code>player:1</code> gewonnen haben, können wir den folgenden Datensatz an den Stream senden: <br><br><pre> <code class="plaintext hljs">&gt; XADD club:1234.matches * player-a 1 player-b 2 winner 1 "1553254144387-0"</code> </pre> <br>  Eine so einfache Operation gibt uns: <br><br><ol><li>  Eindeutige Übereinstimmungskennung: ID im Stream. <br></li><li>  Es ist nicht erforderlich, ein Objekt zur Übereinstimmungsidentifizierung zu erstellen. <br></li><li>  Freilandanfragen für Paging-Spiele oder das Ansehen von Spielen für ein bestimmtes Datum und eine bestimmte Uhrzeit. </li></ol><br>  Bevor Streams angezeigt werden, müssen wir eine nach Zeit sortierte Menge erstellen: Die Elemente der sortierten Menge sind Übereinstimmungskennungen, die in einem anderen Schlüssel als Hashwert gespeichert werden.  Es ist nicht nur mehr Arbeit, sondern auch mehr Speicher.  Viel, viel mehr Speicher (siehe unten). <br><br>  Jetzt ist es unser Ziel zu zeigen, dass Redis-Streams eine Art sortierter Satz sind, der nur im <code>append only</code> Modus mit Schlüsseln nach Zeit festgelegt wird, wobei jedes Element ein kleiner Hash ist.  Und in seiner Einfachheit ist dies eine echte Revolution im Kontext der Modellierung. <br><br><h1>  Die Erinnerung </h1><br>  Der obige Anwendungsfall ist nicht nur ein zusammenhängenderes Programmiermuster.  Der Speicherverbrauch in Threads unterscheidet sich so stark vom alten Ansatz mit einem sortierten Satz + Hash für jedes Objekt, dass jetzt einige Dinge zu funktionieren beginnen, die zuvor überhaupt nicht implementiert werden konnten. <br><br>  Hier finden Sie Statistiken zur Speichermenge für eine Million Übereinstimmungen in der zuvor dargestellten Konfiguration: <br><br><pre> <code class="plaintext hljs">  +  = 220  (242 RSS)  = 16,8  (18.11 RSS)</code> </pre> <br>  Der Unterschied beträgt mehr als eine Größenordnung (nämlich das 13-fache).  Dies bedeutet, dass Sie mit Aufgaben arbeiten können, deren Ausführung im Speicher zuvor zu teuer war.  Jetzt sind sie durchaus lebensfähig.  Die Magie besteht darin, Redis-Streams einzuführen: Makroknoten können mehrere Elemente enthalten, die sehr kompakt in einer Datenstruktur namens Listpack codiert sind.  Diese Struktur kümmert sich beispielsweise darum, Ganzzahlen in binärer Form zu codieren, selbst wenn es sich um semantische Zeichenfolgen handelt.  Außerdem wenden wir die Delta-Komprimierung an und komprimieren dieselben Felder.  Es bleibt jedoch möglich, nach ID oder Zeit zu suchen, da solche Makroknoten in einem Basisbaum verknüpft sind, der ebenfalls mit Speicheroptimierung ausgelegt ist.  Zusammen erklärt dies die wirtschaftliche Nutzung des Speichers, aber der interessante Teil ist, dass der Benutzer semantisch keine Implementierungsdetails sieht, die Threads so effizient machen. <br><br>  Jetzt zählen wir.  Wenn ich 1 Million Datensätze in ungefähr 18 MB Speicher speichern kann, kann ich 10 Millionen in 180 MB und 100 Millionen in 1,8 GB speichern.  Mit nur 18 GB Speicher kann ich 1 Milliarde Artikel haben. <br><br><h1>  Zeitreihen </h1><br>  Es ist wichtig zu beachten, dass das obige Beispiel mit Tennisspielen semantisch * sehr * von der Verwendung von Redis-Streams für Zeitreihen abweicht.  Ja, logischerweise registrieren wir immer noch eine Art Ereignis, aber es gibt einen grundlegenden Unterschied.  Im ersten Fall protokollieren und erstellen wir Datensätze zum Rendern von Objekten.  Und in der Zeitreihe messen wir einfach etwas, das außerhalb passiert und das Objekt nicht wirklich darstellt.  Man kann sagen, dass diese Unterscheidung trivial ist, aber nicht.  Es ist wichtig zu verstehen, dass Redis-Threads verwendet werden können, um kleine Objekte mit einer gemeinsamen Reihenfolge zu erstellen und solchen Objekten Bezeichner zuzuweisen. <br><br>  Aber selbst die einfachste Art, Zeitreihen zu verwenden, ist offensichtlich ein großer Durchbruch, denn vor dem Aufkommen der Threads war Redis praktisch machtlos, hier etwas zu tun.  Speichereigenschaften und Flexibilität von Streams sowie die Möglichkeit, begrenzte Streams (siehe XADD-Parameter) zu begrenzen, sind sehr wichtige Werkzeuge in den Händen des Entwicklers. <br><br><h1>  Schlussfolgerungen </h1><br>  Streams sind flexibel und bieten viele Anwendungsfälle, aber ich wollte einen sehr kurzen Artikel schreiben, um Beispiele und Speicherverbrauch klar darzustellen.  Vielleicht war diese Verwendung von Streams für viele Leser offensichtlich.  Die Gespräche mit Entwicklern in den letzten Monaten haben mich jedoch den Eindruck erweckt, dass viele eine starke Assoziation zwischen Streams und Streaming-Daten haben, als ob die Datenstruktur nur dort gut wäre.  Es ist nicht so.  :-) </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de444996/">https://habr.com/ru/post/de444996/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de444982/index.html">Mockito und wie man es kocht</a></li>
+<li><a href="../de444984/index.html">Woher kommen Fotos zum Testen von Gesichtserkennungssystemen?</a></li>
+<li><a href="../de444986/index.html">IETF genehmigt ACME - Dies ist der Standard für die Arbeit mit SSL-Zertifikaten</a></li>
+<li><a href="../de444992/index.html">In das System integrierte Fehler: ihre Rolle in der Statistik</a></li>
+<li><a href="../de444994/index.html">Über Laufwerke und deren Verwendung auf modernen Computern</a></li>
+<li><a href="../de444998/index.html">Die kritische Verwundbarkeit implantierter lebenserhaltender Geräte gibt Angreifern die Möglichkeit, sie zu kontrollieren</a></li>
+<li><a href="../de445004/index.html">Ist SQL Profiler gefährlich?</a></li>
+<li><a href="../de445006/index.html">Mikroelektronik für Studierende aus der Quelle</a></li>
+<li><a href="../de445008/index.html">Azure-Prüfungen (überarbeitete und überarbeitete Version)</a></li>
+<li><a href="../de445012/index.html">Der Windows-Rechner erhält den grafischen Modus</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✉️ 🔥 🐏 Fehlerfreie RabbitMQ-Migration zu Kubernetes 💚 👃🏾 ⛲️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="RabbitMQ ist ein in Erlang geschriebener Nachrichtenbroker, mit dem Sie einen Failovercluster mit vollständiger Datenreplikation auf mehreren Knoten o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Fehlerfreie RabbitMQ-Migration zu Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/450662/"><img src="https://habrastorage.org/webt/9j/vy/0w/9jvy0wqwfj4agrnnjerepzcv4qw.png"><br><br>  RabbitMQ ist ein in Erlang geschriebener Nachrichtenbroker, mit dem Sie einen Failovercluster mit vollständiger Datenreplikation auf mehreren Knoten organisieren können, wobei jeder Knoten Lese- und Schreibanforderungen verarbeiten kann.  Da viele Kubernetes-Cluster in der Produktion sind, unterstützen wir eine große Anzahl von RabbitMQ-Installationen und müssen Daten ohne Ausfallzeiten von einem Cluster in einen anderen migrieren. <a name="habracut"></a><br><br>  Diese Operation war für uns in mindestens zwei Fällen notwendig: <br><br><ol><li>  Übertragen von Daten von einem RabbitMQ-Cluster, der sich nicht in Kubernetes befindet, zu einem neuen Cluster, der bereits "abgestimmt" ist (dh in K8s-Pods funktioniert). </li><li>  Migration von RabbitMQ innerhalb von Kubernetes von einem Namespace in einen anderen (z. B. wenn die Pfade durch Namespaces begrenzt sind, um die Infrastruktur von einem Pfad in einen anderen zu übertragen). </li></ol><br>  Das in diesem Artikel vorgeschlagene Rezept konzentriert sich auf Situationen (ohne darauf beschränkt zu sein), in denen sich ein alter RabbitMQ-Cluster (z. B. mit 3 Knoten) befindet, der sich entweder in K8s oder auf einigen alten Servern befindet.  Eine in Kubernetes gehostete Anwendung funktioniert damit (bereits dort oder in Zukunft): <br><br><img src="https://habrastorage.org/webt/0t/nv/vw/0tnvvwspr5t-cwbvwzae5p2h9re.png"><br><br>  ... und wir stehen vor der Herausforderung, es auf eine neue Produktion in Kubernetes zu migrieren. <br><br>  Zunächst wird ein allgemeiner Ansatz für die Migration selbst beschrieben und anschließend technische Details zu ihrer Implementierung. <br><br><h2>  Migrationsalgorithmus </h2><br>  Der erste vorbereitende Schritt vor einer Aktion besteht darin, zu überprüfen, ob der Hochverfügbarkeitsmodus ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">HA</a> ) in der alten RabbitMQ-Installation aktiviert ist.  Der Grund liegt auf der Hand - wir wollen keine Daten verlieren.  Um diese Prüfung durchzuführen, können Sie zum RabbitMQ-Admin-Bereich gehen und auf der Registerkarte Admin → Richtlinien sicherstellen, dass der Wert <code>ha-mode: all</code> : <br><br><img src="https://habrastorage.org/webt/fz/sj/cc/fzsjcc5rvcdzqvzrwklrkomoqny.png"><br><br>  Der nächste Schritt besteht darin, einen neuen RabbitMQ-Cluster in Kubernetes-Pods zu erstellen (in unserem Fall beispielsweise bestehend aus 3 Knoten, deren Anzahl jedoch unterschiedlich sein kann). <br><br>  Danach führen wir den alten und den neuen RabbitMQ-Cluster zusammen und erhalten einen einzelnen Cluster (mit 6 Knoten): <br><br><img src="https://habrastorage.org/webt/br/ds/wx/brdswxtjfd97eg1jc6yuy0m6w6c.png"><br><br>  Der Prozess der Synchronisierung von Daten zwischen dem alten und dem neuen RabbitMQ-Cluster wird eingeleitet.  Nachdem alle Daten zwischen allen Knoten im Cluster synchronisiert wurden, können wir die Anwendung auf die Verwendung des neuen Clusters umstellen: <br><br><img src="https://habrastorage.org/webt/mh/wu/py/mhwupy0059dj_m8xn-guonlq_i0.png"><br><br>  Nach diesen Vorgängen reicht es aus, die alten Knoten aus dem RabbitMQ-Cluster zu entfernen, und der Umzug kann als abgeschlossen betrachtet werden: <br><br><img src="https://habrastorage.org/webt/_2/_q/cr/_2_qcrxnt_1j4hzazxfsagyr9i8.png"><br><br>  Wir haben dieses Schema wiederholt in unserer Produktion verwendet.  Zu ihrer eigenen Bequemlichkeit haben wir es jedoch im Rahmen eines speziellen Systems implementiert, das typische RMQ-Konfigurationen auf Gruppen von Kubernetes-Clustern verteilt <i>(für diejenigen, die neugierig sind: Wir sprechen über den <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Addon-Operator</a> , über den wir <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">kürzlich gesprochen haben</a> )</i> .  Im Folgenden finden Sie individuelle Anweisungen, die jeder auf seine Installationen anwenden kann, um die vorgeschlagene Lösung in Aktion zu testen. <br><br><h2>  Wir versuchen es in der Praxis </h2><br><h3>  Anforderungen </h3><br>  Details sind sehr einfach: <br><br><ol><li>  Kubernetes Cluster (Minikube ist auch geeignet); </li><li>  RabbitMQ-Cluster (kann auf Bare-Metal-Basis bereitgestellt und als regulärer Cluster in Kubernetes aus der offiziellen Helm-Tabelle erstellt werden). </li></ol><br>  Für das unten beschriebene Beispiel habe ich RMQ für Kubernetes bereitgestellt und es <code>rmq-old</code> . <br><br><h3>  Standvorbereitung </h3><br>  1. Laden Sie das Helm-Diagramm herunter und bearbeiten Sie es ein wenig: <br><br><pre> <code class="bash hljs">helm fetch --untar stable/rabbitmq-ha</code> </pre> <br>  Der <code>ErlangCookie</code> legen wir ein Kennwort, <code>ErlangCookie</code> und die <code>ha-all</code> Richtlinie fest, sodass die Warteschlangen standardmäßig zwischen allen Knoten des RMQ-Clusters synchronisiert werden: <br><br><pre> <code class="plaintext hljs">rabbitmqPassword: guest rabbitmqErlangCookie: mae9joopaol7aiVu3eechei2waiGa2we definitions: policies: |- { "name": "ha-all", "pattern": ".*", "vhost": "/", "definition": { "ha-mode": "all", "ha-sync-mode": "automatic", "ha-sync-batch-size": 81920 } }</code> </pre> <br>  2. Stellen Sie das Diagramm ein: <br><br><pre> <code class="bash hljs">helm install . --name rmq-old --namespace rmq-old</code> </pre> <br>  3. Gehen Sie zum RabbitMQ-Administrationsbereich, erstellen Sie eine neue Warteschlange und fügen Sie einige Nachrichten hinzu.  Sie werden benötigt, damit wir nach der Migration sicherstellen können, dass alle Daten gespeichert wurden und wir nichts verloren haben: <br><br><img src="https://habrastorage.org/webt/de/pb/_o/depb_oq1aa_rpozeaymiik6acqm.png"><br><br>  Der Prüfstand ist fertig: Wir haben den "alten" RabbitMQ mit den Daten, die übertragen werden müssen. <br><br><h3>  RabbitMQ-Cluster-Migration </h3><br>  1. <code>ErlangCookie</code> den neuen RabbitMQ in einem <b>anderen</b> Namespace mit <b>demselben</b> <code>ErlangCookie</code> und Kennwort für den Benutzer <code>ErlangCookie</code> .  Zu diesem Zweck führen wir die oben beschriebenen Vorgänge aus und ändern den endgültigen RMQ-Installationsbefehl wie folgt: <br><br><pre> <code class="bash hljs">helm install . --name rmq-new --namespace rmq-new</code> </pre> <br>  2. Jetzt müssen Sie den neuen Cluster mit dem alten zusammenführen.  Gehen Sie dazu zu jedem der Pods des <b>neuen</b> RabbitMQ und führen Sie die folgenden Befehle aus: <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">export</span></span> OLD_RMQ=rabbit@rmq-old-rabbitmq-ha-0.rmq-old-rabbitmq-ha-discovery.rmq-old.svc.cluster.local &amp;&amp; \ rabbitmqctl stop_app &amp;&amp; \ rabbitmqctl join_cluster <span class="hljs-variable"><span class="hljs-variable">$OLD_RMQ</span></span> &amp;&amp; \ rabbitmqctl start_app</code> </pre> <br>  Die Variable <code>OLD_RMQ</code> Adresse eines der Knoten des <b>alten</b> RMQ-Clusters. <br><br>  Diese Befehle stoppen den aktuellen Knoten des <b>neuen</b> RMQ-Clusters, hängen ihn an den alten Cluster an und starten ihn neu. <br><br>  3. Der RMQ-Cluster mit 6 Knoten ist bereit: <br><br><img src="https://habrastorage.org/webt/1k/1z/cr/1k1zcrq3-hn-k_k6y10z-ktteqc.png"><br><br>  Sie müssen warten, bis die Nachrichten zwischen allen Knoten synchronisiert sind.  Es ist leicht zu erraten, dass die Synchronisationszeit von Nachrichten von der Kapazität des Bügeleisens abhängt, auf dem der Cluster bereitgestellt wird, und von der Anzahl der Nachrichten.  In dem beschriebenen Szenario gibt es nur 10 davon, sodass die Daten sofort synchronisiert wurden. Bei einer ausreichend großen Anzahl von Nachrichten kann die Synchronisierung jedoch Stunden dauern. <br><br>  Also der Synchronisationsstatus: <br><br><img src="https://habrastorage.org/webt/32/rb/gl/32rbglvg5f9vnxjaee0ewii0pmo.png"><br><br>  Hier bedeutet <code>+5</code> , dass sich Nachrichten <b>bereits</b> auf <b>weiteren</b> 5 Knoten befinden (mit Ausnahme der <code>Node</code> Feld <code>Node</code> ).  Somit war die Synchronisation erfolgreich. <br><br>  4. Es bleibt nur, die RMQ-Adresse in der Anwendung auf den neuen Cluster umzustellen (die spezifischen Aktionen hier hängen vom verwendeten Technologie-Stack und anderen Anwendungsspezifikationen ab). Danach können Sie sich von der alten verabschieden. <br><br>  Für die letzte Operation (d. H. <b>Nach dem</b> Umschalten der Anwendung auf einen neuen Cluster) gehen wir zu jedem Knoten des <b>alten</b> Clusters und führen die folgenden Befehle aus: <br><br><pre> <code class="bash hljs">rabbitmqctl stop_app rabbitmqctl reset</code> </pre> <br>  Der Cluster hat die alten Knoten „vergessen“: Sie können den alten RMQ löschen, wodurch die Verschiebung abgeschlossen wird. <br><br>  <i><b>Hinweis</b> : Wenn Sie RMQ mit Zertifikaten verwenden, ändert sich im Grunde nichts - der Verschiebevorgang wird genauso ausgeführt.</i> <br><br><h2>  Schlussfolgerungen </h2><br>  Das beschriebene Schema eignet sich für fast alle Fälle, in denen RabbitMQ übertragen oder einfach in einen neuen Cluster verschoben werden muss. <br><br>  In unserem Fall traten Schwierigkeiten nur einmal auf, wenn von vielen Stellen aus auf RMQ zugegriffen wurde, und wir hatten nicht die Möglichkeit, die RMQ-Adresse überall in eine neue zu ändern.  Dann haben wir ein neues RMQ im selben Namespace mit denselben Labels gestartet, sodass es unter die vorhandenen Services und Ingresss fällt. Als wir den Pod gestartet haben, haben wir die Labels mit unseren Händen manipuliert und sie zu Beginn gelöscht, sodass Anforderungen nicht auf ein leeres RMQ fielen Hinzufügen nach der Nachrichtensynchronisation. <br><br>  Wir haben die gleiche Strategie angewendet, als wir RabbitMQ auf eine neue Version mit einer geänderten Konfiguration aktualisiert haben - alles funktionierte wie eine Uhr. <br><br><h2>  PS </h2><br>  Als logische Fortsetzung dieses Materials bereiten wir Artikel über MongoDB (Migration von einem Eisenserver zu Kubernetes) und MySQL (eine der Optionen zum "Vorbereiten" dieses DBMS in Kubernetes) vor.  Sie werden in den kommenden Monaten veröffentlicht. <br><br><h2>  PPS </h2><br>  Lesen Sie auch in unserem Blog: <br><br><ul><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Datenbanken und Kubernetes (Überprüfung und Videobericht)</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">K8s Tipps und Tricks: Beschleunigen des Bootstraps großer Datenbanken.</a> " </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de450662/">https://habr.com/ru/post/de450662/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de450648/index.html">PS2 / PSP-Emulator + Google Drive + YouTube = "Wahnsinn" geht weiter</a></li>
+<li><a href="../de450650/index.html">Anwendungszentrierte Infrastruktur. Netzwerkarchitektur der Zukunft - vom Denken zum Geschäft</a></li>
+<li><a href="../de450652/index.html">Nachricht an den zukünftigen Programmierer</a></li>
+<li><a href="../de450658/index.html">Intel Prozessor Megazap - Auffüllung der Ränge</a></li>
+<li><a href="../de450660/index.html">Wird die Einführung einer Steuer von 15% den ausländischen Online-Handel töten?</a></li>
+<li><a href="../de450666/index.html">Hat React einen negativen Einfluss auf Angular?</a></li>
+<li><a href="../de450672/index.html">Bau einer Metallstelle auf einem Pfahlfundament in SPDS</a></li>
+<li><a href="../de450674/index.html">Umzug nach Armenien</a></li>
+<li><a href="../de450676/index.html">Metallbearbeitung 2019: Fortschrittliche 3D-Lösungen für Unternehmen</a></li>
+<li><a href="../de450678/index.html">Citymobil - ein Handbuch zur Verbesserung der Verfügbarkeit bei Unternehmenswachstum für Startups. Teil 4</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

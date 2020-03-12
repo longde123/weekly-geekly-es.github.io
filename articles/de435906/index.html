@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏿‍⚖️ 👩🏿‍🤝‍👨🏻 💺 Schrittmacher-Cluster-Speicher + DRBD (Dual Primary) + ctdb 🏂🏿 🤙🏻 ⛑️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Guten Tag, Habrovsk. Es gab eine Aufgabe - fehlertoleranten hochverfügbaren Speicher mit pacamaker + drbd (im dualen Primärmodus) + clvmd + ctdb berei...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Schrittmacher-Cluster-Speicher + DRBD (Dual Primary) + ctdb</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/435906/"> Guten Tag, Habrovsk.  Es gab eine Aufgabe - fehlertoleranten hochverfügbaren Speicher mit pacamaker + drbd (im dualen Primärmodus) + clvmd + ctdb bereitzustellen, der auf dem Server bereitgestellt wird.  Ich werde reservieren, dass ich zum ersten Mal auf all diese Tools stoße und freue mich über Kritik und Ergänzungen / Korrekturen.  Im Internet gibt es entweder keine speziellen Anweisungen für dieses Bundle oder die Informationen sind veraltet.  Dies funktioniert im Moment, aber es gibt ein Problem, dessen Lösung ich hoffentlich in naher Zukunft finden werde.  Alle Aktionen müssen auf beiden Knoten ausgeführt werden, sofern nicht anders angegeben. <br><br><a name="habracut"></a>  Fangen wir an.  Wir haben zwei virtuelle Maschinen unter CentOS 7. <br><br>  1) Führen Sie sie aus Gründen der Zuverlässigkeit in / etc / hosts ein <br><br><pre><code class="bash hljs">192.168.0.1 node1 192.168.0.2 node2</code> </pre> <br>  2) In Standard-Repositorys befindet sich kein DRBD. Sie müssen daher eine Verbindung zu einem Drittanbieter herstellen. <br><br><pre> <code class="bash hljs">rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org rpm -Uvh https://www.elrepo.org/elrepo-release-7.0-3.el7.elrepo.noarch.rpm</code> </pre><br>  3) Installieren Sie drbd Version 8.4 (ich konnte 9.0 im dualen Primärmodus nicht bekommen) <br><br><pre> <code class="bash hljs">yum install -y kmod-drbd84 drbd84-utils</code> </pre><br>  4) Aktivieren und aktivieren Sie das drbd-Kernelmodul beim Start <br><br><pre> <code class="bash hljs">modprobe drbd <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> drbd &gt; /etc/modules-load.d/drbd.conf</code> </pre><br>  5) Erstellen Sie die Konfigurationsdatei für die Ressource drbd /etc/drbd.d/r0.res <br><br><pre> <code class="bash hljs">resource r0 { protocol C; device /dev/drbd0; meta-disk internal; disk /dev/sdb; net { allow-two-primaries; } disk { fencing resource-and-stonith; } handlers { fence-peer <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-fence-peer.sh"</span></span>; after-resync-target <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-unfence-peer.sh"</span></span>; } on node1 { address 192.168.0.1:7788; } on node2 { address 192.168.0.2:7788; }</code> </pre><br>  6) Deaktivieren Sie die drbd-Einheit (später ist der Schrittmacher dafür verantwortlich), erstellen Sie Metadaten für die drbd-Festplatte und erhöhen Sie die Ressource <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">disable</span></span> drbd drbdadm create-md r0 drbdadm up r0</code> </pre><br>  7) Machen Sie auf dem ersten Knoten die Ressource primär <br><br><pre> <code class="bash hljs">drbdadm primary --force r0</code> </pre><br>  8) Setzen Sie den Schrittmacher <br><br><pre> <code class="bash hljs">yum install -y pacemaker pcs resource-agents</code> </pre><br>  9) Legen Sie ein Kennwort für den Benutzer-Hacluster für die Autorisierung auf Knoten fest <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> CHANGEME | passwd --stdin hacluster</code> </pre><br>  10) Führen Sie den Schrittmacher auf beiden Knoten aus <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> pcsd systemctl start pcsd</code> </pre><br>  11) Melden Sie sich beim Cluster an.  Ab diesem Zeitpunkt erledigen wir alles auf einem Knoten <br><br><pre> <code class="bash hljs">pcs cluster auth node1 node2 -u hacluster</code> </pre><br>  12) Erstellen Sie einen Cluster mit dem Namen samba_cluster <br><br><pre> <code class="bash hljs">pcs cluster setup --force --name samba_cluster node1 node2</code> </pre><br>  13) Knoten aktivieren <br><br><pre> <code class="bash hljs">pcs cluster <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> --all pcs cluster start --all</code> </pre><br>  14) Da wir virtuelle Maschinen als Server haben, deaktivieren wir den STONITH-Mechanismus <br><br><pre> <code class="bash hljs">pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> stonith-enabled=<span class="hljs-literal"><span class="hljs-literal">false</span></span> pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> no-quorum-policy=ignore</code> </pre><br>  15) Erstellen Sie einen VIP <br><br><pre> <code class="bash hljs">pcs resource create virtual_ip ocf:heartbeat:IPaddr2 ip=192.168.0.10 cidr_netmask=24 op monitor interval=60s</code> </pre><br>  16) Erstellen Sie eine drbd-Ressource <br><br><pre> <code class="bash hljs">pcs cluster cib drbd_cfg pcs -f drbd_cfg resource create DRBD ocf:linbit:drbd drbd_resource=r0 op monitor interval=60s pcs -f drbd_cfg resource master DRBDClone DRBD master-max=2 master-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-max=2 notify=<span class="hljs-literal"><span class="hljs-literal">true</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs cluster cib-push drbd_cfg</code> </pre><br>  17) Installieren Sie die erforderlichen Pakete für clvm und bereiten Sie clvm vor <br><br><pre> <code class="bash hljs">yum install -y lvm2-cluster gfs2-utils /sbin/lvmconf --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-cluster</code> </pre> <br>  18) Fügen Sie die Ressource dlm und clvd zum Schrittmacher hinzu <br><br><pre> <code class="bash hljs">pcs resource create dlm ocf:pacemaker:controld op monitor interval=30s on-fail=fence <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> ordered=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs resource create clvmd ocf:heartbeat:clvm op monitor interval=30s on-fail=fence <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> ordered=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs constraint colocation add clvmd-clone with dlm-clone</code> </pre> <br>  19) Zu diesem Zeitpunkt sollte das Starten von clvmd und dlm einen Fehler auslösen.  Wir gehen zum Webinterface-Schrittmacher <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">192.168.0.1</a> : 2224.  Wenn der Cluster nicht angezeigt wird, fügen Sie ihn zu "Vorhandene bearbeiten" hinzu.  Gehen Sie als Nächstes zu Resources - dlm - optionale Argumente und setzen Sie den Wert allow_stonith_disabled = true <br><br>  20) Wir stellen die Warteschlange zum Laden von Ressourcen ein <br><br><pre> <code class="bash hljs">pcs constraint order start DRBDClone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> dlm-clone pcs constraint order start dlm-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> clvmd-clone</code> </pre><br>  21) Verbieten Sie LVM, den Cache zu schreiben und ihn zu löschen.  Auf beiden Knoten <br><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'s/write_cache_state = 1/write_cache_state = 0/'</span></span> /etc/lvm/lvm.conf rm /etc/lvm/cache/*</code> </pre><br>  22) Wir bearbeiten /etc/lvm/lvm.conf so, dass lvm / dev / sdb nicht sieht.  Auf beiden Knoten <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># This configuration option has an automatic default value. # filter = [ "a|.*/|" ] filter = [ "r|^/dev/sdb$|" ]</span></span></code> </pre><br>  23) Erstellen Sie eine CLVM-Partition.  Wir machen nur eine Notiz <br><br><pre> <code class="bash hljs">$ vgcreate -Ay -cy cl_vg /dev/drbd0 Physical volume <span class="hljs-string"><span class="hljs-string">"/dev/drbd0"</span></span> successfully created. Clustered volume group <span class="hljs-string"><span class="hljs-string">"cl_vg"</span></span> successfully created $ lvcreate -l100%FREE -n r0 cl_vg Logical volume <span class="hljs-string"><span class="hljs-string">"r0"</span></span> created.</code> </pre><br>  24) Wir markieren den Abschnitt in gfs2 <br><br><pre> <code class="bash hljs">mkfs.gfs2 -j2 -p lock_dlm -t drbd-gfs2:r0 /dev/cl_vg/r0</code> </pre><br>  25) Fügen Sie als Nächstes die Halterung dieses Abschnitts in Schrittmacher hinzu und weisen Sie ihn an, nach clvmd zu booten <br><br><pre> <code class="bash hljs">pcs resource create fs ocf:heartbeat:Filesystem device=<span class="hljs-string"><span class="hljs-string">"/dev/cl_vg/r0"</span></span> directory=<span class="hljs-string"><span class="hljs-string">"/mnt/"</span></span> fstype=<span class="hljs-string"><span class="hljs-string">"gfs2"</span></span> --<span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> pcs constraint order start clvmd-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> fs-clone</code> </pre><br>  26) Jetzt ist ctdb an der Reihe, Samba auszuführen <br><br><pre> <code class="bash hljs">yum install -y samba ctdb cifs-utils</code> </pre><br>  27) Bearbeiten Sie die Konfiguration /etc/ctdb/ctdbd.conf <br><br><pre> <code class="bash hljs">CTDB_RECOVERY_LOCK=<span class="hljs-string"><span class="hljs-string">"/mnt/ctdb/.ctdb.lock"</span></span> CTDB_NODES=/etc/ctdb/nodes CTDB_MANAGES_SAMBA=yes CTDB_LOGGING=file:/var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/ctdb.log CTDB_DEBUGLEVEL=NOTICE</code> </pre><br>  28) Erstellen Sie eine Datei mit einer Liste von Knoten.  ACHTUNG!  Nach jeder IP in der Liste der Knoten sollte ein Zeilenvorschub vorhanden sein.  Andernfalls fällt der Knoten während der Initialisierung aus. <br><br><pre> <code class="bash hljs">cat /etc/ctdb/nodes 192.168.0.1 192.168.0.2</code> </pre><br>  29) Zur config /etc/samba/smb.conf hinzufügen <br><br><pre> <code class="bash hljs">[global] clustering = yes private dir = /mnt/ctdb lock directory = /mnt/ctdb idmap backend = tdb2 passdb backend = tdbsam [<span class="hljs-built_in"><span class="hljs-built_in">test</span></span>] comment = Cluster Share path = /mnt browseable = yes writable = yes</code> </pre><br>  30) Erstellen Sie abschließend die ctdb-Ressource und geben Sie an, dass sie danach geladen werden soll <br><br><pre> <code class="bash hljs">pcs constraint order start fs-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> samba</code> </pre><br>  Und nun zu dem Problem, das ich noch nicht entschieden habe.  Wenn Sie den Knoten neu starten, bricht die gesamte Gruppe zusammen, da drbd Zeit benötigt, um / dev / drbd0 zu aktivieren.  DLM sieht die Partition nicht, da sie noch nicht aktiviert ist und nicht startet usw.  Problemumgehung besteht darin, die Partition manuell zu aktivieren und die Schrittmacherressourcen neu zu starten <br><br><pre> <code class="bash hljs">vgchage -ay pcs resource refresh</code> </pre></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de435906/">https://habr.com/ru/post/de435906/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de435896/index.html">Verwenden von DiagnosticSource in .NET Core: Theorie</a></li>
+<li><a href="../de435898/index.html">Woran Sie bei einem NALSD-Interview denken sollten</a></li>
+<li><a href="../de435900/index.html">Verkapseln Sie es</a></li>
+<li><a href="../de435902/index.html">Sie können SELECT nicht einfach nehmen und schreiben, wenn der Anbieter dies nicht zulässt ... aber wir werden schreiben</a></li>
+<li><a href="../de435904/index.html">KI übersetzte Gehirnaktivität in Sprache</a></li>
+<li><a href="../de435908/index.html">Asketisches Netz: Prototyp-Flohmärkte für unterwegs und js</a></li>
+<li><a href="../de435910/index.html">Warum hat BSD den Kampf mit GNU / Linux verloren?</a></li>
+<li><a href="../de435912/index.html">Die Hauptprobleme bei der Entwicklung moderner Schnittstellen</a></li>
+<li><a href="../de435914/index.html">Packen von ASP.NET Core-Anwendungen mit Docker</a></li>
+<li><a href="../de435916/index.html">Wenn Sie VK hacken, wird die Zwei-Faktor-Authentifizierung nicht gespeichert</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

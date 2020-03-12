@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎅 👨🏽‍🎤 🎐 Ersetzen einer Festplatte unter Beibehaltung der richtigen Nummerierung in CEPH ☄️ ⛹🏻 🙍🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Es wird angenommen, dass wir als Ergebnis dieser Methode die Reihenfolge speichern, in der Festplatten vom Befehl ceph osd tree ausgegeben werden. Wen...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Ersetzen einer Festplatte unter Beibehaltung der richtigen Nummerierung in CEPH</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/436494/">  Es wird angenommen, dass wir als Ergebnis dieser Methode die Reihenfolge speichern, in der Festplatten vom Befehl ceph osd tree ausgegeben werden.  Wenn sie in der richtigen Reihenfolge vorhanden sind, ist sie besser lesbar und wird bei Bedarf berücksichtigt. <br><br>  Lyrischer Exkurs zum Thema.  Die offizielle Methode zum Ersetzen einer Festplatte in ceph besteht darin, alle mit dieser Festplatte verknüpften logischen Entitäten bei ihrer weiteren Neuerstellung aus dem Cluster zu entfernen.  Infolgedessen kann die frisch erstellte osd (unter bestimmten Umständen) ihre Nummer (die Nummer im Namen der Entität, die die osd.Number ist) und ihre Position in der Crush-Map ändern und wird natürlich an anderer Stelle im ceph osd-Baum und anderen Befehlen angezeigt.  Die Seriennummer ändert sich. <br><br>  Die Idee dieser Methode ist, dass wir keine logischen Entitäten ändern, sondern einfach eine neue Festplatte an die „alte“ Stelle im Cluster verschieben.  Dazu müssen Sie auf dieser neuen Festplatte die richtigen Datenstrukturen (neu) erstellen: alle Arten von IDs, Symlinks, Schlüsseln. <br><a name="habracut"></a><br>  <b>Markieren wir eine neue Festplatte.</b> <br><br><pre><code class="plaintext hljs">parted /dev/__ mklabel gpt</code> </pre> <br>  <b>Lassen Sie uns einen neuen Abschnitt auf unserer Partition erstellen</b> <br><br><pre> <code class="plaintext hljs">parted /dev/sdaa mkpart primary ext2 0% 100% /sbin/sgdisk --change-name=1:'ceph data' -- /dev/sda1</code> </pre> <br>  <b>Holen Sie sich die UUID des verstorbenen osd</b> <br><br><pre> <code class="plaintext hljs">ceph osd dump|grep 'osd.'</code> </pre> <br>  <b>Legen Sie PARTUUID auf die Daten-CD</b> <br><br><pre> <code class="plaintext hljs">/sbin/sgdisk --typecode=1:99886b14-7904-4396-acef-c031095d4b62 -- /dev/__</code> </pre> <br>  <b>Finden Sie den Abschnitt mit dem Magazin</b> <br><br><pre> <code class="plaintext hljs">ceph-disk list | grep for | sort</code> </pre> <br>  <b>Erstellen Sie ein Dateisystem auf einer Datendiskette</b> <br><br><pre> <code class="plaintext hljs">/sbin/mkfs -t xfs -f -i size=2048 -- /dev/sdaa1</code> </pre> <br>  <b>FS montieren</b> <br><br><pre> <code class="plaintext hljs">mount -o rw,noatime,attr2,inode64,noquota /dev/____ /var/lib/ceph/osd/ceph-_OSD</code> </pre> <br>  <b>Kopieren Sie Daten von einem benachbarten OSD</b> <br><br>  <i>In der Tat ist dies der berüchtigtste Teil des Verfahrens, alles muss sorgfältig gemacht werden.</i> <br><br>  Überspringen Sie beim Kopieren das Verzeichnis / var / lib / ceph / osd / ceph-NUMBER / current. Dies ist das Datenverzeichnis.  Simlink auf Journal werden wir später erstellen <br><br>  <b>Kopieren</b> <br><br><pre> <code class="plaintext hljs">for i in activate.monmap active ceph_fsid fsid journal_uuid keyring magic ready store_version superblock systemd type whoami; do cp /var/lib/ceph/osd/ceph-_/${i} /var/lib/ceph/osd/ceph-; done</code> </pre> <br>  <b>Wir suchen eine Zeitschrift</b> <br><br><pre> <code class="plaintext hljs">ceph-disk list | grep for | sort</code> </pre> <br>  dementsprechend finden wir die Partition und tun es <br><br><pre> <code class="plaintext hljs">ls -l /dev/disk/by-partuuid | grep _</code> </pre> <br>  <b>Erstellen eines Symlinks zu dieser UUID</b> <br><br><pre> <code class="plaintext hljs">ln -s /dev/disk/by-partuuid/UUID /var/lib/ceph/osd/ceph-/journal</code> </pre> <br>  <b>Füllen Sie fsid mit dem richtigen Wert</b> <br><br>  Diese fsid ist eigentlich eine eindeutige ID, unter der die osd-Box im Cluster erscheint, das ist wichtig, weil  Wenn Sie nicht mit id raten, sieht die osd-box selbst den Cluster nicht und dies ist gegenseitig. <br><br>  Der Wert muss der Partuuid-Partition im Datenprotokoll entnommen werden. <br><br><pre> <code class="plaintext hljs">echo -n UUID &gt;/var/lib/ceph/osd/ceph-/fsid</code> </pre><br>  <b>Füllen Sie den Schlüsselring</b> <br><br>  Damit wird die osd-box im Cluster autorisiert. <br><br><pre> <code class="plaintext hljs">ceph auth list|grep --after-context=1 'osd.'</code> </pre> <br>  Es wird in eine Datei im Format geschrieben <br><br><pre> <code class="plaintext hljs">[osd.] key = __</code> </pre> <br>  <b>Füllen Sie whoami</b> <br><br>  Wir schreiben einfach die OSD-Nummer für diese Datei, die wir wiederbeleben möchten. <br><br>  <b>Das Magazin auf Null stellen</b> <br><br><pre> <code class="plaintext hljs">dd bs=32M oflag=direct if=/dev/zero of=/var/lib/ceph/osd/ceph-/journal</code> </pre><br>  <b>Erstellen Sie Journal-Metadaten und osd-shki</b> <br><br><pre> <code class="plaintext hljs">ceph-osd --mkfs -i _OSD ceph-osd --mkjournal -i _OSD</code> </pre> <br>  <b>Ändern Sie den Dateneigentümer</b> <br><br><pre> <code class="plaintext hljs">chown -R ceph:ceph /var/lib/ceph/osd/ceph-</code> </pre> <br>  <b>Führen Sie ceph-osd aus</b> <br><br>  Achtung: Unmittelbar nach dem Start von ceph-osd wird die Neuerstellung gestartet, wenn ceph osd out NUMBER nicht ausgegeben wurde, bevor die Festplatte den Cluster verlassen hat. <br><br><pre> <code class="plaintext hljs">systemctl start ceph-osd.</code> </pre> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de436494/">https://habr.com/ru/post/de436494/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de436484/index.html">Wo finde ich DNS-Einstellungen unter MacOS?</a></li>
+<li><a href="../de436486/index.html">Was passiert auf dem Audio-Podcast-Markt?</a></li>
+<li><a href="../de436488/index.html">Currying und Teilanwendung in C ++ 14</a></li>
+<li><a href="../de436490/index.html">Motorola plant die Einführung der Razr v3-Inkarnation</a></li>
+<li><a href="../de436492/index.html">Wir suchen Redner beim 10. DIY Mitap am 17. Februar 2019</a></li>
+<li><a href="../de436496/index.html">PVS-Studio für Java</a></li>
+<li><a href="../de436498/index.html">Software AG: Nicht nur ARIS</a></li>
+<li><a href="../de436500/index.html">Wie der Rahmen von Rise of the Tomb Raider gerendert wird</a></li>
+<li><a href="../de436502/index.html">Abonnement verwöhnt oder wie man mehr an dieselben Kunden verkauft</a></li>
+<li><a href="../de436504/index.html">System im Paket oder was ist unter Chip-Paketabdeckung?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦈 🧑🏾 🔐 Wie Kafka wahr wurde 🖖🏼 👴 ⛵️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hallo habr 
+
+
+ Ich arbeite im Tinkoff-Team, das ein eigenes Benachrichtigungszentrum entwickelt. Zum größten Teil entwickle ich in Java mit Spring Boo...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Wie Kafka wahr wurde</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tinkoff/blog/481784/"><p><img src="https://habrastorage.org/webt/d1/z0/m1/d1z0m1b3kvl5hobn4_4nnxuxc3o.png"></p><br><p>  Hallo habr </p><br><p>  Ich arbeite im Tinkoff-Team, das ein eigenes Benachrichtigungszentrum entwickelt.  Zum größten Teil entwickle ich in Java mit Spring Boot und löse verschiedene technische Probleme, die im Projekt auftreten. </p><br><p>  Die meisten unserer Microservices interagieren asynchron miteinander über einen Nachrichtenbroker.  Zuvor verwendeten wir IBM MQ als Broker, der die Last nicht mehr bewältigte, aber gleichzeitig hohe Zustellgarantien hatte. </p><br><p>  Als Ersatz wurde uns Apache Kafka angeboten, das eine hohe Skalierbarkeit aufweist, aber leider einen fast individuellen Konfigurationsansatz für verschiedene Szenarien erfordert.  Darüber hinaus ermöglichte der mindestens einmalige Übermittlungsmechanismus, der standardmäßig in Kafka funktioniert, nicht die Einhaltung des erforderlichen Konsistenzniveaus.  Als nächstes werde ich unsere Erfahrungen mit der Konfiguration von Kafka teilen und Ihnen insbesondere erklären, wie Sie genau eine Lieferung konfigurieren und damit leben können. </p><a name="habracut"></a><br><h2 id="garantirovannaya-dostavka-i-ne-tolko">  Garantierte Lieferung und mehr </h2><br><p>  Die Parameter, die später erläutert werden, tragen dazu bei, eine Reihe von Problemen mit den Standardverbindungseinstellungen zu vermeiden.  Aber zuerst möchte ich auf einen Parameter achten, der ein mögliches Debugging erleichtert. </p><br><p>  <strong>Client.id</strong> für Produzenten und Konsumenten hilft dabei.  Auf den ersten Blick können Sie den Namen der Anwendung als Wert verwenden. In den meisten Fällen funktioniert dies.  Die Situation, in der mehrere Consumer in der Anwendung verwendet werden und Sie denselben Client angeben, führt zu der folgenden Warnung: </p><br><pre><code class="java hljs">org.apache.kafka.common.utils.AppInfoParser — Error registering AppInfo mbean javax.management.InstanceAlreadyExistsException: kafka.consumer:type=app-info,id=kafka.test-<span class="hljs-number"><span class="hljs-number">0</span></span></code> </pre> <br><p>  Wenn Sie JMX in einer Anwendung mit Kafka verwenden möchten, kann dies ein Problem sein.  In diesem Fall ist es am besten, eine Kombination aus dem Anwendungsnamen und beispielsweise dem Themennamen als Wert für client.id zu verwenden.  Das Ergebnis unserer Konfiguration ist in der Ausgabe des <strong>Befehls kafka-consumer-groups</strong> der Dienstprogramme von Confluent zu sehen: </p><br><p><img src="https://habrastorage.org/webt/1e/qh/1z/1eqh1zw485osmsizmx6gu9_d8ne.png"></p><br><p>  Jetzt analysieren wir das Szenario der garantierten Nachrichtenübermittlung.  Kafka Producer verfügt über einen <strong>Acks-</strong> Parameter, mit dem Sie konfigurieren können, nach wie vielen Bestätigungen der Cluster-Leiter die erfolgreich aufgezeichnete Nachricht berücksichtigen muss.  Dieser Parameter kann folgende Werte annehmen: </p><br><ul><li>  0 - Acknowledge wird nicht berücksichtigt. </li><li>  1 - Standardparameter, Bestätigung ist nur ab 1 Replikat erforderlich. </li><li>  −1 - Bestätigung ist für alle synchronisierten Replikate erforderlich ( <strong>min.insync.replicas-</strong> Clusterkonfiguration). </li></ul><br><p>  Aus den obigen Werten ist ersichtlich, dass Acks gleich -1 die stärksten Garantien dafür geben, dass die Nachricht nicht verloren geht. </p><br><p>  Wie wir alle wissen, sind verteilte Systeme unzuverlässig.  Zum Schutz vor vorübergehenden Fehlfunktionen bietet Kafka Producer einen <strong>Wiederholungsparameter</strong> , mit dem Sie die Anzahl der Wiederholungsversuche während der Zeitüberschreitung der <strong>Zustellung</strong> festlegen können.  Da der Parameter retries standardmäßig Integer.MAX_VALUE (2147483647) ist, kann die Anzahl der erneuten Übertragungen einer Nachricht gesteuert werden, indem nur delivery.timeout.ms geändert wird. </p><br><h2 id="dvizhemsya-k-exactly-once-delivery">  Auf genau eine Lieferung zu </h2><br><p>  Mit diesen Einstellungen kann unser Produzent Nachrichten mit hoher Garantie übermitteln.  Lassen Sie uns nun darüber sprechen, wie Sie sicherstellen, dass nur eine Kopie einer Nachricht in einem Kafka-Thema aufgezeichnet wird.  Setzen <strong>Sie</strong> im einfachsten Fall den Parameter <strong>enable.idempotence</strong> für Producer auf true.  Idempotency garantiert die Aufzeichnung von nur einer Nachricht in einer bestimmten Partition eines Themas.  Voraussetzung für die Aktivierung der Idempotenz ist <strong>acks = all, erneut versuchen&gt; 0, max.in.flight.requests.per.connection ≤ 5</strong> .  Wenn diese Parameter nicht vom Entwickler festgelegt werden, werden die oben genannten Werte automatisch festgelegt. </p><br><p>  Wenn die Idempotenz eingerichtet ist, muss sichergestellt werden, dass jedes Mal dieselben Nachrichten in dieselben Partitionen fallen.  Dies kann durch Konfigurieren des Schlüssels und des Parameters partitioner.class auf Producer erfolgen.  Beginnen wir mit dem Schlüssel.  Für jede Sendung muss es gleich sein.  Dies lässt sich leicht mit einer beliebigen Geschäftskennung aus der Originalnachricht erreichen.  Der Parameter partitioner.class hat den Standardwert <a href="">DefaultPartitioner</a> .  Bei dieser Partitionierungsstrategie ist das Standardverhalten wie folgt: </p><br><ul><li>  Wenn die Partition beim Senden der Nachricht explizit angegeben wird, verwenden wir sie. </li><li>  Wenn die Partition nicht angegeben ist, der Schlüssel jedoch angegeben ist, wählen Sie die Partition per Hash aus dem Schlüssel aus. </li><li>  Wenn Partition und Schlüssel nicht angegeben sind, wählen Sie die Partitionen der Reihe nach aus (Round-Robin). </li></ul><br><p>  Durch die Verwendung des Schlüssels und des idempotenten Sendens mit dem Parameter <strong>max.in.flight.requests.per.connection = 1 erhalten</strong> Sie außerdem eine ordnungsgemäße Verarbeitung von Nachrichten an Consumer.  Unabhängig davon sollten Sie bedenken, dass Sie, wenn die Zugriffssteuerung in Ihrem Cluster konfiguriert ist, die Rechte zum vorübergehenden Schreiben in das Thema benötigen. </p><br><p>  Wenn Sie plötzlich nicht mehr über genügend Möglichkeiten zum idempotenten Senden per Schlüssel verfügen oder die Logik auf der Producer-Seite die Aufrechterhaltung der Datenkonsistenz zwischen verschiedenen Partitionen erfordert, werden Transaktionen zu Hilfe kommen.  Darüber hinaus können Sie mithilfe einer Kettentransaktion einen Datensatz in Kafka bedingt mit einem Datensatz in der Datenbank synchronisieren.  Um das Transaktionssenden an Producer zu ermöglichen, muss das Gerät über die ID-Potenz verfügen und optional die <strong>transactional.id</strong> festlegen.  Wenn die Zugriffssteuerung in Ihrem Kafka-Cluster konfiguriert ist, benötigen Sie für die Transaktionsaufzeichnung und für die idempotente Aufzeichnung Schreibberechtigungen, die mithilfe des in transactional.id gespeicherten Werts per Maske erteilt werden können. </p><br><p>  Formal kann eine beliebige Zeichenfolge als Transaktionskennung verwendet werden, z. B. der Name einer Anwendung.  Wenn Sie jedoch mehrere Instanzen derselben Anwendung mit derselben transactional.id ausführen, wird die erste gestartete Instanz mit einem Fehler beendet, da Kafka sie als Zombie-Prozess betrachtet. </p><br><pre> <code class="java hljs">org.apache.kafka.common.errors.ProducerFencedException: Producer attempted an operation with an old epoch. Either there is a newer producer with the same transactionalId, or the producer<span class="hljs-string"><span class="hljs-string">'s transaction has been expired by the broker.</span></span></code> </pre> <br><p>  Um dieses Problem zu lösen, fügen wir dem Anwendungsnamen ein Suffix in Form des Hostnamens hinzu, der aus den Umgebungsvariablen abgerufen wird. </p><br><p>  Der Produzent ist konfiguriert, aber Transaktionen auf Kafka steuern nur den Nachrichtenbereich.  Unabhängig vom Status der Transaktion fällt die Nachricht sofort in das Thema, verfügt jedoch über zusätzliche Systemattribute. </p><br><p>  Um zu verhindern, dass solche Nachrichten von Consumer vorzeitig gelesen werden, muss der Parameter <strong>isolation.level</strong> auf read_committed gesetzt werden.  Ein solcher Consumer kann nicht-transaktionale Nachrichten wie zuvor und transaktionale Nachrichten erst nach einem Commit lesen. <br>  Wenn Sie alle oben aufgeführten Einstellungen installiert haben, haben Sie genau eine Lieferung konfiguriert.  Herzlichen Glückwunsch! </p><br><p>  Aber es gibt noch eine Nuance.  Transactional.id, die wir oben konfiguriert haben, ist eigentlich ein Transaktionspräfix.  Auf dem Transaktionsmanager wird eine Seriennummer hinzugefügt.  Die empfangene ID wird in <strong>transactional.id.expiration.ms</strong> ausgegeben, das im Kafka-Cluster konfiguriert ist und einen Standardwert von "7 Tage" hat.  Wenn die Anwendung während dieser Zeit keine Nachrichten empfangen hat, erhalten Sie beim nächsten Transaktionsversuch eine <strong>InvalidPidMappingException</strong> .  Danach vergibt der Transaktionskoordinator eine neue Sequenznummer für die nächste Transaktion.  Die Nachricht kann jedoch verloren gehen, wenn die InvalidPidMappingException nicht korrekt verarbeitet wird. </p><br><h2 id="vmesto-itogov">  Anstelle von Summen </h2><br><p>  Wie Sie sehen, reicht es nicht aus, nur Nachrichten an Kafka zu senden.  Sie müssen eine Kombination von Parametern auswählen und auf schnelle Änderungen vorbereitet sein.  In diesem Artikel habe ich versucht, genau einmal die Übermittlungseinstellungen im Detail darzustellen, und einige Probleme bei der Konfiguration von client.id und transactional.id beschrieben, auf die wir gestoßen sind.  Die Zusammenfassung der Einstellungen für Hersteller und Verbraucher ist nachstehend zusammengefasst. </p><br><p>  Produzent: </p><br><ol><li>  Acks = alle </li><li>  Wiederholungen&gt; 0 </li><li>  enable.idempotence = true </li><li>  max.in.flight.requests.per.connection ≤ 5 (1 - für ordentliches senden) </li><li>  transactional.id = $ {Anwendungsname} - $ {Hostname} </li></ol><br><p>  Verbraucher: </p><br><ol><li>  isolation.level = read_committed </li></ol><br><p>  Um Fehler in zukünftigen Anwendungen zu minimieren, haben wir unseren Wrapper über die Federkonfiguration erstellt, in der Werte für einige der aufgelisteten Parameter bereits festgelegt sind. </p><br><p>  Und hier sind ein paar Materialien für das Selbststudium: </p><br><ul><li>  <a href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-98%2B-%2BExactly%2BOnce%2BDelivery%2Band%2BTransactional%2BMessaging">KIP-98 - Genau einmalige Zustellung und Transaktionsnachrichten</a> </li><li>  <a href="https://kafka.apache.org/documentation/">Beschreibung der Einstellungen</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de481784/">https://habr.com/ru/post/de481784/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de481774/index.html">Sicherheits-Cheat-Sheets: Virtual Patching</a></li>
+<li><a href="../de481776/index.html">5G- und Cloud-Gaming-Dienste - Testen Sie, wie es in Moskau funktioniert</a></li>
+<li><a href="../de481778/index.html">Skeleton Key-Malware-Analyse</a></li>
+<li><a href="../de481780/index.html">MyOffice hat über 200 neue Funktionen</a></li>
+<li><a href="../de481782/index.html">Über Probleme mit dem Python-Übersetzer und das Überdenken der Sprache</a></li>
+<li><a href="../de481786/index.html">Google begräbt PHP IMAP-Erweiterung</a></li>
+<li><a href="../de481788/index.html">Analyse der Lösung realer Industrieprobleme (Rettung von Ferkeln und anderen)</a></li>
+<li><a href="../de481790/index.html">Wie Betrug die Speedrunner-Community verändert</a></li>
+<li><a href="../de481792/index.html">Wie PVS-Studio die zweite Hälfte der Konferenzen 2019 durchführte</a></li>
+<li><a href="../de481794/index.html">Beckender - ein Psychotherapeut: ein Debugger für die Psyche</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

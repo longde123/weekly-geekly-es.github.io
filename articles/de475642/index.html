@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🗣️ 🚽 🧣 Heap-Only-Tupel-Mechanismus in PostgreSQL 🎒 🔵 👨🏿‍🤝‍👨🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Postgresql unterscheidet sich von anderen DBMS darin, dass während des UPDATE-Vorgangs keine Änderungen an der vorhandenen Zeile vorgenommen werden. S...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Heap-Only-Tupel-Mechanismus in PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/475642/"><p> Postgresql unterscheidet sich von anderen DBMS darin, dass während des UPDATE-Vorgangs keine Änderungen an der vorhandenen Zeile vorgenommen werden. Stattdessen wird eine Kopie der Zeile erstellt, die sich vom Original von den Werten der Spalten unterscheidet, die von der Aktualisierung betroffen sind. Sie sind im Original alt und werden in der Kopie geändert.  Auf diese Weise können Sie einerseits das Blockieren bei der Ausführung von Lese- und Schreibanforderungen vermeiden und andererseits alte Versionen von Zeilen, die niemand jemals lesen wird, ständig bereinigen.  In Verbindung mit dieser architektonischen Besonderheit stellt sich häufig die Frage, was passiert, wenn Sie etwas wie den Zeitpunkt des letzten Zugriffs auf Daten in der Datenbank speichern müssen, der sich ansonsten nicht ändert.  Wird es auf die Leistung reagieren?  Wird es zu einer ständigen Umstrukturierung der Indizes kommen? </p><br><p>  Kurz gesagt, ja, Copy On Write funktioniert nirgendwo, aber in vielen Fällen können Indizes dank HOT nicht neu erstellt werden. </p><a name="habracut"></a><br><p>  Heap only-Tupel, auch als HOT bezeichnet, sind die Optimierung, die Postgres verwendet, um die für Aktualisierungen erforderliche E / A-Menge zu reduzieren.  Aufgrund von MVCC besteht ein Update in Postgres darin, eine Zeile für das Update zu finden und neue Versionen der Zeile in die Datenbank einzufügen.  Der Hauptnachteil dieses Verfahrens ist die Notwendigkeit, jedem Index eine neue Zeile hinzuzufügen. <br>  Dies erfordert viel mehr E / A, da die Zeile erneut in jeden Index in der Tabelle eingefügt werden muss.  Das erneute Einfügen ist erforderlich, da sich die physische Position der neuen Version einer Zeile auf der Festplatte von der physischen Position der alten Version unterscheidet. </p><br><p>  Um die für UPDATE erforderliche E / A-Menge zu reduzieren, fügte das Postgres-Team Postgres HOT hinzu.  Die Idee hinter HOT ist relativ einfach.  Wenn möglich, erstellt Postgres beim Aktualisieren der Linie eine neue Kopie der Linie unmittelbar nach der alten Kopie der Linie.  Außerdem ist in der alten Kopie der Zeichenfolge ein spezielles Etikett angebracht, damit Postgres weiß, dass die neue Kopie der Zeichenfolge unmittelbar nach der alten liegt.  Daher ist es nicht erforderlich, alle Indizes zu aktualisieren. </p><br><p>  Während des Index-Scans, für den eine neue Kopie des Strings übergeben wird, findet der Postgres-Filter die alte Kopie des Strings.  Da sich auf der alten Kopie der Linie ein spezielles Etikett befindet, wird Postgres verstehen, dass sich die neue Kopie der Linie unmittelbar nach der alten befindet, die neue Version findet und diese verwendet.  Es stellt sich heraus, dass sich Postgres in solchen Fällen so verhalten kann, als ob alle Indizes auf eine neue Kopie des Strings verweisen, und dass sie nicht neu erstellt werden müssen. </p><br><p>  Jetzt ist HOT nur beteiligt, wenn nur nicht indizierbare Spalten an der Aktualisierung beteiligt sind.  Wenn mindestens eine an der Aktualisierung beteiligte Spalte im Index enthalten ist, kann HOT nicht angewendet werden.  In diesem Fall gibt es mehrere Probleme bei der Verwendung von HOT.  Wenn beispielsweise der Index für die zu aktualisierende Spalte durch einen Scan indiziert wird und die alte Kopie der Zeile in das Prädikat des Scans fällt, die neue jedoch nicht.  In diesem Fall versucht Postgres, mithilfe des Index schnell alle Zeilen zu finden, die für das Abfrageprädikat geeignet sind. Bei Spalten, die mit HOT aktualisiert wurden, wird eine neue Kopie der Zeile erstellt, die nicht mit dem Abfrageprädikat übereinstimmt.  Aufgrund dieser Einschränkung (dass HOT nicht funktioniert, wenn indizierbare Spalten im Update enthalten sind) kann Postgres garantieren, dass bei der Suche nach Zeilen, die für das Prädikat geeignet sind, durch das der Index geleitet wird, die neue Version der Zeile gefunden wird, wenn das Prädikat mit der alten Version der Zeile übereinstimmt passt auch zu ihm und umgekehrt. </p><br><p>  Derzeit wird eine HOT-Erweiterung namens WARM entwickelt, die auch beim Aktualisieren von Spalten funktioniert, für die Indizes erstellt werden.  Die Idee hinter WARM ist, unmittelbar nach der alten Zeile eine neue Zeile einzufügen und die Zeile für Indizes zu aktualisieren, bei denen die Spalten geändert wurden.  Dies erschwert die beschriebene Situation erheblich, da Postgres jetzt irgendwie feststellen muss, ob die Zeile den Filter für den Index passiert oder nicht. </p><br><p>  <strong>PS</strong> Im ursprünglichen Artikel wird der HOT-Mechanismus beschrieben, aber hier haben wir den Mechanismus im Auge, bei dem es sich nur um Tupel handelt, und der Begriff selbst hat eine separate Bedeutung. </p><br><p>  Heap only tuple ist nur eine neue Version der Zeile.  So seltsam es auch scheinen mag, ein Heap ist eine Tabelle, und Heap bedeutet nur, dass diese Zeile nur von der Kette gefunden werden kann, die von der älteren Version der Zeile namens root ausgeht. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de475642/">https://habr.com/ru/post/de475642/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de475624/index.html">PHP-Watcher: Ein Tool, das die Entwicklung langlebiger Anwendungen vereinfacht</a></li>
+<li><a href="../de475626/index.html">Können Autotests eine Person auf der Suche nach Schwachstellen ersetzen: Interview mit Alexandra Svatikova</a></li>
+<li><a href="../de475630/index.html">Knative - eine k8s-basierte Plattform als Service mit serverloser Unterstützung</a></li>
+<li><a href="../de475636/index.html">Inkrementieren Sie Vektorelemente</a></li>
+<li><a href="../de475640/index.html">Wenn Sie etwas erstellen, vermeiden Sie den Zeitplan des Managers.</a></li>
+<li><a href="../de475646/index.html">Yuri Ryabtsev: "Das erste Abfangen einer ballistischen Rakete ist ein Ereignis, das in etwa Gagarins Flug entspricht."</a></li>
+<li><a href="../de475652/index.html">Wie wir eine mobile Anwendung auf dem Aurora OS (Sailfish Mobile OS RUS) entwickelt haben</a></li>
+<li><a href="../de475654/index.html">„Im ersten Monat hatten drei gesunde Männer Angst, die Turbine einzuschalten“ - so baut Alexei Statsenko ein Jetpack von Grund auf neu</a></li>
+<li><a href="../de475656/index.html">Eine Überprüfung der Virenaktivität für mobile Geräte im Oktober 2019</a></li>
+<li><a href="../de475658/index.html">Warum zu DevOpsDays gehen? Und warum ist dies nicht eine weitere DevOps-Konferenz?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

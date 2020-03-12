@@ -1,0 +1,285 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕴🏼 🤵🏼 🛑 So beschleunigen Sie das Entladen von LZ4 in ClickHouse 🦅 🚯 😷</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Wenn Sie Abfragen in ClickHouse ausführen, können Sie feststellen, dass im Profiler an einer der ersten Stellen häufig die Funktion LZ_decompress_fast...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>So beschleunigen Sie das Entladen von LZ4 in ClickHouse</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/452778/"> Wenn Sie Abfragen in ClickHouse ausführen, können Sie feststellen, dass im Profiler an einer der ersten Stellen häufig die Funktion LZ_decompress_fast sichtbar ist.  Warum passiert das?  Diese Frage wurde zum Grund für die gesamte Studie zur Auswahl des besten Dekomprimierungsalgorithmus.  Hier veröffentliche ich die gesamte Studie und die Kurzversion finden Sie in meinem <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Bericht</a> über HighLoad ++ Siberia. <br><br>  ClickHouse-Daten werden in komprimierter Form gespeichert.  Und während der Ausführung von Anforderungen versucht ClickHouse fast nichts zu tun - verwenden Sie ein Minimum an CPU-Ressourcen.  Es kommt vor, dass alle Berechnungen, die eine Weile dauern können, bereits gut optimiert sind und die Anforderung vom Benutzer gut geschrieben wurde.  Dann bleibt die Freigabe durchzuführen. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/057/302/aba/057302aba5041790af404c2c781c4dd3.png"><br><br>  Die Frage ist - warum kann das Entladen von LZ4 ein Engpass sein?  Es scheint, dass LZ4 ein <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">sehr leichter Algorithmus ist</a> : Die Komprimierungsrate liegt je nach Daten normalerweise zwischen 1 und 3 GB / s pro Prozessorkern.  Dies ist deutlich mehr als die Geschwindigkeit des Festplattensubsystems.  Darüber hinaus verwenden wir alle verfügbaren Kernel und die Erweiterung skaliert linear über alle physischen Kernel. <br><a name="habracut"></a><br>  Es sind jedoch zwei Punkte zu beachten.  Zunächst werden komprimierte Daten von der Festplatte gelesen, und die Komprimierungsrate wird in der Menge der nicht komprimierten Daten angegeben.  Wenn das Komprimierungsverhältnis groß genug ist, muss fast nichts von den Datenträgern gelesen werden.  Gleichzeitig werden jedoch viele komprimierte Daten generiert, was sich natürlich auf den CPU-Verbrauch auswirkt: Der Umfang der Datenkomprimierungsarbeit bei LZ4 ist nahezu proportional zum Volumen der komprimierten Daten. <br><br>  Zweitens ist das Lesen von Daten von Datenträgern möglicherweise überhaupt nicht erforderlich, wenn sich die Daten im Cache befinden.  Dazu können Sie sich auf den Seitencache verlassen oder Ihren eigenen Cache verwenden.  In einer Spaltendatenbank ist die Verwendung des Caches effizienter, da nicht alle Spalten in den Cache fallen, sondern nur häufig verwendete.  Aus diesem Grund ist LZ4 in Bezug auf die CPU-Auslastung häufig ein Engpass. <br><br>  Daher noch zwei Fragen.  Wenn die Datenkomprimierung "verlangsamt" wird, sollten sie möglicherweise überhaupt nicht komprimiert werden?  In der Praxis ist diese Annahme jedoch bedeutungslos.  Kürzlich war es in ClickHouse möglich, nur zwei Datenkomprimierungsoptionen zu konfigurieren - LZ4 und <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Zstandard</a> .  Der Standardwert ist LZ4.  Durch Umschalten auf Zstandard können Sie die Komprimierung stärker und langsamer machen.  Bis vor kurzem war es jedoch unmöglich, die Komprimierung vollständig zu deaktivieren - LZ4 wird als angemessenes Minimum angesehen, das immer verwendet werden kann.  Deshalb liebe ich den LZ4 wirklich.  :) :) <br><br>  Aber kürzlich erschien im englischsprachigen <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Chat-Chat von</a> ClickHouse ein mysteriöser Fremder, der sagte, er habe ein sehr schnelles Festplattensubsystem (NVMe SSD) und alles hänge von der Komprimierung ab - es wäre schön, es ausschalten zu können.  Ich antwortete, dass es keine solche Möglichkeit gibt, aber es ist einfach hinzuzufügen.  Einige Tage später erhielten wir eine <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Poolanforderung</a> , die die Methode der <code>none</code> implementiert.  Ich fragte nach den Ergebnissen - wie sehr dies half, wie schnell die Anfragen waren.  Die Person sagte, dass sich diese neue Funktion in der Praxis als nutzlos herausstellte, da Daten ohne Komprimierung zu viel Platz beanspruchten. <br><br>  Die zweite Frage lautet: Wenn es einen Cache gibt, warum nicht die bereits unkomprimierten Daten darin speichern?  Dies ist zulässig - in vielen Fällen wird es möglich sein, die Notwendigkeit einer Dekompression zu beseitigen.  Und in ClickHouse gibt es einen solchen Cache - einen <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Cache aus erweiterten Blöcken</a> .  Es ist jedoch schade, aufgrund der geringen Effizienz viel RAM dafür auszugeben.  Es rechtfertigt sich nur bei kleinen, aufeinanderfolgenden Anfragen, die fast dieselben Daten verwenden. <br><br>  Allgemeine Überlegung: Daten sollten vorzugsweise immer komprimiert werden.  Brennen Sie sie immer auf eine komprimierte Festplatte.  Über das Netzwerk auch mit Komprimierung übertragen.  Meiner Meinung nach sollte die Standardkomprimierung als gerechtfertigt angesehen werden, selbst wenn die Übertragung in ein 10-Gigabit-Netzwerk ohne Überzeichnung innerhalb des Rechenzentrums erfolgt und die Übertragung von Daten ohne Komprimierung zwischen Rechenzentren im Allgemeinen nicht akzeptabel ist. <br><br><h3>  Warum LZ4? </h3><br>  Warum wird LZ4 verwendet?  Ist es möglich, etwas noch einfacher zu wählen?  Im Prinzip ist es möglich und es ist richtig und nützlich.  Aber schauen wir uns zuerst an, zu welcher Klasse von Algorithmen LZ4 gehört. <br><br>  Erstens hängt es nicht vom Datentyp ab.  Wenn Sie beispielsweise im Voraus wissen, dass Sie ein Array von Ganzzahlen haben, können Sie eine der vielen Varianten des VarInt-Algorithmus verwenden - dies ist effizienter für die CPU.  Zweitens hängt LZ4 nicht zu stark von den erforderlichen Annahmen im Datenmodell ab.  Angenommen, Sie haben eine geordnete Zeitreihe von Sensorablesungen - ein Array mit Nummern vom Typ float.  Dann können Sie die Deltas berechnen und dann weiter komprimieren, was im Hinblick auf das Kompressionsverhältnis effizienter ist. <br><br>  Das heißt, LZ4 kann problemlos für alle Byte-Arrays verwendet werden - für alle Dateien.  Natürlich hat er seine eigene Spezialisierung (mehr dazu weiter unten), und in einigen Fällen ist ihre Verwendung bedeutungslos.  Wenn Sie es jedoch als Allzweckalgorithmus bezeichnen, ist dies ein kleiner Fehler.  Beachten Sie, dass LZ4 dank des internen Geräts den <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">RLE-</a> Algorithmus automatisch als Sonderfall implementiert. <br><br>  Eine andere Frage: Ist LZ4 der optimalste Algorithmus dieser Klasse für die Kombination von Geschwindigkeit und Kompressionskraft?  Solche Algorithmen werden als Pareto-Grenze bezeichnet - dies bedeutet, dass es keinen anderen Algorithmus gibt, der in einem Indikator streng besser und in anderen nicht schlechter ist (und sogar in einer Vielzahl von Datensätzen).  Es gibt Algorithmen, die schneller sind, aber ein niedrigeres Komprimierungsverhältnis ergeben, und es gibt Algorithmen, die mehr komprimieren, aber gleichzeitig langsamer komprimieren oder dekomprimieren. <br><br>  Tatsächlich ist die LZ4 keine Pareto-Grenze.  Es gibt Optionen, die etwas besser sind.  Dies ist beispielsweise <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">LZTURBO</a> aus einem bestimmten <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Powturbo</a> .  Dank der Community auf encode.ru (dem größten und ungefähr einzigen Forum für Datenkomprimierung) besteht kein Zweifel an der Zuverlässigkeit der Ergebnisse.  Der Entwickler verteilt den Quellcode oder die Binärdateien jedoch nicht, sondern gibt sie nur an einen begrenzten Personenkreis zum Testen oder für viel Geld weiter (wie bisher noch niemand bezahlt hat).  Es lohnt sich auch, auf <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Lizard</a> (ehemals LZ5) und <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Density</a> zu achten.  Sie können bei der Auswahl einer bestimmten Komprimierungsstufe etwas besser als LZ4 arbeiten.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Achten Sie auch</a> auf <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">LZSSE</a> - eine äußerst interessante Sache.  Es ist jedoch besser, es nach dem Lesen dieses Artikels anzusehen. <br><br><h3>  Wie funktioniert LZ4? </h3><br>  Schauen wir uns an, wie LZ4 im Allgemeinen funktioniert.  Dies ist eine der Implementierungen des LZ77-Algorithmus: L und Z geben die Namen der Autoren (Lempel und Ziv) und 77 an - 1977, als der Algorithmus veröffentlicht wurde.  Es gibt viele andere Implementierungen: QuickLZ, FastLZ, BriefLZ, LZF, LZO sowie gzip und zip bei Verwendung niedriger Komprimierungsstufen. <br><br>  Ein mit LZ4 komprimierter Datenblock enthält eine Folge von Datensätzen (Befehlen, Anweisungen) zweier Typen: <br><br><ol><li>  Literal: "Nehmen Sie die nächsten N Bytes wie sie sind und kopieren Sie sie in das Ergebnis." </li><li>  Übereinstimmung (Übereinstimmung): "Nehmen Sie N Bytes, die bereits durch den Versatzversatz von der aktuellen Position dekomprimiert wurden." </li></ol><br>  Ein Beispiel.  Vor der Komprimierung: <br> <code>Hello world Hello</code> <br> <br>  Nach der Komprimierung: <br> <code>literals 12 "Hello world " match 5 12</code> <br> <br>  Wenn wir einen komprimierten Block nehmen und ihn mit dem Cursor durchlaufen und diese Befehle ausführen, erhalten wir als Ergebnis die anfänglichen, nicht komprimierten Daten. <br><br>  Wir haben uns grob angesehen, wie die Daten dekomprimiert werden.  Der Punkt ist auch klar: Um eine Komprimierung durchzuführen, codiert der Algorithmus sich wiederholende Bytesequenzen unter Verwendung von Übereinstimmungen. <br><br>  Klar und einige Eigenschaften.  Dieser Algorithmus ist byteorientiert - er zerlegt einzelne Bytes nicht, sondern kopiert sie nur vollständig.  Hier liegt beispielsweise der Unterschied zur Entropiecodierung.  Zum Beispiel ist <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">zstd</a> eine Zusammensetzung aus LZ77 und Entropiecodierung. <br><br>  Beachten Sie, dass die Größe des komprimierten Blocks nicht zu groß gewählt wird, um beim Entladen nicht viel RAM zu verbrauchen.  um den Direktzugriff in einer komprimierten Datei (die aus vielen komprimierten Blöcken besteht) nicht zu verlangsamen;  und manchmal, damit der Block in einen CPU-Cache passt.  Sie können beispielsweise 64 KB auswählen, sodass Puffer für komprimierte und nicht komprimierte Daten in den L2-Cache passen und die Hälfte verbleibt. <br><br>  Wenn wir eine größere Datei komprimieren müssen, verketten wir einfach die komprimierten Blöcke.  Gleichzeitig ist es bequem, neben jedem komprimierten Block zusätzliche Daten zu platzieren - Größen, Prüfsumme. <br><br>  Der maximale Offset für das Match ist in LZ4 - 64 Kilobyte begrenzt.  Dieser Wert wird als Schiebefenster bezeichnet.  In der Tat bedeutet dies, dass Übereinstimmungen in einem Fenster von 64 Kilobyte Größe mit dem Cursor erfolgen können, der sich mit dem Cursor bewegt, wenn sich der Cursor vorwärts bewegt. <br><br>  Schauen wir uns nun an, wie Daten komprimiert werden - mit anderen Worten, wie übereinstimmende Sequenzen in einer Datei gefunden werden.  Natürlich können Sie das Suffix trie verwenden (großartig, wenn Sie davon gehört haben).  Es gibt Optionen, bei denen die längste übereinstimmende Sequenz garantiert zu den vorherigen Bytes im Komprimierungsprozess gehört.  Dies wird als optimales Parsen bezeichnet und ergibt ein <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">fast</a> besseres Komprimierungsverhältnis für ein festes komprimiertes Blockformat.  Es gibt jedoch effektivere Optionen - wenn wir eine ausreichend gute Übereinstimmung in den Daten finden, aber nicht unbedingt die längste.  Der effizienteste Weg, dies zu finden, ist die Verwendung einer Hash-Tabelle. <br><br>  Dazu gehen wir mit dem Cursor durch den Quelldatenblock und nehmen einige Bytes nach dem Cursor.  Zum Beispiel 4 Bytes.  Hash sie und füge den Offset vom Anfang des Blocks in die Hash-Tabelle ein - wo diese 4 Bytes aufeinander trafen.  Der Wert 4 heißt min-match - mit Hilfe einer solchen Hash-Tabelle können wir Übereinstimmungen von mindestens 4 Bytes finden. <br><br>  Wenn wir uns die Hash-Tabelle angesehen haben und dort bereits ein Datensatz vorhanden ist und der Versatz das Schiebefenster nicht überschreitet, prüfen wir, wie viele weitere Bytes nach diesen vier Bytes übereinstimmen.  Vielleicht fällt noch viel mehr zusammen.  Es ist auch möglich, dass eine Kollision in der Hash-Tabelle aufgetreten ist und nichts übereinstimmt.  Dies ist normal - Sie können den Wert in der Hash-Tabelle einfach durch einen neuen ersetzen.  Kollisionen in der Hash-Tabelle führen einfach zu einem niedrigeren Komprimierungsverhältnis, da weniger Übereinstimmungen vorhanden sind.  Übrigens wird diese Art von Hash-Tabelle (mit fester Größe und ohne Kollisionsauflösung) als Cache-Tabelle, als Cache-Tabelle bezeichnet.  Dies ist auch logisch - im Falle einer Kollision vergisst die Cache-Tabelle nur den alten Datensatz. <br><blockquote>  Die Aufgabe für den aufmerksamen Leser.  Die Daten seien ein Array von Zahlen wie UInt32 im Little-Endian-Format, das Teil einer Folge natürlicher Zahlen ist: 0, 1, 2 ... Erklären Sie, warum diese Daten bei Verwendung von LZ4 nicht komprimiert werden (die Menge der komprimierten Daten ist nicht geringer als die Menge der nicht komprimierten Daten). </blockquote><h3>  Wie man Dinge beschleunigt </h3><br>  Deshalb möchte ich das Entladen von LZ4 beschleunigen.  Mal sehen, wie der Entladezyklus aussieht.  Hier ist die Schleife im Pseudocode: <br><br><pre>  während (...)
+ {
+     read (input_pos, literal_length, match_length);<font></font>
+<font></font>
+     copy (output_pos, input_pos, literal_length);
+     output_pos + = literal_length;<font></font>
+<font></font>
+     read (input_pos, match_offset);<font></font>
+<font></font>
+     copy (output_pos, output_pos - match_offset,
+         match_length);
+     output_pos + = match_length;
+ }} </pre><br>  Das LZ4-Format ist so konzipiert, dass sich Literale und Übereinstimmungen in einer komprimierten Datei abwechseln.  Und natürlich steht das Wörtliche immer an erster Stelle (denn von Anfang an hat das Match nichts zu bieten).  Daher werden ihre Längen zusammen codiert. <br><br>  In der Tat ist alles etwas komplizierter.  Ein Byte wird aus der Datei gelesen und zwei Halbbytes daraus entnommen, in denen Zahlen von 0 bis 15 codiert sind. Wenn die entsprechende Zahl nicht gleich 15 ist, wird dies als Länge des Literals bzw. der Übereinstimmung betrachtet.  Und wenn es 15 ist, ist die Länge länger und es wird in den folgenden Bytes codiert.  Dann wird das nächste Byte gelesen und sein Wert zur Länge addiert.  Wenn es gleich 255 ist, fahren wir fort - wir lesen das nächste Byte auf die gleiche Weise. <br><br>  Beachten Sie, dass das maximale Komprimierungsverhältnis für das LZ4-Format 255 nicht erreicht. Und die zweite (nutzlose) Beobachtung: Wenn Ihre Daten sehr redundant sind, erhöht die Verwendung von LZ4 das Komprimierungsverhältnis doppelt. <br><br>  Wenn wir die Länge des Literal (und dann auch die Länge der Übereinstimmung und den Versatz der Übereinstimmung) lesen, reicht es aus, um einfach zwei Speicherelemente zu kopieren, um sie zu lösen. <br><br><h3>  So kopieren Sie ein Stück Speicher </h3><br>  Es scheint, dass Sie die <code>memcpy</code> Funktion verwenden können, die nur zum Kopieren von Speicherelementen dient.  Dies ist jedoch nicht optimal und immer noch falsch. <br><br>  Warum ist die Verwendung der memcpy-Funktion nicht optimal?  Weil sie: <br><br><ol><li>  befindet sich normalerweise in der libc-Bibliothek (und die libc-Bibliothek wird normalerweise dynamisch verknüpft, und der memcpy-Aufruf erfolgt indirekt über PLT). </li><li>  nicht im Einklang mit dem in der Kompilierungszeit unbekannten Größenargument, </li><li>  unternimmt große Anstrengungen, um die "Schwänze" eines Speicherfragments, die nicht ein Vielfaches der Größe eines Maschinenworts oder Registers haben, korrekt zu verarbeiten. </li></ol><br>  Der letzte Punkt ist der wichtigste.  Angenommen, wir haben die memcpy-Funktion gebeten, genau 5 Bytes zu kopieren.  Es wäre sehr gut, 8 Bytes gleichzeitig mit zwei movq-Anweisungen zu kopieren. <br><br> <code>Hello world <font color="#0fc000">Hello</font> <font color="#ff0000">wo</font> ... <br> ^^^^^ <font color="#ff0000">^^^</font> - src <br> ^^^^^ <font color="#ff0000">^^^</font> - dst</code> <br> <br>  Aber dann werden wir drei zusätzliche Bytes kopieren - das heißt, wir werden den übertragenen Puffer ins Ausland schreiben.  Die <code>memcpy</code> Funktion hat nicht das Recht, dies zu tun. Da wir einige Daten in unserem Programm überschreiben, wird es eine „Passage“ aus dem Speicher geben.  Und wenn wir an einer nicht ausgerichteten Adresse geschrieben haben, können sich diese zusätzlichen Bytes auf einer nicht zugewiesenen virtuellen Speicherseite oder auf einer Seite ohne Schreibzugriff befinden.  Dann bekommen wir Segfault (das ist gut). <br><br>  In unserem Fall können wir jedoch fast immer zusätzliche Bytes schreiben.  Wir können zusätzliche Bytes im Eingabepuffer lesen, solange sich die zusätzlichen Bytes vollständig darin befinden.  Unter den gleichen Bedingungen können wir zusätzliche Bytes in den Ausgabepuffer schreiben - da wir sie bei der nächsten Iteration trotzdem überschreiben. <br><br>  Diese Optimierung ist bereits in der ursprünglichen LZ4-Implementierung enthalten: <br><br><pre>  inline void copy8 (UInt8 * dst, const UInt8 * src)
+ {
+     memcpy (dst, src, 8);  /// Eigentlich wird memcpy hier nicht aufgerufen.
+ }}<font></font>
+<font></font>
+ inline void wildCopy8 (UInt8 * dst, const UInt8 * src, UInt8 * dst_end)
+ {
+     tun
+     {
+         copy8 (dst, src);
+         dst + = 8;
+         src + = 8;
+     } while (dst &lt;dst_end);
+ }} </pre><br>  Um diese Optimierung nutzen zu können, müssen Sie nur überprüfen, ob wir weit genug vom Rand des Puffers entfernt sind.  Dies sollte kostenlos sein, da wir bereits prüfen, ob die Puffergrenzen überschritten werden.  Und die Verarbeitung der letzten paar Bytes - das "Ende" der Daten - kann nach der Hauptschleife erfolgen. <br><br>  Es gibt jedoch noch einige Feinheiten.  Der Zyklus enthält zwei Kopien - Literal und Match.  Bei Verwendung der Funktion LZ4_decompress_fast (anstelle von LZ4_decompress_safe) wird die Prüfung jedoch einmal durchgeführt - wenn das Literal kopiert werden muss.  Beim Kopieren einer Übereinstimmung wird keine Überprüfung durchgeführt, aber <a href="">die LZ4-Formatspezifikation</a> selbst enthält Bedingungen, die es ermöglichen, sie zu vermeiden: <br><br><blockquote>  Die letzten 5 Bytes sind immer Literale <br>  Die letzte Übereinstimmung muss mindestens 12 Byte vor dem Ende des Blocks beginnen. <br>  Folglich kann ein Block mit weniger als 13 Bytes nicht komprimiert werden. </blockquote><br>  Speziell ausgewählte Eingabedaten können ein Speicherlaufwerk verursachen.  Wenn Sie die Funktion LZ4_decompress_fast verwenden, benötigen Sie Schutz vor fehlerhaften Daten.  Komprimierte Daten sollten mindestens eine Prüfsumme sein.  Wenn Sie Schutz vor einem Angreifer benötigen, verwenden Sie die Funktion LZ4_decompress_safe.  Andere Optionen: Nehmen Sie eine kryptografische Hash-Funktion als Prüfsumme, die jedoch mit ziemlicher Sicherheit die gesamte Leistung beeinträchtigt.  entweder mehr Speicher für Puffer zuweisen;  Weisen Sie entweder Speicher für Puffer mit einem separaten Aufruf von mmap zu und erstellen Sie eine Schutzseite. <br><br>  Wenn ich einen Code sehe, der Daten von 8 Bytes kopiert, frage ich sofort - warum genau 8 Bytes?  Sie können 16 Bytes mit SSE-Registern kopieren: <br><br><pre>  inline void copy16 (UInt8 * dst, const UInt8 * src)
+ {
+ #if __SSE2__
+     _mm_storeu_si128 (reinterpret_cast &lt;__ m128i *&gt; (dst),
+         _mm_loadu_si128 (reinterpret_cast &lt;const __m128i *&gt; (src)));
+ #else
+     memcpy (dst, src, 16);
+ #endif
+ }}<font></font>
+<font></font>
+ inline void wildCopy16 (UInt8 * dst, const UInt8 * src, UInt8 * dst_end)
+ {
+     tun
+     {
+         copy16 (dst, src);
+         dst + = 16;
+         src + = 16;
+     } while (dst &lt;dst_end);
+ }} </pre><br>  Das Kopieren von 32 Byte für AVX und 64 Byte für AVX-512 funktioniert ähnlich.  Außerdem können Sie den Zyklus mehrmals erweitern.  Wenn Sie sich jemals angesehen haben, wie <code>memcpy</code> implementiert ist, dann ist dies genau der <code>memcpy</code> Ansatz.  (Übrigens wird der Compiler in diesem Fall die Schleife weder erweitern noch vektorisieren. Dies erfordert das Einfügen umständlicher Überprüfungen.) <br><br>  Warum wird dies in der ursprünglichen LZ4-Implementierung nicht durchgeführt?  Erstens ist es nicht offensichtlich, ob dies besser oder schlechter ist.  Das Ergebnis hängt von der Größe der Fragmente ab, die kopiert werden müssen.  Plötzlich sind sie alle kurz und zusätzliche Arbeit wird nutzlos sein?  Und zweitens werden die Bedingungen im LZ4-Format zerstört, die es Ihnen ermöglichen, unnötigen Brunch in der inneren Schleife zu vermeiden. <br><br>  Trotzdem werden wir diese Option vorerst berücksichtigen. <br><br><h3>  Tricky Kopie </h3><br>  Zurück zur Frage - ist es immer möglich, Daten auf diese Weise zu kopieren?  Angenommen, wir müssen eine Übereinstimmung kopieren, dh ein Stück Speicher aus dem Ausgabepuffer, der sich in einem gewissen Versatz hinter dem Cursor befindet, an die Position dieses Cursors kopieren. <br><br>  Stellen Sie sich einen einfachen Fall vor: Sie müssen 5 Bytes mit Offset 12 kopieren: <br><br> <code><font color="#0fc000">Hello</font> world ........... <br> ^^^^^ - src <br> ^^^^^ - dst <br> <br> Hello world <font color="#0fc000">Hello</font> <font color="#a8a8a8">wo</font> ... <br> ^^^^^ - src <br> ^^^^^ - dst</code> <br> <br>  Es gibt jedoch einen komplizierteren Fall - wenn wir ein Stück Speicher kopieren müssen, dessen Länge größer als der Versatz ist.  Das heißt, es zeigt teilweise Daten an, die noch nicht in den Ausgabepuffer geschrieben wurden. <br><br>  Kopieren Sie 10 Bytes mit Offset 3: <br><br> <code><font color="#0fc000">abc</font> ............. <br> ^^^^^^^^^^ - src <br> ^^^^^^^^^^ - dst <br> <br> abc <font color="#0fc000">abcabcabca</font> ... <br> ^^^^^^^^^^ - src <br> ^^^^^^^^^^ - dst</code> <br> <br>  Während des Komprimierungsprozesses haben wir alle Daten, und eine solche Übereinstimmung kann durchaus gefunden werden.  Die Funktion <code>memcpy</code> eignet sich nicht zum Kopieren: Sie unterstützt nicht den Fall, dass sich die Bereiche der Speicherfragmente überschneiden.  Die <code>memmove</code> Funktion <code>memmove</code> auch nicht geeignet, da das Speicherfragment, von dem die Daten <code>memmove</code> werden sollen, noch nicht vollständig initialisiert ist.  Sie müssen kopieren, als würden wir byteweise kopieren. <br><br><pre>  op [0] = match [0];
+ op [1] = match [1];
+ op [2] = match [2];
+ op [3] = match [3];
+ ... </pre><br><br>  So funktioniert es: <br><br> <code><font color="#0fc000">a</font> bc <font color="#0fc000">a</font> ............ <br> ^ - src <br> ^ - dst <br> <br> a <font color="#0fc000">b</font> ca <font color="#0fc000">b</font> ........... <br> ^ - src <br> ^ - dst <br> <br> ab <font color="#0fc000">c</font> ab <font color="#0fc000">c</font> .......... <br> ^ - src <br> ^ - dst <br> <br> abc <font color="#0fc000">a</font> bc <font color="#0fc000">a</font> ......... <br> ^ - src <br> ^ - dst <br> <br> abca <font color="#0fc000">b</font> ca <font color="#0fc000">b</font> ........ <br> ^ - src <br> ^ - dst</code> <br> <br>  Das heißt, wir müssen eine sich wiederholende Sequenz erstellen.  In der ursprünglichen LZ4-Implementierung wurde überraschend unverständlicher Code dafür geschrieben: <br><br><pre>  const unsigned dec32table [] = {0, 1, 2, 1, 4, 4, 4, 4};
+ const int dec64table [] = {0, 0, 0, -1, 0, 1, 2, 3};<font></font>
+<font></font>
+ const int dec64 = dec64table [Offset];
+ op [0] = match [0];
+ op [1] = match [1];
+ op [2] = match [2];
+ op [3] = match [3];
+ match + = dec32table [offset];
+ memcpy (op + 4, match, 4);
+ match - = dec64; </pre><br>  Wir kopieren die ersten 4 Bytes byteweise, verschieben sie um eine magische Zahl, kopieren die nächsten 4 Bytes als Ganzes und verschieben den Zeiger so, dass er mit einer anderen magischen Zahl übereinstimmt.  Der Code-Autor ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Jan Collet</a> ) hat aus irgendeinem lächerlichen Grund vergessen, einen Kommentar zu hinterlassen, was dies bedeutet.  Darüber hinaus sind Variablennamen verwirrend.  Beide heißen dec ... table, aber wir addieren eine davon und subtrahieren die andere.  Außerdem ist ein anderer nicht signiert und der andere ist int.  Es lohnt sich jedoch, Tribut zu zollen: Erst kürzlich hat der Autor diesen Platz im Code verbessert. <br><br>  So funktioniert es tatsächlich.  Kopieren Sie die ersten 4 Bytes: <br><br> <code>abc <font color="#0fc000">abca</font> ......... <br> ^^^^ - src <br> ^^^^ - dst</code> <br> <br>  Jetzt können Sie 4 Bytes gleichzeitig kopieren: <br><br> <code>abcabca <font color="#0fc000">bcab</font> ..... <br> ^^^^ - src <br> ^^^^ - dst</code> <br> <br>    ,  8  : <br><br> <code>abcabcabcab <font color="#0fc000">cabcabca</font> ..... <br> ^^^^^^^^ - src <br> ^^^^^^^^ - dst</code> <br> <br>     ,      —   .  Folgendes ist passiert: <br><br><pre> inline void copyOverlap8(UInt8 * op, const UInt8 *&amp; match, const size_t offset)
+ {<font></font>
+    /// 4 % n.<font></font>
+    /// Or if 4 % n is zero, we use n.<font></font>
+    /// It gives equivalent result, but is better CPU friendly for unknown reason.<font></font>
+    static constexpr int shift1[] = { 0, 1, 2, 1, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 8 % n - 4 % n<font></font>
+    static constexpr int shift2[] = { 0, 0, 0, 1, 0, -1, -2, -3 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+ }} </pre><br> ,  ,   . ,     ,     —   16 . <br><br>    « »    ,     ( <code>offset &lt; 16</code>   ,  <code>offset &lt; 8</code> ).  ()     16-   : <br><br><pre> inline void copyOverlap16(UInt8 * op, const UInt8 *&amp; match, const size_t offset)
+ {<font></font>
+    /// 4 % n.<font></font>
+    static constexpr int shift1[]<font></font>
+        = { 0, 1, 2, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 8 % n - 4 % n<font></font>
+    static constexpr int shift2[]<font></font>
+        = { 0, 0, 0, 1, 0, -1, -2, -3, -4, 4, 4, 4, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 16 % n - 8 % n<font></font>
+    static constexpr int shift3[]<font></font>
+        = { 0, 0, 0, -1, 0, -2, 2, 1, 8, -1, -2, -3, -4, -5, -6, -7 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+    memcpy(op + 8, match, 8);<font></font>
+    match += shift3[offset];<font></font>
+ }} </pre><br>       ?  ,        SIMD-,       16 ,         ( 1  15). ,   ,      . <br><br>    —   <code>pshufb</code> (  packed shuffle bytes)    SSSE3 (  S).    16- .      .   — «»:       0  15 —    ,       . ,      127 —     . <br><br>  Hier ist ein Beispiel: <br><br><pre> xmm0: abc.............<font></font>
+xmm1: 0120120120120120<font></font>
+<font></font>
+pshufb %xmm1, %xmm0<font></font>
+<font></font>
+xmm0: abcabcabcabcabca </pre><br>           —      !      : <br><br><pre> inline void copyOverlap16Shuffle(UInt8 * op, const UInt8 *&amp; match, const size_t offset)
+ {<font></font>
+#ifdef __SSSE3__<font></font>
+<font></font>
+    static constexpr UInt8 __attribute__((__aligned__(16))) masks[] =<font></font>
+     {<font></font>
+        0, 1, 2, 1, 4, 1, 4, 2, 8, 7, 6, 5, 4, 3, 2, 1, /* offset = 0, not used as mask, but for shift amount instead */<font></font>
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* offset = 1 */<font></font>
+        0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,<font></font>
+        0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0,<font></font>
+        0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0,<font></font>
+        0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0,<font></font>
+     };<font></font>
+<font></font>
+    _mm_storeu_si128(reinterpret_cast&lt;__m128i *&gt;(op),<font></font>
+        _mm_shuffle_epi8(<font></font>
+            _mm_loadu_si128(reinterpret_cast&lt;const __m128i *&gt;(match)),<font></font>
+            _mm_load_si128(reinterpret_cast&lt;const __m128i *&gt;(masks) + offset)));<font></font>
+<font></font>
+    match += masks[offset];<font></font>
+<font></font>
+#else<font></font>
+    copyOverlap16(op, match, offset);<font></font>
+ #endif
+ }} </pre><br>  <code>_mm_shuffle_epi8</code> —  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">intrinsic</a> ,    <code>pshufb</code> . <br><br>          ,    ?  SSSE3 —    ,   2006 .  AVX2  ,      32 ,      16- .     packed shuffle bytes,  vector permute bytes —  ,    .  AVX-512 VBMI    ,    64 ,        .      ARM NEON —   vtbl (vector table lookup),     8 . <br><br>  ,    <code>pshufb</code>  64- MMX-,   8 .         . ,        ,   16  (  ). <br><br>   Highload++ Siberia         ,    8          (  ) —       ! <br><br><h3>    if </h3><br> ,    ,   16 .         ? <br><br>  ,       .      ,           ,  ,         .    ,     . <br><br> ,    . , ,    ,      65 536 .        65 536    .           , ,  65 551 .  ,  ,       96   128  —     .     ,           «»      mmap    (     madvice).      - page faults.         ,    . <br><br><h3>   ? </h3><br> ,    ,     : <br><br><ol><li>   16   8. </li><li>  shuffle-   <code>offset &lt; 16</code> . </li><li>    if. </li></ol><br>              . <br><br>  Beispiel 1: <br> Xeon E2650v2,  .,  AppVersion. <br> reference: 1.67 GB/sec. <br> 16 bytes, shuffle: 2.94 GB/sec ( 76% ). <br><br>  Beispiel 2: <br> Xeon E2650v2,  .,  ShowsSumPosition. <br> reference: 2.30 GB/sec. <br> 16 bytes, shuffle: 1.91 GB/sec ( 20% ). <br><br>   ,         .     ,    .   - ,   .   ,      .     —       16 .  :    ,     ,   . <br><br>   ,     C++      :  8-  16-  ;     shuffle-. <br><br><pre> template &lt;size_t copy_amount, bool use_shuffle&gt;<font></font>
+void NO_INLINE decompressImpl(<font></font>
+     const char * const source,<font></font>
+     char * const dest,<font></font>
+     size_t dest_size) </pre><br>        ,         shuffle  .     ,   : <br><br><pre> sudo echo 'performance' | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor<font></font>
+kill -STOP $(pidof firefox) $(pidof chromium) </pre><br>        «»  (c  Xeon E5645),           ,    . ,         ,    .    ,    shuffle-,   ,      16- . <br><br>         : <br><br><pre> sudo kill -STOP $(pidof python) $(pidof perl) $(pgrep -u skynet) $(pidof cqudp-client) </pre><br>    .    thermal throttling  power capping. <br><br><h3>     </h3><br> ,      ,        .         ,         ,    .       .       , ,     .   : ClickHouse      ,       ,         .       ,             (       —  ?).      . <br><br>      ,    ,      .  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">« »</a> .   ,      ,           ,    . <br><br>      ,   .        .       -        .             —   ClickHouse      64 . ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="></a>   .) <br><br>  ,     « », ,    .      ,     ,   ,   -   .           .            ,          ,    .      . <br><br>         ,          ,       .    «»     ,    .     ,        .    Thompson Sampling. <br><br> ,   ,    .  —      :  ,  .          .     ,     .       ,           C++.     — ,     -   ,   ;     . <br><br>     ?      ,       .    . -,      ,         . -,  ,   ,   «» . <br><br> ,  ,           Thompson Sampling —   (   ,        ).   ,         ,         - ,     ,      .           ,     . <br><br>   ,   «» .   ,     ,        «»,     .      — <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="> </a> .    ,     ,       . <br><br>       ,   ,    ,    ,   «»: <br><br><pre> /// For better convergence, we don't use proper estimate of stddev.<font></font>
+/// We want to eventually separate between two algorithms even in case<font></font>
+/// when there is no statistical significant difference between them.<font></font>
+double sigma() const<font></font>
+ {<font></font>
+    return mean() / sqrt(adjustedCount());<font></font>
+ }}<font></font>
+<font></font>
+double sample(pcg64 &amp; rng) const<font></font>
+ {
+     ...<font></font>
+    return std::normal_distribution&lt;&gt;(mean(), sigma())(rng);<font></font>
+ }} </pre><br>    ,       —    memory latencies. <br><br>   ,         ,       —    LZ4    . <br><br>  ,    : <br> — reference (baseline):  LZ4   ; <br> — variant 0:   8 ,   shuffle; <br> — variant 1:   8 ,  shuffle; <br> — variant 2:   16 ,   shuffle; <br> — variant 3:   16 ,  shuffle; <br> — «» ,            . <br><br><h3>    CPU </h3><br>       CPU,    ,  .  ,   CPU   ? <br><br>         ClickHouse   ,  256    100    ( 256  ).  ,  CPU  ,      .      CPU: <br> — Intel® Xeon® CPU E5-2650 v2 @ 2.60GHz <br> — Intel® Xeon® CPU E5-2660 v4 @ 2.00GHz <br> — Intel® Xeon® CPU E5-2660 0 @ 2.20GHz <br> — Intel® Xeon® CPU E5645 @ 2.40GHz <br> — Intel Xeon E312xx (Sandy Bridge) <br> — AMD Opteron(TM) Processor 6274 <br> — AMD Opteron(tm) Processor 6380 <br> — Intel® Xeon® CPU E5-2683 v4 @ 2.10GHz <br> — Intel® Xeon® CPU E5530 @ 2.40GHz <br> — Intel® Xeon® CPU E5440 @ 2.83GHz <br> — Intel® Xeon® CPU E5-2667 v2 @ 3.30GHz <br><br>    — ,   R&amp;D: <br> — AMD EPYC 7351 16-Core Processor —    AMD. <br> — Cavium ThunderX2 —     x86,  AArch64.    SIMD-   .    224   56  . <br><br>  13 ,        256   6  (reference, 0, 1, 2, 3, adaptive),    10 ,   .  199 680 ,    . <br><br> ,    CPU  .         :      LZ4    (   —  ).  ,  Cavium   .       ClickHouse,   «» Xeon E5-2650 v2         ,      ,   ClickHouse    x86. <br><br><pre> ┌─cpu───────────────────┬──ref─┬─adapt─┬──max─┬─best─┬─adapt_boost─┬─max_boost─┬─adapt_over_max─┐<font></font>
+│ E5-2667 v2 @ 3.30GHz │ 2.81 │ 3.19 │ 3.15 │ 3 │ 1.14 │ 1.12 │ 1.01 │<font></font>
+│ E5-2650 v2 @ 2.60GHz │ 2.5 │ 2.84 │ 2.81 │ 3 │ 1.14 │ 1.12 │ 1.01 │<font></font>
+│ E5-2683 v4 @ 2.10GHz │ 2.26 │ 2.63 │ 2.59 │ 3 │ 1.16 │ 1.15 │ 1.02 │<font></font>
+│ E5-2660 v4 @ 2.00GHz │ 2.15 │ 2.49 │ 2.46 │ 3 │ 1.16 │ 1.14 │ 1.01 │<font></font>
+│ AMD EPYC 7351 │ 2.03 │ 2.44 │ 2.35 │ 3 │ 1.20 │ 1.16 │ 1.04 │<font></font>
+│ E5-2660 0 @ 2.20GHz │ 2.13 │ 2.39 │ 2.37 │ 3 │ 1.12 │ 1.11 │ 1.01 │<font></font>
+│ E312xx (Sandy Bridge) │ 1.97 │ 2.2 │ 2.18 │ 3 │ 1.12 │ 1.11 │ 1.01 │<font></font>
+│ E5530 @ 2.40GHz │ 1.65 │ 1.93 │ 1.94 │ 3 │ 1.17 │ 1.18 │ 0.99 │<font></font>
+│ E5645 @ 2.40GHz │ 1.65 │ 1.92 │ 1.94 │ 3 │ 1.16 │ 1.18 │ 0.99 │<font></font>
+│ AMD Opteron 6380 │ 1.47 │ 1.58 │ 1.56 │ 1 │ 1.07 │ 1.06 │ 1.01 │<font></font>
+│ AMD Opteron 6274 │ 1.15 │ 1.35 │ 1.35 │ 1 │ 1.17 │ 1.17 │ 1 │<font></font>
+│ E5440 @ 2.83GHz │ 1.35 │ 1.33 │ 1.42 │ 1 │ 0.99 │ 1.05 │ 0.94 │<font></font>
+│ Cavium ThunderX2 │ 0.84 │ 0.87 │ 0.87 │ 0 │ 1.04 │ 1.04 │ 1 │<font></font>
+└───────────────────────┴──────┴───────┴──────┴──────┴─────────────┴───────────┴────────────────┘ </pre><br> ref, adapt, max —       (,            ). best —      ,  0  3. adapt_boost —        baseline. max_boost —          baseline. adapt_over_max —         . <br><br>  ,    x86      12–20%.   ARM    4%,   ,         .  ,        «»              Intel. <br><br><h3>  Schlussfolgerungen </h3><br>       . ,   LZ4     12–20%,            .           .      ,         . <br><br>    ,     ,    «» ,    ZStandard level 1  LZ4:      IO    . <br><br>           — ,      .          ,       . <br><br>    :         . LZ4    ,   Lizard, Density  LZSSE  ,    . ,    LZ4      LZSSE  ClickHouse. <br><br>       LZ4 :         .          :      ,   .             . ,   inc-  dec-   <a href=""></a> .  ,           12–15%     32 ,    16,   .       32  —     ,     <a href=""> </a> . <br><br>       ,  ,          page cache  userspace (   mmap,    O_DIRECT  userspace page cache —     ),      - (  CityHash128  CRC32-C,    HighwayHash, FARSH  XXH3).         ,       . <br><br>   ,     master,            .  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="></a>  HighLoad++ Siberia,   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="></a> . </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de452778/">https://habr.com/ru/post/de452778/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de452766/index.html">Progressive Streaming-Technologie oder das Ansehen von 4k-Videos über das Netzwerk ohne Friese</a></li>
+<li><a href="../de452768/index.html">So gestalten Sie ein Produkt, wenn Sie sich für den Eintritt in den ausländischen Markt entscheiden</a></li>
+<li><a href="../de452772/index.html">5 Fortgeschrittene Go-Testtechniken</a></li>
+<li><a href="../de452774/index.html">Dell XPS 13 9380: zuverlässiger und sehr kompakter Laptop für ernsthafte Geschäfte</a></li>
+<li><a href="../de452776/index.html">N.M.D. (Nicht mein Geschäft)</a></li>
+<li><a href="../de452780/index.html">Mobius 2019 Piter: Kostenloses Live-Streaming und alles andere</a></li>
+<li><a href="../de452788/index.html">Der Kampf um Qualität in Webanwendungen, Depressionen, Drachen und Westeros</a></li>
+<li><a href="../de452790/index.html">OpenCV 4.0 und 4.1 - was ist neu?</a></li>
+<li><a href="../de452792/index.html">Solid State SSD-Überprüfung für Unternehmensbenutzer Kingston DC500R</a></li>
+<li><a href="../de452794/index.html">Über die Lokalisierung von Produkten. Teil eins: Wo soll ich anfangen?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

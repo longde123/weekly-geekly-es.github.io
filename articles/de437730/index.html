@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🈶 🎽 🚞 Wie wir das Speicherproblem in PostgreSQL gelöst haben, ohne ein Byte hinzuzufügen 📎 ❣️ 🗜️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Eine kurze Geschichte über die "schwere" Anfrage und die elegante Lösung des Problems 
+
+
+ Vor kurzem, nachts, weckten uns Warnungen: Es gab nicht genü...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Wie wir das Speicherproblem in PostgreSQL gelöst haben, ohne ein Byte hinzuzufügen</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/437730/"><p><img src="https://habrastorage.org/webt/bd/vf/bj/bdvfbjzxvmt2ijnwu5zjqnz3e1e.jpeg"></p><br><p>  Eine kurze Geschichte über die "schwere" Anfrage und die elegante Lösung des Problems </p><br><p>  Vor kurzem, nachts, weckten uns Warnungen: Es gab nicht genügend Speicherplatz.  Wir haben schnell herausgefunden, dass das Problem bei ETL-Aufgaben liegt. </p><br><p>  Die ETL-Aufgabe wurde in einer Tabelle ausgeführt, in der Binärdatensätze und Speicherauszüge gespeichert sind.  Diese Aufgabe bestand jede Nacht darin, doppelte Speicherauszüge zu entfernen und Speicherplatz freizugeben. </p><a name="habracut"></a><br><p>  Um nach doppelten Dumps zu suchen, haben wir diese Abfrage verwendet: </p><br><pre><code class="plaintext hljs">id, MIN(id) OVER (PARTITION BY blob ORDER BY id) FROM dumps</code> </pre> <br><p>  Die Abfrage kombiniert dieselben Speicherauszüge durch das BLOB-Feld.  Mit der Fensterfunktion erhalten wir die Kennung des ersten Auftretens jedes Speicherauszugs.  Mit dieser Anfrage löschen wir dann alle doppelten Dumps. </p><br><p>  Die Anforderung wurde einige Zeit ausgeführt und hat, wie aus den Protokollen hervorgeht, viel Speicherplatz beansprucht.  Die Grafik zeigt, wie er jede Nacht freien Speicherplatz erzielte: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/v2/sn/ye/v2snyevasqsmvjjzpc7lbjs4mpe.png"></a> </p><br><p>  Mit der Zeit benötigte die Anforderung mehr Speicher, und die Fehler vertieften sich.  Und als wir auf den Ausführungsplan blickten, sahen wir sofort, wohin alles geht: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Sort (cost=69547.50..70790.83 rows=497332 width=36) (actual time=107.607..127.485 rows=39160) Sort Key: blob, id Sort Method: external merge Disk: 30456kB Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Seq Scan on dumps (cost=0..8889.32 rows=497332 width=36) (actual time=0.022..8.747 rows=39160) Buffers: shared hit=3916 Execution time: 159.960 ms</code> </pre> <br><p>  <strong>Das Sortieren nimmt viel Speicherplatz in Anspruch.</strong>  In Bezug auf die Ausführung erfordert das Sortieren ungefähr 30 MB Speicher aus einem Testdatensatz. </p><br><h3 id="pochemu-tak">  Warum so? </h3><br><p>  PostgreSQL reserviert Speicher zum Hashing und Sortieren.  Die Speichermenge wird durch den Parameter <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><code>work_mem</code></a> gesteuert.  Die Standardgröße von work_mem beträgt 4 MB.  Wenn mehr als 4 MB zum Hashing oder Sortieren benötigt werden, belegt PostgreSQL vorübergehend Speicherplatz. </p><br><p>  Unsere Abfrage belegt deutlich mehr als 4 MB, sodass die Datenbank so viel Speicher benötigt.  Wir haben uns entschieden: Wir werden uns nicht beeilen und haben den Parameter nicht erhöht und den Speicher nicht erweitert.  Es ist besser, nach einer anderen Möglichkeit zu suchen, <strong>um den Speicher für die Sortierung zu kürzen</strong> . </p><br><h3 id="ekonomnaya-sortirovka">  Wirtschaftliche Sortierung </h3><br><p>  „Wie viel Sortierung verbraucht, hängt von der Größe des Datensatzes und des Sortierschlüssels ab. Sie können den Datensatz nicht reduzieren, aber die <strong>Größe des Schlüssels ist möglich</strong> . </p><br><p>  Für den Referenzpunkt nehmen wir die durchschnittliche Größe des Sortierschlüssels: </p><br><pre> <code class="plaintext hljs"> avg ---------- 780</code> </pre> <br><p>  Jeder Schlüssel wiegt 780. Um den Binärschlüssel zu reduzieren, kann er gehasht werden.  In PostgreSQL gibt es dafür <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">md5</a> (ja, keine Sicherheit, aber für unseren Zweck wird es reichen).  Mal sehen, wie viel der mit md5 gehashte BLOB wiegt: </p><br><pre> <code class="plaintext hljs"> avg ----------- 36</code> </pre> <br><p>  Die Größe des durch md5 gehashten Schlüssels beträgt 36 Bytes.  <strong>Ein Hash-Schlüssel wiegt nur 4% der ursprünglichen Option</strong> . </p><br><p>  Als Nächstes haben wir die ursprüngliche Anforderung mit einem Hash-Schlüssel gestartet: </p><br><pre> <code class="plaintext hljs"> id, MIN(id) OVER ( PARTITION BY md5(array_to_string(blob, '') ) ORDER BY id) FROM dumps;</code> </pre> <br><p>  Und der Umsetzungsplan: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916 -&gt; Sort (cost=7490.74..7588.64 rows=39160 width=36) (actual time=349.383..353.045 rows=39160) Sort Key: (md5(array_to_string(blob, ''::text))), id Sort Method: quicksort Memory: 4005kB Buffers: shared hit=3916 -&gt; Seq Scan on dumps (cost=0..4503.40 rows=39160 width=36) (actual time=0.055..292.070 rows=39160) Buffers: shared hit=3916 Execution time: 374.125 ms</code> </pre> <br><p>  Mit einem Hash-Schlüssel verbraucht die Anforderung nur 4 zusätzliche Megabyte, dh etwas mehr als 10% der vorherigen 30 MB.  <strong>Die Größe des Sortierschlüssels hat also großen Einfluss darauf, wie viel Speicher die Sortierung benötigt</strong> . </p><br><h3 id="dalshe--bolshe">  Weiter mehr </h3><br><p>  In diesem Beispiel haben wir das BLOB mit <code>md5</code> .  Mit MD5 erstellte Hashes müssen 16 Byte wiegen.  Und wir haben mehr: </p><br><pre> <code class="plaintext hljs">md5_size ------------- 32</code> </pre> <br><p>  Unser Hash war genau doppelt so groß, weil <code>md5</code> einen Hash in Form von hexadezimalem Text erzeugt. </p><br><p>  In PostgreSQL können Sie MD5 zum Hashing mit der Erweiterung <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><code>pgcrypto</code></a> .  <code>pgcrypto</code> erstellt MD5 vom Typ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><code>bytea</code> (binär)</a> : </p><br><pre> <code class="plaintext hljs">select pg_column_size( digest('foo', 'md5') ) as crypto_md5_size crypto_md5_size --------------- 20</code> </pre> <br><p>  Der Hash ist immer noch 4 Bytes mehr als er sein sollte.  Es ist nur so, dass der <code>bytea</code> Typ diese 4 Bytes verwendet, um die Länge des Werts zu speichern, aber wir werden es nicht so lassen. </p><br><p>  Es stellt sich heraus, dass der <code>uuid</code> Typ in PostgreSQL genau 16 Bytes wiegt und jeden beliebigen Wert unterstützt, sodass wir die verbleibenden vier Bytes entfernen: </p><br><pre> <code class="plaintext hljs">uuid_size --------------- 16</code> </pre> <br><p>  Das ist alles.  32 Bytes mit <code>md5</code> mit <code>md5</code> zu 16 Bytes. </p><br><p>  Ich habe die Auswirkungen der Änderung anhand eines größeren Datensatzes überprüft.  Die Daten selbst können nicht angezeigt werden, aber ich werde die Ergebnisse teilen: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/rt/g4/v6/rtg4v65zaqxezkmjkh9cspgh2bo.jpeg"></a> </p><br><p>  Wie Sie der Tabelle entnehmen können, wog die ursprüngliche problematische Anfrage 300 MB (und weckte uns mitten in der Nacht).  Mit dem <code>uuid</code> Schlüssel dauerte das Sortieren nur 7 MB. </p><br><h3 id="soobrazheniya-vdogonku">  Follow-up-Überlegungen </h3><br><p>  Eine Anforderung mit einem Hash-Speicher-Sortierschlüssel verbraucht weniger, funktioniert jedoch viel langsamer: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/b0/cv/vp/b0cvvpozbm_myvxy0-esybfu7gi.jpeg"></a> </p><br><p>  Hashing benötigt mehr CPU, daher ist eine Anforderung mit einem Hash langsamer.  Wir haben jedoch versucht, das Problem mit dem Speicherplatz zu lösen. Außerdem wird die Aufgabe nachts ausgeführt, sodass die Zeit kein Problem darstellt.  Wir haben Kompromisse geschlossen, um Speicherplatz zu sparen. </p><br><p>  Dies ist ein gutes Beispiel dafür, dass Sie <strong>nicht immer versuchen müssen, Datenbankabfragen zu beschleunigen</strong> .  Es ist besser, das zu verwenden, was ausgeglichen ist, und das Maximum aus einem Minimum an Ressourcen herauszuholen. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de437730/">https://habr.com/ru/post/de437730/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de437716/index.html">Drei relativ ehrliche Möglichkeiten, ein Flutter-Projekt zu erstellen</a></li>
+<li><a href="../de437720/index.html">Der Kampf um Qualitätslösungen bei Erlang / Elixir</a></li>
+<li><a href="../de437722/index.html">Kosmische Folgen des amerikanischen Shatdown</a></li>
+<li><a href="../de437724/index.html">OpenSceneGraph: Prozedurale Animation von Geometrie- und Statusattributen</a></li>
+<li><a href="../de437726/index.html">Kotlin mit Kotlinx serialisieren. Serialisierung</a></li>
+<li><a href="../de437732/index.html">Übersicht über den MakeX M-One Pro 70 DLP-Drucker</a></li>
+<li><a href="../de437734/index.html">Einrichten von IPTV von Rostelecom auf MikroTik-Routern</a></li>
+<li><a href="../de437736/index.html">Wie wir den Start von Selentests durch Moon und OpenShift automatisiert haben</a></li>
+<li><a href="../de437738/index.html">Notizen eines Phytochemikers. Die Kartoffel. Teil Zwei Eine Geschichte über Kartoffelfett oder "Tag des Rohkostessers"</a></li>
+<li><a href="../de437740/index.html">Haxe: Das große Geheimnis der plattformübergreifenden Entwicklung</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

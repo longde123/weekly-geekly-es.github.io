@@ -1,0 +1,360 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙇 🔖 🧝🏾 Verbessern der Zabbix + PostgreSQL-Leistung durch Partitionierung und Indizierung 🤣 🙃 🙋</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Vor ungefähr einem Jahr wurden meine Kollegen und ich beauftragt, das beliebte Netzwerkinfrastruktur-Überwachungssystem - Zabbix - zu sortieren. Nachd...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Verbessern der Zabbix + PostgreSQL-Leistung durch Partitionierung und Indizierung</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/468463/"> Vor ungefähr einem Jahr wurden meine Kollegen und ich beauftragt, das beliebte Netzwerkinfrastruktur-Überwachungssystem - Zabbix - zu sortieren.  Nachdem wir die Dokumentation studiert hatten, gingen wir sofort zum Lasttest über: Wir wollten bewerten, wie viele Parameter Zabbix ohne merkliche Leistungseinbußen arbeiten kann.  Als DBMS wurde nur PostgreSQL verwendet. <br><br>  Während der Tests wurden einige Architekturmerkmale des Datenbanklayouts und das Verhalten des Überwachungssystems selbst identifiziert, die es dem Überwachungssystem standardmäßig nicht ermöglichen, seine maximale Leistung zu erreichen.  Infolgedessen wurden einige Optimierungsmaßnahmen entwickelt, durchgeführt und getestet, hauptsächlich im Hinblick auf die Optimierung der Datenbank. <br><br>  Ich möchte die Ergebnisse der in diesem Artikel geleisteten Arbeit teilen.  Dieser Artikel ist sowohl für Zabbix- als auch für PostgreSQL-DBA-Administratoren sowie für alle nützlich, die das beliebte PosgreSQL-DBMS besser verstehen und verstehen möchten. <br><br>  Ein kleiner Spoiler: Auf einem schwachen Computer mit einer Last von 200.000 Parametern pro Minute ist es uns gelungen, die CPU iowait von 20% auf 2% zu reduzieren, die Aufzeichnungszeit in Teilen auf Primärdatentabellen um das 250-fache und auf aggregierte Datentabellen um das 32-fache zu reduzieren und die Größe der Indizes zu reduzieren 5-10 mal und beschleunigen den Empfang historischer Proben in einigen Fällen bis zu 18 mal. <br><a name="habracut"></a><br><h4>  Lasttest </h4><br>  Lasttests wurden gemäß dem Schema durchgeführt: ein Zabbix-Server, ein aktiver Zabbix-Proxy, zwei Agenten.  Jeder Agent wurde so konfiguriert, dass er 50 Tonnen Ganzzahl- und 50 Tonnen Zeichenfolgenparameter pro Minute ergibt (für insgesamt 200 Agenten 200 Tonnen Parameter pro Minute oder 3333 Parameter pro Sekunde).  Um Agentenparameter zu generieren, haben wir ein <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Plug-In für Zabbix verwendet.</a> Um zu überprüfen, wie viele maximale Parameter ein Agent generieren kann, müssen Sie ein <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">spezielles Skript desselben Plug-In-Autors zabbix_module_stress verwenden</a> .  Der Zabbix-Webadministrator hat Schwierigkeiten, große Vorlagen zu registrieren. Daher haben wir die Parameter in 20 Vorlagen mit 5 Tonnen Parametern (2500 numerische und 2500 Zeichenfolgen) unterteilt. <br><br><div class="spoiler">  <b class="spoiler_title">Skriptgeneratorvorlage für Lasttests in Python</b> <div class="spoiler_text"><pre><code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> argparse <span class="hljs-string"><span class="hljs-string">"""     .   20   5000    ( 2500  :  echo,  ;  ping,  ) """</span></span> TEMP_HEAD = <span class="hljs-string"><span class="hljs-string">""" &lt;?xml version="1.0" encoding="UTF-8"?&gt; &lt;zabbix_export&gt; &lt;version&gt;2.0&lt;/version&gt; &lt;date&gt;2015-08-17T23:15:01Z&lt;/date&gt; &lt;groups&gt; &lt;group&gt; &lt;name&gt;Templates&lt;/name&gt; &lt;/group&gt; &lt;/groups&gt; &lt;templates&gt; &lt;template&gt; &lt;template&gt;Template Zabbix Srv Stress {count} passive {char}&lt;/template&gt; &lt;name&gt;Template Zabbix Srv Stress {count} passive {char}&lt;/name&gt; &lt;description/&gt; &lt;groups&gt; &lt;group&gt; &lt;name&gt;Templates&lt;/name&gt; &lt;/group&gt; &lt;/groups&gt; &lt;applications/&gt; &lt;items&gt; """</span></span> TEMP_END = <span class="hljs-string"><span class="hljs-string">"""&lt;/items&gt; &lt;discovery_rules/&gt; &lt;macros/&gt; &lt;templates/&gt; &lt;screens/&gt; &lt;/template&gt; &lt;/templates&gt; &lt;/zabbix_export&gt; """</span></span> TEMP_ITEM = <span class="hljs-string"><span class="hljs-string">"""&lt;item&gt; &lt;name&gt;{k}&lt;/name&gt; &lt;type&gt;0&lt;/type&gt; &lt;snmp_community/&gt; &lt;multiplier&gt;0&lt;/multiplier&gt; &lt;snmp_oid/&gt; &lt;key&gt;{k}&lt;/key&gt; &lt;delay&gt;1m&lt;/delay&gt; &lt;history&gt;3&lt;/history&gt; &lt;trends&gt;365&lt;/trends&gt; &lt;status&gt;0&lt;/status&gt; &lt;value_type&gt;{t}&lt;/value_type&gt; &lt;allowed_hosts/&gt; &lt;units/&gt; &lt;delta&gt;0&lt;/delta&gt; &lt;snmpv3_contextname/&gt; &lt;snmpv3_securityname/&gt; &lt;snmpv3_securitylevel&gt;0&lt;/snmpv3_securitylevel&gt; &lt;snmpv3_authprotocol&gt;0&lt;/snmpv3_authprotocol&gt; &lt;snmpv3_authpassphrase/&gt; &lt;snmpv3_privprotocol&gt;0&lt;/snmpv3_privprotocol&gt; &lt;snmpv3_privpassphrase/&gt; &lt;formula&gt;1&lt;/formula&gt; &lt;delay_flex/&gt; &lt;params/&gt; &lt;ipmi_sensor/&gt; &lt;data_type&gt;0&lt;/data_type&gt; &lt;authtype&gt;0&lt;/authtype&gt; &lt;username/&gt; &lt;password/&gt; &lt;publickey/&gt; &lt;privatekey/&gt; &lt;port/&gt; &lt;description/&gt; &lt;inventory_link&gt;0&lt;/inventory_link&gt; &lt;applications/&gt; &lt;valuemap/&gt; &lt;logtimefmt/&gt; &lt;/item&gt; """</span></span> TMP_FNAME_DEFAULT = <span class="hljs-string"><span class="hljs-string">"Template_App_Zabbix_Server_Stress_{count}_passive_{char}.xml"</span></span> chars = <span class="hljs-string"><span class="hljs-string">"ABCDEFGHIJKLMNOPQRSTUVWXYZ"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> __name__ == <span class="hljs-string"><span class="hljs-string">"__main__"</span></span>: parser = argparse.ArgumentParser( description=<span class="hljs-string"><span class="hljs-string">'     zabbix'</span></span>) parser.add_argument(<span class="hljs-string"><span class="hljs-string">'--items'</span></span>, dest=<span class="hljs-string"><span class="hljs-string">'items'</span></span>, type=int, default=<span class="hljs-number"><span class="hljs-number">1000</span></span>, help=<span class="hljs-string"><span class="hljs-string">'-   (default: 1000)'</span></span>) parser.add_argument(<span class="hljs-string"><span class="hljs-string">'--templates'</span></span>, dest=<span class="hljs-string"><span class="hljs-string">'templates'</span></span>, type=int, default=<span class="hljs-number"><span class="hljs-number">1</span></span>, help=<span class="hljs-string"><span class="hljs-string">f'-  [1-</span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{len(chars)}</span></span></span><span class="hljs-string">] (default: 1)'</span></span>) args = parser.parse_args() items_count = args.items tmps_count = args.templates <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> (tmps_count &gt;= <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> tmps_count &lt;= len(chars)): sys.exit(<span class="hljs-string"><span class="hljs-string">f"Templates must be in range 1 - </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{len(chars)}</span></span></span><span class="hljs-string">"</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> range(tmps_count): fname = TMP_FNAME_DEFAULT.format(count=items_count, char=chars[i]) <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> open(fname, <span class="hljs-string"><span class="hljs-string">"w"</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> output: output.write(TEMP_HEAD.format(count=items_count, char=chars[i])) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> k,t <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> [(<span class="hljs-string"><span class="hljs-string">'stress.ping[{}-I-{:06d}]'</span></span>,<span class="hljs-number"><span class="hljs-number">3</span></span>), (<span class="hljs-string"><span class="hljs-string">'stress.echo[{}-S-{:06d}]'</span></span>,<span class="hljs-number"><span class="hljs-number">4</span></span>)]: <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> j <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> range(int(items_count/<span class="hljs-number"><span class="hljs-number">2</span></span>)): output.write(TEMP_ITEM.format(k=k.format(chars[i],j),t=t)) output.write(TEMP_END)</code> </pre> <br></div></div><br>  Die CPU-Iostat-Metrik ist ein guter Indikator für die Zabbix-Leistung. Sie gibt den Bruchteil der Zeiteinheit wieder, in der der Prozessor auf den Festplattenzugriff wartet.  Je höher es ist, desto mehr ist die Festplatte mit Lese- und Schreibvorgängen beschäftigt, was sich indirekt auf die Leistungsverschlechterung des gesamten Überwachungssystems auswirkt.  Das heißt,  Dies ist ein sicheres Zeichen dafür, dass etwas mit der Überwachung nicht stimmt.  Übrigens lautet die häufig gestellte Frage auf den Freiflächen des Netzwerks „Wie wird der Iostat-Trigger in Zabbix entfernt?“. Dies ist also ein wunder Punkt, da es viele Gründe gibt, den Wert der iowait-Metrik zu erhöhen. <br><br>  Hier ist das Bild für die CPU iowait-Metrik, die wir zunächst drei Tage später erhalten haben: <br><br><img src="https://habrastorage.org/webt/dc/md/yo/dcmdyote_ghzxca-o9sft88ptxq.png"><br><br>  Aber welches Bild für dieselbe Metrik haben wir am Ende auch innerhalb von drei Tagen nach all den durchgeführten Optimierungsmaßnahmen erhalten, auf die weiter unten eingegangen wird: <br><br><img src="https://habrastorage.org/webt/do/cs/fc/docsfcjjczkhgxoubjayslrohuw.png"><br><br>  Wie aus den Diagrammen ersichtlich ist, fiel der CPU-Iowaowit-Indikator von fast 20% auf 2%, was indirekt die Ausführungszeit aller Anforderungen zum Hinzufügen und Lesen von Daten beschleunigte.  Lassen Sie uns nun sehen, warum mit den Standarddatenbankeinstellungen die Gesamtleistung des Überwachungssystems sinkt und wie dies behoben werden kann. <br><br><h4>  Gründe für den Leistungsabfall von Zabbix </h4><br>  Bei der Anhäufung von mehr als 10 Millionen Parameterwerten in jeder Tabelle mit Primärdaten wurde festgestellt, dass die Leistung des Überwachungssystems aus folgenden Gründen stark abnimmt: <br><br><ul><li>  Die iowait-Metrik für die Server-CPU wird um mehr als 20% erhöht, was auf eine Verlängerung der Zeit hinweist, in der die CPU den Zugriff auf Lese- und Schreibvorgänge auf der Festplatte erwartet </li><li>  Indizes von Tabellen, in denen Überwachungsdaten stark aufgeblasen sind </li><li>  Die Auslastungsmetrik wird für eine Festplatte mit Überwachungsdaten auf 100% erhöht, was die volle Auslastung der Festplatte mit Lese- und Schreibvorgängen angibt </li><li>  Veraltete Werte haben keine Zeit, um bei der Reinigung gemäß dem Zeitplan der Haushälterin aus den Verlaufstabellen gelöscht zu werden </li></ul><br>  Die Situation verschärft sich zu Beginn jeder Stunde, wenn zusätzlich aggregierte Stundenstatistiken berechnet werden - gleichzeitig wird das aktive Lesen und Schreiben von Indexseiten von der Festplatte, das Löschen veralteter Daten aus dem Verlauf durchgeführt, was zu demselben Ergebnis führt - ein Rückgang der Datenbankleistung und eine Erhöhung der Ausführungszeit Anfragen (im Limit wurde eine Anfrage von bis zu 5 Minuten notiert!). <br><br>  Eine kleine Hilfe bei der Organisation eines Überwachungs-Data-Warehouse in Zabbix.  Darüber hinaus werden Primärdaten und aggregierte Daten in verschiedenen Tabellen gespeichert, wobei die Parametertypen getrennt werden.  Jede Tabelle speichert ein Element-ID-Feld (eine implizite Referenz auf ein registriertes Datenelement im System), einen Zeitstempel zum Registrieren des Taktwerts im Unix-Zeitstempelformat (Millisekunden in einer separaten Spalte) und einen Wert in einer separaten Spalte (die Ausnahme ist die Protokolltabelle, sie enthält mehr Felder - es ist wie ein Ereignisprotokoll ): <br><div class="scrollable-table"><table><tbody><tr><th>  Tabellenname </th><th>  Termin </th><th>  Datentyp </th></tr><tr><td>  Geschichte </td><td>  Primäre Überwachungsdaten </td><td>  numerisch (16.4) </td></tr><tr><td>  history_uint </td><td>  Primäre Überwachungsdaten </td><td>  numerisch (20,0) </td></tr><tr><td>  history_str </td><td>  Primäre Überwachungsdaten </td><td>  varchar (255) </td></tr><tr><td>  history_text </td><td>  Primäre Überwachungsdaten </td><td>  Text </td></tr><tr><td>  history_logs </td><td>  Primäre Überwachungsdaten </td><td>  Text- und Int-Felder </td></tr><tr><td>  Trends </td><td>  Aggregierte Überwachungsdaten </td><td>  numerisch (16.4) </td></tr><tr><td>  trend_uint </td><td>  Aggregierte Überwachungsdaten </td><td>  numerisch (20,0) </td></tr></tbody></table></div><h4>  Optimierungsaktivitäten </h4><br>  Um die Leistung der PostgreSQL-Datenbank zu verbessern, wurden verschiedene Optimierungsmaßnahmen durchgeführt, von denen die wichtigsten das Partitionieren und Ändern von Indizes sind.  Es lohnt sich jedoch, einige Worte über einige wichtige und nützliche Maßnahmen zu erwähnen, die die Arbeit einer Datenbank unter dem PostgreSQL-Datenbankverwaltungssystem beschleunigen können. <br><br>  <b>Wichtiger Hinweis.</b>  Zum Zeitpunkt des Sammelns des Materials des Artikels haben wir Zabbix Version 4.0 verwendet, obwohl Version 4.2 bereits veröffentlicht wurde und Version 4.4 für die Veröffentlichung vorbereitet wird.  Warum ist es wichtig, dies zu erwähnen?  Da Zabbix ab Version 4.2 eine spezielle leistungsstarke Erweiterung für die Arbeit mit TimescaleDB-Zeitreihen unterstützt, jedoch bisher im experimentellen Modus: Bei allen Vorteilen der Verwendung dieser Erweiterung wird angenommen, dass einige Anforderungen langsamer funktionieren und es immer noch ungelöste Leistungsprobleme gibt (es wird welche geben) behoben in Version 4.4) - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">lesen Sie diesen Artikel</a> .  <i>Im nächsten Artikel möchte ich über die Ergebnisse von Lasttests schreiben, die bereits mit der TimescaleDB-Erweiterung im Vergleich zu diesem Lösungsfall durchgeführt wurden.</i>  PostgreSQL-Version wurde 10 verwendet, aber alle angegebenen Informationen sind für 11 und 12 Versionen relevant (wir warten!). <br><br>  Deshalb das Wichtigste zuerst: <br><br><ul><li>  Einrichten einer Konfigurationsdatei mit dem Dienstprogramm pgtune </li><li>  Speichern der Datenbank auf einer separaten physischen Festplatte </li><li>  Partitionieren von Verlaufstabellen mit pg_pathman </li><li>  Ändern der Indextypen von Verlaufstabellen in brin (clock) und btree-gin (itemid) </li><li>  Erfassung und Analyse von Abfrageausführungsstatistiken pg_stat_statements </li><li>  Festlegen der Überwachungsparameter für physische Datenträger </li><li>  Verbesserung der Hardwareleistung </li><li>  Erstellung eines verteilten Clusters (Material, das über den Rahmen dieses Artikels hinausgeht) </li></ul><br><br><h4>  Konfigurieren einer Konfigurationsdatei mit dem Dienstprogramm pgtune </h4><br>  Tatsächlich ist PostgreSQL ein ziemlich leichtes DBMS.  Die Standardkonfigurationsdatei ist so konfiguriert, dass, wie mein Kollege sagt, „sogar an der Kaffeemaschine gearbeitet wird“, d. H.  auf einem sehr bescheidenen Eisen.  Daher muss PostgreSQL für die Serverkonfiguration unter Berücksichtigung der Speichermenge, der Anzahl der Prozessoren, der Art der beabsichtigten Verwendung der Datenbank, der Art der Festplatte (HDD oder SSD) und der Anzahl der Verbindungen konfiguriert werden. <br><br>  Leider gibt es keine einzige Formel zum Optimieren aller DBMS, aber es gibt bestimmte Regeln und Muster, die für die meisten Konfigurationen geeignet sind (eine feinere Optimierung ist bereits die Arbeit eines Experten).  Um die Lebensdauer von DBA zu vereinfachen, wurde das Dienstprogramm <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">pgtune</a> geschrieben, das durch die <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=" class="user_link">Webversion</a> von <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=" class="user_link">le0pard</a> , dem Autor eines interessanten und nützlichen Buches zur PostgreSQL-Administration, ergänzt wurde. <br><br>  Ein Beispiel für die Ausführung des Dienstprogramms in der Konsole mit 100 Verbindungen (Zabbix hat einen anspruchsvollen Webadministrator) für den Anwendungstyp "Data Warehouses": <br><br><pre>  pgtune -i postgresql.conf -o new_postgresql.conf -T DW -c 100 </pre><br><div class="spoiler">  <b class="spoiler_title">Die Konfigurationsparameter, die das Dienstprogramm pgtune mit einer Beschreibung des Zwecks ändert (Werte sind als Beispiel angegeben).</b> <div class="spoiler_text"><pre> # DB Version: 11
+ # Betriebssystemtyp: Linux
+ # DB Typ: Web
+ # Gesamtspeicher (RAM): 8 GB
+ # CPUs num: 1
+ # Verbindungsnummer: 100
+ # Datenspeicherung: Festplatte<font></font>
+<font></font>
+ max_connections = 100 # maximale Anzahl gleichzeitiger Datenbankverbindungen
+ shared_buffers = 2 GB # Speichergröße für verschiedene Puffer (hauptsächlich Cache von Tabellenblöcken und Indexblöcken) im gemeinsam genutzten Speicher
+ effektive_cache_size = 6 GB # maximale Größe des erforderlichen Speichers für die Ausführung von Abfragen mithilfe von Indizes
+ wartung_arbeit_mem = 512MB # beeinflusst die Betriebsgeschwindigkeit VACUUM, ANALYZE, CREATE INDEX
+ checkpoint_completion_target = 0,7 # Zielzeit, um die Checkpoint-Prozedur abzuschließen
+ wal_buffers = 16 MB # Speicherplatz, der vom gemeinsam genutzten Speicher zum Verwalten von Transaktionsprotokollen verwendet wird
+ default_statistics_target = 100 # Anzahl der vom Befehl ANALYZE gesammelten Statistiken. Beim Erhöhen erstellt das Optimierungsprogramm Abfragen langsamer, aber besser
+ random_page_cost = 4 # bedingte Kosten für den Indexzugriff auf Datenseiten - wirkt sich auf die Entscheidung zur Verwendung des Index aus
+ effektive_io_concurrency = 2 # Anzahl asynchroner E / A-Vorgänge, die das DBMS in einer separaten Sitzung ausführen möchte
+ work_mem = 10485kB # Die Menge an Speicher, die zum Sortieren und Hashing von Tabellen verwendet wird, bevor temporäre Dateien auf der Festplatte verwendet werden
+ min_wal_size = 1 GB # liegt unter der Anzahl der WAL-Dateien, die für die zukünftige Verwendung recycelt werden
+ max_wal_size = 2 GB # begrenzt zusätzlich die Anzahl der WAL-Dateien, die für die zukünftige Verwendung recycelt werden </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">Einige nützliche Postgresql-Konfigurationsoptionen</b> <div class="spoiler_text"><pre> # gleichzeitige Anforderungshandler verwalten
+ max_worker_processes = 8 # die maximale Anzahl von Hintergrundprozessen - mindestens einer pro Datenbank
+ max_parallel_workers_per_gather = 4 # maximale Anzahl paralleler Prozesse innerhalb einer einzelnen Anforderung
+ max_parallel_workers = 8 # Die maximale Anzahl von Arbeitsprozessen, die das System für parallele Operationen unterstützen kann<font></font>
+<font></font>
+ # Protokollierungseinstellungen (eine einfache Möglichkeit, die Ausführungszeit von Abfragen zu ermitteln, ohne die Erweiterung pg_stat_statements zu verwenden)
+ log_min_duration_statement = 3000 # Schreibe die Dauer der Ausführung aller Befehle in die Protokolle, deren Betriebszeit&gt; = des angegebenen Wertes in ms ist
+ log_duration = off # zeichnet die Dauer jedes abgeschlossenen Befehls auf
+ log_statement = 'none' # welche SQL-Befehle in das Protokoll geschrieben werden sollen, Werte: none (deaktiviert), ddl, mod und all (alle Befehle)
+ debug_print_plan = off # Ausgabe des Abfrageplanbaums zur weiteren Analyse<font></font>
+<font></font>
+ # Drücken Sie das Maximum aus der Datenbank heraus und seien Sie bereit, es für jeden Fehler zu erhalten (für die am meisten unterdrückten, die die Existenz von ssd und eines verteilten Clusters ignorieren)
+ #fsync = off # physisches Schreiben auf die Änderungsdiskette. Das Deaktivieren von fsync führt zu einem Geschwindigkeitsgewinn, kann jedoch zu dauerhaften Fehlern führen
+ Mit #synchronous_commit = off # können Sie dem Client antworten, noch bevor sich die Transaktionsinformationen in der WAL befinden - eine nahezu sichere Alternative zum Deaktivieren von fsync
+ #full_page_writes = off # Das Herunterfahren beschleunigt den normalen Betrieb, kann jedoch zu Datenbeschädigung oder Datenbeschädigung führen, wenn das System abstürzt </pre></div></div><br><h4>  Auflisten einer Datenbank auf einer separaten physischen Festplatte </h4><br>  <i>Dieses Element ist optional und stellt eher eine Übergangslösung für einen vollwertigen verteilten Cluster dar. Es ist jedoch hilfreich, diese Möglichkeit zu kennen.</i>  Um die Datenbank zu beschleunigen, können Sie sie auf einer separaten Festplatte ablegen.  Wir haben die gesamte Festplatte im Basisverzeichnis gemountet, in dem alle PostgreSQL-Datenbanken gespeichert sind. Im Allgemeinen kann dies jedoch anders erfolgen: Erstellen Sie eine neue Tabellenbasis und übertragen Sie die Datenbank (oder nur einen Teil davon - die Tabellen der primären und aggregierten Überwachungsdaten) auf dieser Tabellenbasis auf einer separaten Festplatte. <br><br><div class="spoiler">  <b class="spoiler_title">Beispiel montieren</b> <div class="spoiler_text">  Zuerst müssen Sie die Festplatte mit dem ext4-Dateisystem formatieren und mit dem Server verbinden.  Hängen Sie die Festplatte für die Datenbank mit dem Noatime-Label ein: <br><br><pre>  mount / dev / sdc1 / var / lib / pgsql / 10 / data / base -o noatime </pre><br>  Fügen Sie für die dauerhafte Bereitstellung die Zeile zur Datei / etc / fstab hinzu: <br><br><pre> # wobei UUID die Kennung der Festplatte ist, können Sie sie mit dem Dienstprogramm blkid anzeigen
+ UUID = 121efe29-70bf-410b-bc71-90704568ce3b / var / lib / pgsql / 10 / data / base ext4-Standardeinstellungen, noatime 0 0 </pre><br></div></div><br><h4>  Partitionieren von Verlaufstabellen mit pg_pathman </h4><br>  Eines der Probleme, auf die wir beim Stresstest von Zabbix gestoßen sind - PostgreSQL schafft es nicht, veraltete Daten aus der Datenbank zu löschen.  Mithilfe der Partitionierung können Sie die Tabelle in ihre Bestandteile aufteilen und so die Größe der Indizes und Bestandteile der Supertabelle verringern, was sich positiv auf die Geschwindigkeit der gesamten Datenbank auswirkt. <br><br>  Die Partitionierung löst zwei Probleme gleichzeitig: <br><br>  1. Beschleunigen Sie das Entfernen veralteter Daten, indem Sie ganze Tabellen löschen <br><br>  2. Aufteilen von Indizes für jede zusammengesetzte Tabelle <br><br>  Es gibt vier Mechanismen für die Partitionierung in PostgreSQL: <br><br>  1.Standard Constraint_Exclusion <br><br>  2. Erweiterung pg_partman ( <i>nicht mit pg_pathman verwechseln</i> ) <br><br>  3. Erweiterung <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">pg_pathman</a> <br><br>  4. Erstellen und pflegen Sie Partitionen manuell von uns <br><br>  Die bequemste, zuverlässigste und optimierte Partitionierungslösung ist unserer Meinung nach die Erweiterung <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">pg_pathman</a> .  Mit dieser Partitionierungsmethode bestimmt der Abfrageplaner flexibel, in welchen Partitionen nach Daten gesucht werden soll.  <i>Gerüchten zufolge wird es in der 12. Version von PostgreSQL bereits eine hervorragende Partition geben.</i> <br><br>  Daher haben wir begonnen, Überwachungsdaten für jeden Tag in eine separate geerbte Tabelle von der Supertabelle zu schreiben, und das Entfernen veralteter Parameterwerte begann durch das gleichzeitige Entfernen aller veralteten Tabellen, was für ein DBMS für Arbeitskosten viel einfacher ist.  Das Löschen erfolgte durch Aufrufen der Datenbankbenutzerfunktion als Überwachungsparameter des Zabbix-Servers um 2 Uhr morgens mit Angabe des akzeptablen Bereichs der Statistikspeicherung. <br><br><div class="spoiler">  <b class="spoiler_title">Installieren und konfigurieren Sie die Partitionierung für PostgreSQL 10</b> <div class="spoiler_text">  Installieren und konfigurieren Sie die Erweiterung <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">pg_pathman</a> aus dem Standard-Betriebssystem-Repository (Anweisungen zum <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Erstellen</a> der neuesten Version der Erweiterung aus den Quellen finden Sie im selben Repository auf github): <br><br><pre> yum installiere pg_pathman10
+ nano /var/pgsqldb/postgresql.conf
+ shared_preload_libraries = 'pg_pathman' # wichtig - hier schreibe pg_pathman zuletzt in die Liste
+</pre><br>  Wir starten das DBMS neu, erstellen die Erweiterung für die Datenbank und konfigurieren die Partitionierung (1 Tag für die primären Überwachungsdaten und 3 Tage für die aggregierten Überwachungsdaten - dies könnte für 1 Tag erfolgen): <br><br><pre> systemctl starte postgresql-10.service neu
+ psql -d zabbix -U postgres
+ CREATE EXTENSION pg_pathman;
+ # Konfigurieren Sie einen Tag für die Tabellen der primären Überwachungsdaten
+ # 1552424400 - Countdown als Unix-Zeitstempel, 86400 - Sekunden in Tagen
+ Wählen Sie create_range_partitions ('history', 'clock', 1552424400, 86400).
+ Wählen Sie create_range_partitions ('history_uint', 'clock', 1552424400, 86400).
+ Wählen Sie create_range_partitions ('history_text', 'clock', 1552424400, 86400).
+ Wählen Sie create_range_partitions ('history_str', 'clock', 1552424400, 86400).
+ Wählen Sie create_range_partitions ('history_log', 'clock', 1552424400, 86400).
+ # Konfigurieren Sie drei Tage lang für aggregierte Überwachungsdatentabellen
+ # 1552424400 - Countdown als Unix-Zeitstempel, 259200 - Sekunden in drei Tagen
+ Wählen Sie create_range_partitions aus ('Trends', 'Uhr', 1545771600, 259200).  
+ Wählen Sie create_range_partitions aus ('trend_uint', 'clock', 1545771600, 259200). 
+</pre><br>  <i>Wenn noch keine Daten in einer der Tabellen vorhanden sind, muss beim Aufrufen der Funktion create_range_partitions ein weiteres zusätzliches Argument p_count = 0_ übergeben werden.</i> <br><br>  Nützliche Abfragen zum Überwachen und Verwalten von Partitionen: <br><br><pre> # allgemeine Liste der partitionierten Tabellen, Hauptkonfigurationsspeicher:
+ wähle * aus pathman_config;
+ # Darstellung mit allen vorhandenen Abschnitten sowie deren Eltern und Bereichsgrenzen:
+ Wählen Sie * aus pathman_partition_list.
+ # zusätzliche Parameter, die das Standardverhalten von pg_pathman überschreiben:
+ Wählen Sie * aus pathman_config_params;
+ # Kopieren Sie den Inhalt zurück in die übergeordnete Tabelle und löschen Sie Partitionen:
+ select drop_partitions ('table_name' :: regclass, false);
+</pre><br>  Nützliches Skript zum Anzeigen von Statistiken zur Anzahl und Größe von Partitionen: <br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">/*       */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> nspname <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> schemaname, relname, relkind, <span class="hljs-keyword"><span class="hljs-keyword">cast</span></span> (reltuples <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> <span class="hljs-built_in"><span class="hljs-built_in">int</span></span>), pg_size_pretty(pg_relation_size(C.oid)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-string"><span class="hljs-string">"size"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class C <span class="hljs-keyword"><span class="hljs-keyword">LEFT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> pg_namespace N <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (N.oid = C.relnamespace) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> nspname <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> (<span class="hljs-string"><span class="hljs-string">'pg_catalog'</span></span>, <span class="hljs-string"><span class="hljs-string">'information_schema'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> (relname <span class="hljs-keyword"><span class="hljs-keyword">like</span></span> <span class="hljs-string"><span class="hljs-string">'history%'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> relname <span class="hljs-keyword"><span class="hljs-keyword">like</span></span> <span class="hljs-string"><span class="hljs-string">'trends%'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> relkind = <span class="hljs-string"><span class="hljs-string">'r'</span></span> <span class="hljs-comment"><span class="hljs-comment">-- and reltuples &gt; 0 -- and pg_relation_size(C.oid) &gt;= 0 ORDER BY schemaname, relname</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Automatische Optimierung des Löschens veralteter Partitionen (ahtung - eine große SQL-Funktion)</b> <div class="spoiler_text">  Um das automatische Löschen von Partitionen zu konfigurieren, müssen Sie eine Funktion in der Datenbank erstellen <br>  (Breittext, also musste ich die Syntaxhervorhebung entfernen): <br><br><pre> CREATE OR REPLACE FUNCTION public.delete_old_partitions (Ganzzahl history_days, Ganzzahl trend_days, Ganzzahl str_days)
+  RETURNS Text
+  SPRACHE plpgsql
+ AS $ function $
+ / *
+ Die Funktion löscht alle Partitionen, die älter als die angegebene Anzahl von Tagen sind:
+ history_days - für Partitionen history_x, history_uint_x
+ Trends_Tage - für Partitionen Trends_x, Trends_Uint_x
+ str_days - für Partitionen history_str_x, history_text_x, history_log_x
+ * /
+ deklarieren clock_today_start int;
+ deklariere clock_delete_less_history int = 0;
+ deklariere clock_delete_less_trends int = 0;
+ deklariere clock_delete_less_strings int = 0;
+ clock_delete_less int = 0;
+ deklariere Iterator int = 0;
+ deklariere result_str text = '';
+ deklarieren Sie buf_table_size Text;
+ deklarieren Sie buf_table_len text;
+ deklariere partition_name text;
+ deklariere clock_max text;
+ deklariere err_detail text;
+ deklariere t_start timestamp = clock_timestamp ();
+ deklarieren Sie den Zeitstempel t_end;
+ beginnen
+     Wenn $ 1 &lt;= 0, dann wird 'ups zurückgegeben, etwas stimmt nicht: Das Argument history_days muss ein positiver ganzzahliger Wert sein';  ende wenn;
+     Wenn $ 2 &lt;= 0 ist, wird "ups" zurückgegeben. Es stimmt etwas nicht: Das Argument "Trends_days" muss ein positiver ganzzahliger Wert sein. "  ende wenn;
+     Wenn $ 3 &lt;= 0, dann wird 'ups zurückgegeben, etwas stimmt nicht: Das Argument str_days muss ein positiver ganzzahliger Wert sein.';  ende wenn;
+     clock_today_start = extract (Epoche von date_trunc ('day', now ())) :: int;
+     clock_delete_less_history = extrahieren (Epoche von date_trunc ('Tag', jetzt ()) - ($ 1 :: Text || 'Tage') :: Intervall) :: int;
+     clock_delete_less_trends = extract (Epoche von date_trunc ('Tag', jetzt ()) - ($ 2 :: Text || 'Tage') :: Intervall) :: int;
+     clock_delete_less_strings = extract (Epoche von date_trunc ('Tag', jetzt ()) - ($ 3 :: text || 'Tage') :: Intervall) :: int;
+     clock_delete_less = least (clock_delete_less_history, clock_delete_less_trends, clock_delete_less_strings);
+     - Erhöhen Sie den Hinweis 'clock_today_start% (%)', to_timestamp (clock_today_start), clock_today_start;
+     - Erhöhen Sie den Hinweis 'clock_delete_less_history% (%)% days', to_timestamp (clock_delete_less_history), clock_delete_less_history, $ 1;
+     - Benachrichtigung 'clock_delete_less_trends% (%)% days', to_timestamp (clock_delete_less_trends), clock_delete_less_trends, $ 2;
+     - Erhöhen Sie den Hinweis 'clock_delete_less_strings% (%)% days', to_timestamp (clock_delete_less_strings), clock_delete_less_strings, $ 3;
+     für partition_name, clock_max in der ausgewählten Partition, range_max von pathman_partition_list where 
+     range_max :: int &lt;= am größten (clock_delete_less_history, clock_delete_less_trends, clock_delete_less_strings) und 
+     (Partition :: Text wie 'Verlauf%' oder Partition :: Text wie 'Trends%') Reihenfolge nach Partition aufsteigend
+     Schleife
+         if (Partitionsname ~ 'history_uint_ \ d' und clock_max :: int &lt;= clock_delete_less_history)
+         oder (partition_name ~ 'history_ \ d' und clock_max :: int &lt;= clock_delete_less_history)
+         oder (Partitionsname ~ 'Trends_ \ d' und clock_max :: int &lt;= clock_delete_less_trends)
+         oder (Partitionsname ~ 'history_log_ \ d' und clock_max :: int &lt;= clock_delete_less_strings)
+         oder (Partitionsname ~ 'history_str_ \ d' und clock_max :: int &lt;= clock_delete_less_strings)
+         oder (partition_name ~ 'history_text_ \ d' und clock_max :: int &lt;= clock_delete_less_strings)
+         dann 
+             Iterator = Iterator + 1;
+             Benachrichtigung auslösen '%', Format ('!!!% s% s löschen', Partitionsname, Uhr_max);
+             Wählen Sie max (reltuples :: int), pg_size_pretty (sum (pg_relation_size (pg_class.oid))) als "size" aus pg_class, wobei relname wie partition_name ||  '%' in strikte buf_table_len, buf_table_size;
+             wenn result_str! = '' dann result_str = result_str ||  ',';  ende wenn;
+             result_str = result_str ||  Format ('% s (dt &lt;% s, len% s,% s)', Partitionsname, to_char (to_timestamp (clock_max :: int), 'JJJJ-MM-TT'), buf_table_len, buf_table_size);
+             Format ausführen ('Tabelle löschen, falls vorhanden% s', Partitionsname);
+         ende wenn;
+     Endschleife;
+     wenn iterator = 0, dann result_str = format ('es gibt keine Partitionen zum Löschen älterer, dann% s date', to_char (to_timestamp (clock_delete_less), 'YYYY-MM-DD')); 
+     sonst result_str = format ('% s Partitionen in% s Sekunden gelöscht:', Iterator, Trunc (Extrakt (Sekunden von (clock_timestamp () - t_start)) :: numeric, 3)) ||  result_str;
+     ende wenn;
+     - Hinweis '%', result_str;
+     return result_str;
+ Ausnahme wenn andere dann
+    Get Stacked Diagnostics err_detail = PG_EXCEPTION_CONTEXT;
+    Rückgabeformat ('ups, etwas stimmt nicht:% s [Fehlercode% s],% s', sqlerrm, sqlstate, err_detail);
+ Ende; 
+ $ function $;
+</pre><br>  Um die Funktion zum automatischen Bereinigen von Partitionen automatisch aufzurufen, müssen Sie ein Datenelement für den zabbix Server-Host vom Typ "Datenbankmonitor" mit den folgenden Einstellungen erstellen: <br><br><pre> - Typ: Datenbankmonitor
+ - name: delete_old_history_partitions
+ - Schlüssel: db.odbc.select [delete_old_history_partitions, zabbix]
+ - SQL-Ausdruck: Wählen Sie delete_old_partitions (3, 30, 30).
+ # Hier geben die Parameter des Funktionsaufrufs delete_old_partitions die Speicherzeit in Tagen an 
+ # für numerische Werte, aggregierte numerische Werte und Zeichenfolgenwerte
+ - Datentyp: Text
+ - Aktualisierungsintervall: 0
+ - Benutzerintervall: geplant in h2
+ - Verlaufslagerzeit: 90 Tage
+ - Datenelementgruppe: Datenbank
+</pre><br>  Als Ergebnis erhalten wir Statistiken über die Bereinigung von Partitionen vom ungefähr folgenden Typ: <br><br><pre>  2019-09-16 02:00:00, 3 Partitionen in 0,024 Sekunden gelöscht: Trends_78 (dt &lt;2019-08-17, Länge 1, 48 kB), Verlauf_193 (dt &lt;2019-09-13, Länge 85343, 9448 kB) ), history_uint_186 (dt &lt;2019-09-13, len 27969, 3480 kB)
+</pre><br>  <b>Wichtig!</b>  Nachdem Sie das automatische Löschen von Partitionen über das Datenelement und die Benutzerfunktion eingerichtet haben, müssen Sie die Verlaufs- und Trendbereinigung im Zabbix Housekeeper- <i>Taskplaner deaktivieren</i> : <i>Wählen Sie über den Zabbix-Menüpunkt "Administration" -&gt; "Allgemein" -&gt; "Verlauf löschen" aus der Liste in der Ecke -&gt; Deaktivieren alle Kontrollkästchen in den Abschnitten „Verlauf“ und „Änderungsdynamik“.</i> <br></div></div><br><h4>  Ändern der Indextypen von Verlaufstabellen in brin (clock) und btree-gin (itemid) </h4><br>  Besonderer Dank geht an <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=" class="user_link">erogov</a> für die <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">hervorragende Reihe von Übersichtsartikeln zu PostgreSQL-Indizes</a> .  <i>Und in der Tat das gesamte PostgresPRO-Team.</i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Beeindruckt von diesen Artikeln haben wir mit verschiedenen Arten von Indizes in den Überwachungsdatentabellen herumgespielt und sind zu dem Schluss gekommen, welche Arten von Indizes in welchen Feldern die maximale Leistungssteigerung bewirken. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Es wurde festgestellt, dass der zusammengesetzte Index btree (itemid, clock) standardmäßig für alle Tabellen mit Überwachungsdaten erstellt wird. Er ist schnell für die Suche, insbesondere nach monoton geordneten Werten, schwillt jedoch auf der Festplatte an, wenn viele Daten vorhanden sind - mehr als 10 Millionen. </font></font><br><br> <i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Auf den Tabellen Standardmäßig werden stündlich aggregierte Statistiken erstellt. In der Regel wird ein eindeutiger Index erstellt, obwohl diese Tabellen zur Datenspeicherung und Eindeutigkeit hier auf Anwendungsserverebene bereitgestellt werden und ein eindeutiger Index nur das Einfügen von Daten verlangsamt.</font></font></i> <br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Beim Testen verschiedener Indizes wurde die erfolgreichste Kombination von Indizes ermittelt: der Brin-Index im Clock-Feld und der Btree-Gin-Index im Itemid-Feld für alle Tabellen mit Überwachungsdaten. </font></font><br><br> <i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Der Brin-Index ist ideal für monoton ansteigende Daten, wie den Zeitstempel der Tatsache eines Ereignisses, d.h. </font><font style="vertical-align: inherit;">für Zeitreihen. </font><font style="vertical-align: inherit;">Und der btree-gin-Index ist im Wesentlichen ein Gin-Index über Standarddatentypen, der im Allgemeinen viel schneller ist als der klassische btree-Index, weil </font><font style="vertical-align: inherit;">Der Gin-Index wird beim Hinzufügen neuer Werte nicht neu erstellt, sondern nur durch diese ergänzt. </font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Der btree-gin-Index wird als Erweiterung von PostgreSQL eingefügt.</font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ein Vergleich der Abtastgeschwindigkeit für diese Indizierungsstrategie und für Indizes in der Zabbix-Datenbank ist unten angegeben. </font><font style="vertical-align: inherit;">Während der Auslastungstests haben wir drei Tage lang Daten für drei Partitionen gesammelt:</font></font><br><div class="scrollable-table"><table><tbody><tr><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Partitionsname </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Die Anzahl der Zeilen in der MLN </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Größe in MB </font></font></th></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> history_uint_1 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 81.3 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 4119 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> history_uint_2 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 74.9 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 4426 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> history_uint_3 </font></font></td><td>  100.7 </td><td>  5387 </td></tr></tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Um die Ergebnisse auszuwerten, wurden drei Arten von Abfragen durchgeführt: </font></font><br><br><ol><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> für einen bestimmten Parameter itemid Daten für den letzten Monat, tatsächlich die letzten drei Tage (insgesamt 1660 Datensätze) </font></font><br><br><pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EXPLAIN Analysieren Wählen Sie * aus history_uint aus, wobei itemid = 313300</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+und Uhr&gt; = Auszug (Epoche von '2019-03-09 00:00:00' :: Zeitstempel) :: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+und clock &lt;= extract (Epoche von '2019-04-09 12:00:00' :: timestamp) :: int;</font></font><font></font>
+</pre></li><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> für einen bestimmten Parameter Daten für 12 Stunden eines Tages (insgesamt 649 Einträge) </font></font><br><br><pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EXPLAIN Analysieren Wählen Sie * aus history_text aus, wobei itemid = 310650 ist</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+und Uhr&gt; = Auszug (Epoche von '2019-04-09 00:00:00' :: Zeitstempel) :: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+und clock &lt;= extract (Epoche von '2019-04-09 12:00:00' :: timestamp) :: int;</font></font><font></font>
+</pre></li><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> für eine bestimmte Parameterdaten für eine Stunde (insgesamt 61 Datensätze): </font></font><br><br><pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EXPLAIN analysieren Analyse Anzahl (*) aus history_text mit itemid = 336540</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+und Uhr&gt; = Auszug (Epoche von '2019-04-08 11:00:00' :: Zeitstempel) :: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+und clock &lt;= extract (Epoche von '2019-04-08 12:00:00' :: timestamp) :: int;</font></font><font></font>
+</pre></li></ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Die Testergebnisse sind nachstehend tabellarisch aufgeführt: </font></font><br><div class="scrollable-table"><table><tbody><tr><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Indextyp </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Größe in MB * </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Anfrage 1 ** in ms </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Anfrage 2 ** in ms </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Anfrage 3 ** in ms </font></font></th></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> btree (Uhr, Itemid) </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 14741 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 7154.3 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2205.3 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1860.4 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Brin (Uhr), </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Btree-Gin (Itemid)</font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 0,42 und 1329 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2958.2 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1820.4 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 102.1 </font></font></td></tr></tbody></table></div><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">* Die Größe in MB wird insgesamt für drei Partitionen angegeben. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">** Typ 1-Anforderung - Daten für 3 Tage, Typ 2-Anforderung - Daten für 12 Stunden, Typ 3-Anforderung - Daten für eine Stunde. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Aus der Vergleichstabelle ist ersichtlich, dass für große Datentabellen die Anzahl der Datensätze gilt Bei mehr als 100 Millionen ist deutlich zu erkennen, dass die Änderung des Standard-Composite-Index btree in zwei Indizes brin und btree-gin sich günstig auf die Reduzierung der Indexgröße und die Beschleunigung der Ausführungszeit von Abfragen auswirkt. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Die Effizienz der Indizierung und Partitionierung wird unten am Beispiel einer Anforderung zum Hinzufügen neuer Datensätze zu den Tabellen history_uint und trend_uint gezeigt (Ergänzungen erfolgen durchschnittlich 2000 Werte pro Abfrage).</font></font><br><div class="scrollable-table"><table><tbody><tr><th>  Tabelle </th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Durchschnittliche Anforderungszeit für Verbesserungen, ms </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Durchschnittliche Anforderungszeit nach Verbesserungen, ms </font></font></th></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> trend_uint </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2201,48 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 8.72 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> trend_uint </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1997.27 </font></font></td><td>  62,16 </td></tr></tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Zusammenfassend lassen sich die Testergebnisse verschiedener Indexkonfigurationen für Zabbix-Systemüberwachungsdatentabellen zusammenfassen. Eine ähnliche Änderung des Standardindex für Zabbix-Systemüberwachungsdatentabellen wirkt sich positiv auf die Gesamtsystemleistung aus, was am deutlichsten zu spüren ist, wenn Datenmengen von über 10 Millionen akkumuliert werden Sie sollten den indirekten Effekt des „Aufschwellens“ des Standard-BTree-Index standardmäßig vergessen - häufige Neuerstellungen des Multi-Gigabyte-Index führen zu einer hohen Auslastung der Festplatte (utiliz-Metrik) ation), was letztendlich die Zeit der Festplattenoperationen und die Latenz des Zugriffs von der CPU auf die Festplatte erhöht (iowait-Metrik). </font></font><br><br> <b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Aber</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Damit der btree-gin-Index mit dem Datentyp bigint (in8) arbeiten kann, bei dem es sich um die Spalte itemid handelt, müssen Sie eine Familie von Operatoren des Typs bigint für den btree-gin-Index registrieren. </font></font><br><br><div class="spoiler"> <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Registrieren einer Bigint-Operatorfamilie für den btree-gin-Index</font></font></b> <div class="spoiler_text"><pre>/*<font></font>
+     gin    biginteger  integer    .<font></font>
+ -   gin     int2, int4, int8,<font></font>
+       bigint     ,     bigint (&lt;= 2147483647)<font></font>
+        intger_ops,  :<font></font>
+create index on tablename using gin(columnname int8_family_ops) with (fastupdate = false);<font></font>
+*/<font></font>
+<font></font>
+--       btree_gin<font></font>
+CREATE EXTENSION btree_gin;<font></font>
+<font></font>
+CREATE OPERATOR FAMILY integer_ops using gin;<font></font>
+<font></font>
+CREATE OPERATOR CLASS int4_family_ops<font></font>
+FOR TYPE int4 USING gin FAMILY integer_ops<font></font>
+ Wie<font></font>
+    OPERATOR 1 &lt;,<font></font>
+    OPERATOR 2 &lt;=,<font></font>
+    OPERATOR 3 =,<font></font>
+    OPERATOR 4 &gt;=,<font></font>
+    OPERATOR 5 &gt;,<font></font>
+    FUNCTION 1 btint4cmp(int4,int4),<font></font>
+    FUNCTION 2 gin_extract_value_int4(int4, internal),<font></font>
+    FUNCTION 3 gin_extract_query_int4(int4, internal, int2, internal, internal),<font></font>
+    FUNCTION 4 gin_btree_consistent(internal, int2, anyelement, int4, internal, internal),<font></font>
+    FUNCTION 5 gin_compare_prefix_int4(int4,int4,int2, internal),<font></font>
+STORAGE int4;<font></font>
+<font></font>
+CREATE OPERATOR CLASS int8_family_ops<font></font>
+FOR TYPE int8 USING gin FAMILY integer_ops<font></font>
+ Wie<font></font>
+    OPERATOR 1 &lt;,<font></font>
+    OPERATOR 2 &lt;=,<font></font>
+    OPERATOR 3 =,<font></font>
+    OPERATOR 4 &gt;=,<font></font>
+    OPERATOR 5 &gt;,<font></font>
+    FUNCTION 1 btint8cmp(int8,int8),<font></font>
+    FUNCTION 2 gin_extract_value_int8(int8, internal),<font></font>
+    FUNCTION 3 gin_extract_query_int8(int8, internal, int2, internal, internal),<font></font>
+    FUNCTION 4 gin_btree_consistent(internal, int2, anyelement, int4, internal, internal),<font></font>
+    FUNCTION 5 gin_compare_prefix_int8(int8,int8,int2, internal),<font></font>
+STORAGE int8;<font></font>
+<font></font>
+ALTER OPERATOR FAMILY integer_ops USING gin add<font></font>
+  OPERATOR 1 &lt;(int4,int8),<font></font>
+  OPERATOR 2 &lt;=(int4,int8),<font></font>
+  OPERATOR 3 =(int4,int8),<font></font>
+  OPERATOR 4 &gt;=(int4,int8),<font></font>
+  OPERATOR 5 &gt;(int4,int8);<font></font>
+<font></font>
+ALTER OPERATOR FAMILY integer_ops USING gin add<font></font>
+  OPERATOR 1 &lt;(int8,int4),<font></font>
+  OPERATOR 2 &lt;=(int8,int4),<font></font>
+  OPERATOR 3 =(int8,int4),<font></font>
+  OPERATOR 4 &gt;=(int8,int4),<font></font>
+  OPERATOR 5 &gt;(int8,int4);<font></font>
+</pre><br></div></div><br><div class="spoiler"> <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dieses Skript verteilt alle Indizes in der PostgreSQL-Datenbank für Zabbix von der Standardkonfiguration auf die oben beschriebene optimale Konfiguration.</font></font></b> <div class="spoiler_text"><pre>/*<font></font>
+        <font></font>
+*/<font></font>
+<font></font>
+--   <font></font>
+drop index history_1;<font></font>
+drop index history_uint_1;<font></font>
+drop index history_str_1;<font></font>
+drop index history_text_1;<font></font>
+drop index history_log_1;<font></font>
+--          PK <font></font>
+-- (   ,         )<font></font>
+alter table trends drop constraint trends_pk;<font></font>
+alter table trends_uint drop constraint trends_uint_pk;<font></font>
+<font></font>
+--     bree-gin   itemid    <font></font>
+--   btree-gin  bigint       <font></font>
+-- https://habr.com/ru/company/postgrespro/blog/340978/#comment_10545932<font></font>
+--    create extension btree_gin;<font></font>
+create index on history using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_uint using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_str using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_text using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_log using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on trends using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on trends_uint using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+<font></font>
+--     bree-gin   itemid    <font></font>
+--     brin    128 ,    <font></font>
+--           ,<font></font>
+--      https://habr.com/ru/company/postgrespro/blog/346460/<font></font>
+create index on history using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_uint using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_str using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_text using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_log using brin(clock) with (pages_per_range = 128);<font></font>
+create index on trends using brin(clock) with (pages_per_range = 128);<font></font>
+create index on trends_uint using brin(clock) with (pages_per_range = 128);<font></font>
+</pre><br></div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Für den Brin-Index für unser Datenvolumen mit einer Intensität von 100 Tonnen Parametern pro Minute (100 Tonnen in der Historie und 100 Tonnen in history_uint) wurde festgestellt, dass der Index in Tabellen mit primären Überwachungsdaten mit einer Zonengröße von 512 Seiten doppelt so schnell funktioniert als bei der Standardgröße von 128 Seiten, dies ist jedoch individuell und hängt von der Größe der Tabellen und der Serverkonfiguration ab. In jedem Fall nimmt der Brin-Index nur sehr wenig Platz ein, aber seine Geschwindigkeit kann durch Feinabstimmung der Größe der Zone leicht erhöht werden, vorausgesetzt, die Datenflussrate ändert sich nicht wesentlich.</font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Daher ist anzumerken, dass die Architektur von Zabbix selbst mit einer Einschränkung verbunden ist: Auf der Registerkarte „Zuletzt verwendete Daten“ werden die letzten beiden Werte für jeden Parameter unter Berücksichtigung der Filterung erfasst. Für jeden Parameter werden Werte in der Datenbank separat angefordert. Je mehr solche Parameter ausgewählt werden, desto länger wird die Abfrage ausgeführt. Die neuesten Daten werden durchsucht, wenn der btree-Index (itemid, clock desc) für Verlaufstabellen mit umgekehrter Sortierung nach Zeit festgelegt wird, aber der Index selbst "schwillt" natürlich auf der Festplatte an und verlangsamt im Allgemeinen indirekt die Datenbank, was ein Problem verursacht. oben beschrieben. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Daher gibt es drei Auswege:</font></font><br><br><ol><li>             « »      100  (..   ,     « »    ) </li><li>     Zabbix ,                  ,          « » </li><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Lassen Sie die Indizes so, wie sie standardmäßig sind, und beschränken Sie sich auf die Partitionierung, um gleichzeitig eine große Auswahl auf der Registerkarte "Zuletzt verwendete Daten" für eine Vielzahl von Parametern zu erhalten (es wurde jedoch festgestellt, dass der Zabbix-Webserver immer noch eine Begrenzung für die Anzahl der gleichzeitig angezeigten Parameterwerte hat auf der Registerkarte "Zuletzt verwendete Daten" - Wenn ich also versuche, 5000 Werte anzuzeigen, hat die Datenbank das Ergebnis berechnet, aber der Server konnte die Webseite nicht vorbereiten und eine so große Datenmenge anzeigen. </font></font></li></ol><br><h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Erfassung und Analyse von Abfrageausführungsstatistiken pg_stat_statements </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pg_stat_statements ist eine Erweiterung zum Sammeln von Statistiken zur Abfrageleistung auf dem gesamten Server. </font><font style="vertical-align: inherit;">Der Vorteil dieser Erweiterung besteht darin, dass keine PostgreSQL-Protokolle erfasst und analysiert werden müssen.</font></font><br><br><div class="spoiler"> <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Verwenden der Erweiterung pg_stat_statements</font></font></b> <div class="spoiler_text">    psql: <br><br><pre> CREATE EXTENSION pg_stat_statements; </pre><br>       postgresql.conf: <br><br><pre>shared_preload_libraries = 'pg_stat_statements'<font></font>
+pg_stat_statements.max = 10000 #   sql ,     (     );<font></font>
+pg_stat_statements.track = all # all -   (    ), top -   /, none -  <font></font>
+pg_stat_statements.save = true #     <font></font>
+</pre><br>  : <br><br><pre> SELECT pg_stat_statements_reset(); </pre><br>          : <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> <span class="hljs-keyword"><span class="hljs-keyword">substring</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">query</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> <span class="hljs-string"><span class="hljs-string">'[^(]*'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> query_sub, <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(calls) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> calls, <span class="hljs-keyword"><span class="hljs-keyword">avg</span></span>(mean_time) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> mean_time <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pg_stat_statements <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> <span class="hljs-keyword"><span class="hljs-keyword">query</span></span> ~ <span class="hljs-string"><span class="hljs-string">'insert into'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> <span class="hljs-keyword"><span class="hljs-keyword">query</span></span> ~ <span class="hljs-string"><span class="hljs-string">'update trends'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">group</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> <span class="hljs-keyword"><span class="hljs-keyword">substring</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">query</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> <span class="hljs-string"><span class="hljs-string">'[^(]*'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">order</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> calls <span class="hljs-keyword"><span class="hljs-keyword">desc</span></span></code> </pre> </div></div><br><h4>      </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Zur Überwachung von Festplatten in Zabbix werden standardmäßig nur die Parameter vfs.dev.read und vfs.dev.write bereitgestellt. Diese Optionen enthalten keine Informationen zur Festplattenauslastung. Nützliche Kriterien zum Auffinden von Problemen mit der Leistung Ihrer Festplatten sind der Auslastungsfaktor, das Warten auf die Abfragezeit und das Laden der Festplattenwarteschlange. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In der Regel korreliert eine hohe Festplattenlast mit einem hohen iowait der CPU selbst und mit einer Verlängerung der Ausführungszeit von SQL-Abfragen, die beim Stresstest eines zabbix-Servers mit einer Standardkonfiguration ohne Partitionierung und ohne Einrichtung alternativer Indizes festgestellt wurde. Sie können diese Parameter für die Überwachung von Festplatten mithilfe der folgenden Schritte hinzufügen, die in einem </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Artikel</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> eines Freundes beschrieben wurden</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">lesovsky</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> und verbessert: Jetzt werden die iostat-Parameter für jede Platte im json-Zeitparameter separat erfasst, von wo aus sie gemäß den Nachbearbeitungseinstellungen bereits in die endgültigen Überwachungsparameter zerlegt werden. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Während die Pull-Anforderung aussteht, können Sie versuchen, die Überwachung der Festplattenparameter gemäß den </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">detaillierten Anweisungen über meine Gabel zu erweitern</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nach allen beschriebenen Schritten können Sie dem Hauptüberwachungsfeld des Zabbix-Servers ein benutzerdefiniertes Diagramm mit iowait-CPU- und Nutzungsparametern für die Systemfestplatte und die Festplatte aus der Datenbank (sofern diese unterschiedlich sind) hinzufügen. </font><font style="vertical-align: inherit;">Das Ergebnis könnte folgendermaßen aussehen (sda ist die Hauptfestplatte, sdc ist die Festplatte mit der Datenbank):</font></font><br><br><img src="https://habrastorage.org/webt/oa/nj/fa/oanjfa3hajssftbq22dk8njiwj0.png"><br><br><h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Verbesserung der Hardwareleistung </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nach dem Einrichten des DBMS, der Indizierung und Partitionierung können Sie mit der vertikalen Skalierung fortfahren, um die Hardwareeigenschaften des Servers zu verbessern: RAM hinzufügen, Laufwerke in Solid-State ändern und Prozessorkerne hinzufügen. </font><font style="vertical-align: inherit;">Dies ist eine garantierte Leistungssteigerung, aber es ist besser, dies erst nach der Softwareoptimierung zu tun.</font></font><br><br><h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Erstellen eines verteilten Clusters </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nach einer moderaten vertikalen Skalierung müssen Sie horizontal starten - erstellen Sie einen verteilten Cluster: entweder Shard oder Replikation des Master-Slaves. </font><font style="vertical-align: inherit;">Dies ist jedoch ein separates Thema und Material eines separaten Artikels </font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(wie man eine Ansammlung von Scheiße und Stöcken</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> formt </font><s><font style="vertical-align: inherit;">)</font></s><font style="vertical-align: inherit;"> sowie ein Vergleich der oben beschriebenen Zabbix-Datenbankoptimierungstechnik unter Verwendung von pg_pathman und Indizierung mit der Methode zum Anwenden der TimescaleDB-Erweiterung. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In der Zwischenzeit kann man nur hoffen, dass sich das Material in diesem Artikel als nützlich und informativ erwiesen hat!</font></font></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de468463/">https://habr.com/ru/post/de468463/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de468445/index.html">Firefox und Chrome verschlüsseln DNS-Abfragen und umgehen die Zensur</a></li>
+<li><a href="../de468447/index.html">Laragon - WAMP mit automatischen lokalen Domänen</a></li>
+<li><a href="../de468453/index.html">MBLT19 :: Berichte, Produktkampf und Test</a></li>
+<li><a href="../de468455/index.html">Tolles GPS und seine dunkle Seite</a></li>
+<li><a href="../de468457/index.html">Der Generator einfacher arithmetischer Beispiele für Dummies und nicht nur</a></li>
+<li><a href="../de468465/index.html">Ansicht des Anwalts: Wie können IT-Unternehmen einen Vertrag mit einem giftigen Regierungskunden kündigen?</a></li>
+<li><a href="../de468471/index.html">Übersicht über AngularConnect 2019. Teil 1</a></li>
+<li><a href="../de468479/index.html">„Die Leute denken, dass frei wertlos ist. Es schien mir, dass ich sie überzeugen konnte “- Yuri Yartsev über die Russol-Schule</a></li>
+<li><a href="../de468481/index.html">Wie S7 als erste in Russland Flugtickets online verkaufte</a></li>
+<li><a href="../de468485/index.html">Wenn Sie eine schöne GUI wollen, aber GPU nicht</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

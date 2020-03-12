@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎭 🔓 🛷 JUnit in GitLab CI mit Kubernetes 🤙 👴🏿 👨🏽‍🍳</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Obwohl jeder weiß, dass es wichtig und notwendig ist, Ihre Software zu testen, und viele dies schon lange automatisch tun, gibt es in den offenen Räum...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>JUnit in GitLab CI mit Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/460897/">  Obwohl jeder weiß, dass es wichtig und notwendig ist, Ihre Software zu testen, und viele dies schon lange automatisch tun, gibt es in den offenen Räumen von Habr kein einziges Rezept, um in dieser Nische eine Reihe so beliebter Produkte wie (unser Lieblings-) GitLab und JUnit einzurichten .  Fülle diese Lücke! <br><br><img src="https://habrastorage.org/webt/pc/q_/3i/pcq_3iq519cc6s_xqbeivsqyza4.png"><br><br><h2>  Einführung </h2><br>  Zunächst werde ich den Kontext skizzieren: <br><br><ul><li>  Da alle unsere Anwendungen in Kubernetes funktionieren, werden wir in Betracht ziehen, Tests in der entsprechenden Infrastruktur durchzuführen. </li><li>  Für die Montage und Bereitstellung verwenden wir <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">werf</a> (im Sinne von Infrastrukturkomponenten bedeutet dies auch automatisch, dass Helm beteiligt ist). </li><li>  Ich werde nicht auf die Details der direkten Erstellung von Tests eingehen: In unserem Fall schreibt der Client die Tests selbst und wir stellen nur sicher, dass sie ausgeführt werden (und der entsprechende Bericht in der Zusammenführungsanforderung verfügbar ist). </li></ul><a name="habracut"></a><br>  Wie sieht die gesamte Abfolge der Aktionen aus? <br><br><ol><li>  Anwendungsassemblierung - Wir werden die Beschreibung dieser Phase weglassen. </li><li>  Stellen Sie die Anwendung in einem separaten Kubernetes-Cluster-Namespace bereit und starten Sie den Test. </li><li>  Suchen Sie nach Artefakten und analysieren Sie einen JUnit-Bericht von GitLab. </li><li>  Löschen Sie den zuvor erstellten Namespace. </li></ol><br>  Nun zur Implementierung! <br><br><h2>  Anpassung </h2><br><h3>  Gitlab ci </h3><br>  Beginnen wir mit dem Fragment <code>.gitlab-ci.yaml</code> , das die Bereitstellung der Anwendung beschreibt und die Tests <code>.gitlab-ci.yaml</code> .  Die Auflistung erwies sich als ziemlich umfangreich, daher wird sie gründlich durch Kommentare ergänzt: <br><br><pre> <code class="bash hljs">variables: <span class="hljs-comment"><span class="hljs-comment">#   werf,    WERF_VERSION: "1.0 beta" .base_deploy: &amp;base_deploy script: #  namespace  K8s,    - kubectl --context="${WERF_KUBE_CONTEXT}" get ns ${CI_ENVIRONMENT_SLUG} || kubectl create ns ${CI_ENVIRONMENT_SLUG} #  werf   —    .   # (https://werf.io/how_to/gitlab_ci_cd_integration.html#deploy-stage) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf deploy --stages-storage :local --namespace ${CI_ENVIRONMENT_SLUG} --set "global.commit_ref_slug=${CI_COMMIT_REF_SLUG:-''}" #   `run_tests` #      Helm- --set "global.run_tests=${RUN_TESTS:-no}" --set "global.env=${CI_ENVIRONMENT_SLUG}" #  timeout (  )      --set "global.ci_timeout=${CI_TIMEOUT:-900}" --timeout ${CI_TIMEOUT:-900} dependencies: - Build .test-base: &amp;test-base extends: .base_deploy before_script: #     ,   $CI_COMMIT_REF_SLUG - mkdir /mnt/tests/${CI_COMMIT_REF_SLUG} || true #  , .. GitLab      build-dir' - mkdir ./tests || true - ln -s /mnt/tests/${CI_COMMIT_REF_SLUG} ./tests/${CI_COMMIT_REF_SLUG} after_script: #        Job' # (, ,  ) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf dismiss --namespace ${CI_ENVIRONMENT_SLUG} --with-namespace #   ,      allow_failure: true variables: RUN_TESTS: 'yes' #    werf # (https://werf.io/how_to/gitlab_ci_cd_integration.html#infrastructure) WERF_KUBE_CONTEXT: 'admin@stage-cluster' tags: #     `werf-runner` - werf-runner artifacts: #     ,      #     — ,     paths: - ./tests/${CI_COMMIT_REF_SLUG}/* #      expire_in: 7 day # :       GitLab' reports: junit: ./tests/${CI_COMMIT_REF_SLUG}/report.xml #        #         —   -  stages: - build - tests build: stage: build script: #  —     werf # (https://werf.io/how_to/gitlab_ci_cd_integration.html#build-stage) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf build-and-publish --stages-storage :local tags: - werf-runner except: - schedules run tests: &lt;&lt;: *test-base environment: # " "  namespace' # (https://docs.gitlab.com/ce/ci/variables/predefined_variables.html) name: tests-${CI_COMMIT_REF_SLUG} stage: tests except: - schedules</span></span></code> </pre> <br><h3>  Kubernetes </h3><br>  <code>.helm/templates</code> nun im <code>.helm/templates</code> YAML mit Job - <code>tests-job.yaml</code> -, um die Tests und die benötigten Kubernetes-Ressourcen auszuführen.  Erläuterungen siehe nach Auflistung: <br><br><pre> <code class="plaintext hljs">{{- if eq .Values.global.run_tests "yes" }} --- apiVersion: v1 kind: ConfigMap metadata: name: tests-script data: tests.sh: | echo "======================" echo "${APP_NAME} TESTS" echo "======================" cd /app npm run test:ci cp report.xml /app/test_results/${CI_COMMIT_REF_SLUG}/ echo "" echo "" echo "" chown -R 999:999 /app/test_results/${CI_COMMIT_REF_SLUG} --- apiVersion: batch/v1 kind: Job metadata: name: {{ .Chart.Name }}-test annotations: "helm.sh/hook": post-install,post-upgrade "helm.sh/hook-weight": "2" "werf/watch-logs": "true" spec: activeDeadlineSeconds: {{ .Values.global.ci_timeout }} backoffLimit: 1 template: metadata: name: {{ .Chart.Name }}-test spec: containers: - name: test command: ['bash', '-c', '/app/tests.sh'] {{ tuple "application" . | include "werf_container_image" | indent 8 }} env: - name: env value: {{ .Values.global.env }} - name: CI_COMMIT_REF_SLUG value: {{ .Values.global.commit_ref_slug }} - name: APP_NAME value: {{ .Chart.Name }} {{ tuple "application" . | include "werf_container_env" | indent 8 }} volumeMounts: - mountPath: /app/test_results/ name: data - mountPath: /app/tests.sh name: tests-script subPath: tests.sh tolerations: - key: dedicated operator: Exists - key: node-role.kubernetes.io/master operator: Exists restartPolicy: OnFailure volumes: - name: data persistentVolumeClaim: claimName: {{ .Chart.Name }}-pvc - name: tests-script configMap: name: tests-script --- apiVersion: v1 kind: PersistentVolumeClaim metadata: name: {{ .Chart.Name }}-pvc spec: accessModes: - ReadWriteOnce resources: requests: storage: 10Mi storageClassName: {{ .Chart.Name }}-{{ .Values.global.commit_ref_slug }} volumeName: {{ .Values.global.commit_ref_slug }} --- apiVersion: v1 kind: PersistentVolume metadata: name: {{ .Values.global.commit_ref_slug }} spec: accessModes: - ReadWriteOnce capacity: storage: 10Mi local: path: /mnt/tests/ nodeAffinity: required: nodeSelectorTerms: - matchExpressions: - key: kubernetes.io/hostname operator: In values: - kube-master persistentVolumeReclaimPolicy: Delete storageClassName: {{ .Chart.Name }}-{{ .Values.global.commit_ref_slug }} {{- end }}</code> </pre> <br>  <b>Welche Ressourcen werden</b> in dieser Konfiguration beschrieben?  Erstellen Sie bei der Bereitstellung einen eindeutigen Namespace für das Projekt (dies wird auch in <code>.gitlab-ci.yaml</code> - <code>tests-${CI_COMMIT_REF_SLUG}</code> ) und rollen Sie ihn hinein: <br><br><ol><li>  <b>ConfigMap</b> mit einem <b>Testskript</b> ; </li><li>  <b>Job</b> mit einer Beschreibung des Pods und der angegebenen <code>command</code> , die nur die Tests ausführt; </li><li>  <b>PV und PVC</b> , mit denen Sie Testdaten speichern können. </li></ol><br>  Beachten Sie die Einführungsbedingung, <code>if</code> zu Beginn des Manifests - dementsprechend müssen andere YAML-Dateien des Helm-Diagramms mit der Anwendung in die <i>umgekehrte</i> Konstruktion eingeschlossen werden, damit sie während des Tests nicht bereitgestellt werden.  Also: <br><br><pre> <code class="plaintext hljs">{{- if ne .Values.global.run_tests "yes" }} ---    {{- end }}</code> </pre> <br>  Wenn für die Tests jedoch <b>eine Infrastruktur erforderlich ist</b> (z. B. Redis, RabbitMQ, Mongo, PostgreSQL ...), können die YAMLs deaktiviert <i>werden</i> .  Stellen Sie sie in einer Testumgebung bereit ... natürlich nach Ihren Wünschen. <br><br><h3>  Letzte Berührung </h3><br>  Weil  Die Montage und Bereitstellung mit werf funktioniert bisher <i>nur</i> auf dem Build-Server (mit gitlab-Runner). Der Pod mit den Tests wird im Assistenten ausgeführt. Sie müssen das Verzeichnis <code>/mnt/tests</code> im Assistenten erstellen und es <b>beispielsweise über NFS</b> an Runner <b>weitergeben</b> .  Ein detailliertes Beispiel mit Erläuterungen finden Sie in der <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">K8-Dokumentation</a> . <br><br>  Das Ergebnis wird sein: <br><br><pre> <code class="plaintext hljs">user@kube-master:~$ cat /etc/exports | grep tests /mnt/tests IP_gitlab-builder/32(rw,nohide,insecure,no_subtree_check,sync,all_squash,anonuid=999,anongid=998) user@gitlab-runner:~$ cat /etc/fstab | grep tests IP_kube-master:/mnt/tests /mnt/tests nfs4 _netdev,auto 0 0</code> </pre> <br>  Niemand verbietet es, einen NFS-Ball direkt auf dem Gitlab-Läufer herzustellen und ihn dann in Pods zu montieren. <br><br><h3>  Hinweis </h3><br>  Sie fragen sich vielleicht, warum alles mit der Erstellung von Job kompliziert wird, wenn Sie das Testskript einfach direkt auf dem Shell Runner ausführen können.  Die Antwort ist ziemlich trivial ... <br><br>  Einige Tests erfordern Zugriff auf die Infrastruktur (MongoDB, RabbitMQ, PostgreSQL usw.), um die Richtigkeit der Arbeit mit ihnen zu überprüfen.  Wir vereinheitlichen das Testen - mit diesem Ansatz wird es einfach, solche zusätzlichen Entitäten einzubeziehen.  Darüber hinaus erhalten wir einen <b>Standardansatz</b> für die Bereitstellung (auch bei Verwendung von NFS, zusätzliche Verzeichnisbereitstellung). <br><br><h2>  Ergebnis </h2><br>  Was werden wir sehen, wenn wir die vorbereitete Konfiguration anwenden? <br><br>  In der Zusammenführungsanforderung werden zusammenfassende Statistiken zu den in der letzten Pipeline gestarteten Tests angezeigt: <br><br><img src="https://habrastorage.org/webt/c5/2w/ix/c52wixmvclqqugnkbxbwe7p6brm.png"><br><br>  Sie können hier auf jeden Fehler klicken, um Details zu erhalten: <br><br><img src="https://habrastorage.org/webt/3-/0p/dp/3-0pdpuwwpkbkye-dajzbbdpgde.png"><br><br>  <i><b>NB</b> : Ein aufmerksamer Leser wird feststellen, dass wir eine NodeJS-Anwendung testen, und in den Screenshots - .NET ... Seien Sie nicht überrascht: Nur im Rahmen der Vorbereitung des Artikels gab es keine Fehler beim Testen der ersten Anwendung, aber sie wurden in einer anderen gefunden.</i> <br><br><h2>  Fazit </h2><br>  Anscheinend nichts kompliziertes! <br><br>  Wenn Sie bereits einen Shell-Builder haben und dieser funktioniert und Sie keine Kubernetes benötigen, ist das Schrauben von Tests im Prinzip eine noch einfachere Aufgabe als hier beschrieben.  In der <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">GitLab CI-Dokumentation</a> finden Sie Beispiele für Ruby, Go, Gradle, Maven und einige andere. <br><br><h2>  PS </h2><br>  Lesen Sie auch in unserem Blog: <br><br><ul><li>  „ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Beste CI / CD-Praktiken mit Kubernetes und GitLab (Rezension und Videobericht)</a> “; </li><li>  „ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Werf ist unser CI / CD-Tool in Kubernetes (Rezension und Videobericht)</a> “ <i>(Dmitry Stolyarov; 27. Mai 2019 bei DevOpsConf)</i> ; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Tipps zum Erstellen benutzerdefinierter Workflows in GitLab CI</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">GitLab CI für die kontinuierliche Integration und Bereitstellung in der Produktion</a> ." </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de460897/">https://habr.com/ru/post/de460897/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de460883/index.html">Über das Leben in einer Welt sich ändernder Anforderungen und die Vorteile kleiner Funktionen</a></li>
+<li><a href="../de460885/index.html">Interessante Berichte bei HighLoad ++ Siberia 2019 laut Plesk</a></li>
+<li><a href="../de460887/index.html">Keine andere Programmiersprache. Teil 3: Physik</a></li>
+<li><a href="../de460891/index.html">Wie man gutes SCRUM von schlechtem unterscheidet, unter Verwendung des Ansatzes des Begründers des Quantencomputers</a></li>
+<li><a href="../de460893/index.html">Ein Blick auf den Umzug nach Estland von innen nach außen - Vor-, Nachteile und Fallstricke</a></li>
+<li><a href="../de460899/index.html">26. Juli, Deworkacy - DocOps von Rostelecom</a></li>
+<li><a href="../de460901/index.html">Warum ältere Entwickler keinen Job bekommen können</a></li>
+<li><a href="../de460905/index.html">Minimale SEO-Kenntnisse für Unternehmer</a></li>
+<li><a href="../de460907/index.html">Verwenden von Liquibase zum Verwalten der Datenbankstruktur in einer Spring Boot-Anwendung. Teil 2</a></li>
+<li><a href="../de460909/index.html">Was werden wir 2050 essen?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
