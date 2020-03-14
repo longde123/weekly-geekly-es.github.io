@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤘🏽 🎅🏼 🆗 Ma façon de partitionner dans PostgreSQL 👩🏽‍🤝‍👩🏻 💅🏼 🥋</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Lorsque nous cessons de contrôler la taille de la table, la maintenance et la mise à disposition des données deviennent une tâche non triviale. J'ai d...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Ma façon de partitionner dans PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/barsgroup/blog/481694/"><img src="https://habrastorage.org/webt/eq/ez/mc/eqezmc8xs8hlpvqjkqf4lapysig.jpeg"><br><br>  Lorsque nous cessons de contrôler la taille de la table, la maintenance et la mise à disposition des données deviennent une tâche non triviale.  J'ai déjà rencontré un tel problème en production, il y a plus de données tous les jours, la table ne tient pas en mémoire, les serveurs répondent depuis longtemps, mais une solution a été trouvée. <br><br>  Bonjour, Habr!  Je m'appelle Diamond et maintenant je veux partager une méthode qui m'a aidé à implémenter le partitionnement. <br><a name="habracut"></a><br><h3>  Partitionnement dans PostgreSql </h3><br>  <b><a href="https://postgrespro.ru/docs/postgresql/11/ddl-partitioning">Le partitionnement</a></b> (ou, comme ils l'appellent, le partitionnement) est le processus de division d'une grande table logique en plusieurs sections physiques plus petites.  C'est ce qui nous aide à gérer nos données. <br><br>  Exemple: nous avons une table «ventes», qui est divisée par un intervalle d'un mois, et ces sections peuvent être divisées en sous-sections encore plus petites par région. <br><br><img src="https://habrastorage.org/webt/-e/ea/u0/-eeau0dg8afydkft1jq2tmc2lly.jpeg"><br>  <i>Schéma «ventes» de la table partitionnée</i> <br><br>  Inconvénients de cette approche: <br><br>  - Structure de base de données compliquée.  Chaque section des définitions de base de données est une table, bien qu'elle fasse partie d'une entité logique. <br>  - Vous ne pouvez pas convertir une table existante en une table partitionnée et vice versa. <br>  - Il n'y a pas de support complet dans Postgres version 11. <br><br>  Avantages: <br><br>  + Performance.  Dans certains cas, nous pouvons travailler avec un ensemble limité de sections sans parcourir la table entière, même la recherche d'index pour les grandes tables sera plus lente.  Augmente la disponibilité des données. <br>  + Téléchargement en masse et suppression de données avec les commandes ATTACH / DETACH.  Cela nous évite des frais généraux sous forme de vide.  ce qui vous permet de maintenir plus efficacement la base de données. <br>  + Possibilité de spécifier TABLESPACE pour la section.  Cela nous donne la possibilité de transférer des données vers d'autres sections, mais nous travaillons toujours dans la même instance et les métadonnées du répertoire principal contiendront des informations sur les sections (à ne pas confondre avec le partitionnement). <br><br><h3>  2 façons d'implémenter le partitionnement dans PostgreSql: </h3><br><br>  <b>1. Héritage de tables (HÉRITAGES)</b> <br>  Lors de la création d'une table, nous disons "hériter d'une autre table (parent)".  Dans le même temps, nous ajoutons des restrictions pour la gestion des données dans le tableau.  Par cela, nous soutenons la logique de fractionnement des données, mais ce sont logiquement des tables différentes. <br><br>  Il convient de noter ici l'extension développée par Postgres Professional pg_pathman, qui implémente le partitionnement, également par héritage de table. <br><br><pre><code class="plaintext hljs">CREATE TABLE orders_y2010 ( CHECK (log_date &gt;= DATE '2010-01-01) ) INHERITS (orders);</code> </pre> <br>  <b>2. Approche déclarative (PARTITION)</b> <br><br>  Une table est définie comme partitionnée de manière déclarative.  Cette solution est apparue dans la version 10 de PostgreSql. <br><br><pre> <code class="plaintext hljs">CREATE TABLE orders (log_date date not null, …) PARTITION BY RANGE(log_date);</code> </pre> <br><br>  J'ai choisi une approche déclarative.  Cela donne un gros avantage - nativité, plus de fonctionnalités sont prises en charge par le noyau.  Considérez le développement de PostgreSQL dans cette direction: <br><br><img src="https://habrastorage.org/webt/sw/gj/j4/swgjj4u2yjuzhbuoebbdcqi7uj4.jpeg"><br>  <i><a href="https://www.2ndquadrant.com/en/blog/partitioning-evolution-postgresql-11/">Source</a></i> <br><br>  Mais PostgreSql continue d'évoluer et la version 12 prend en charge la liaison à une table partitionnée.  C'est une grande percée. <br><br><h3>  Mon chemin </h3><br>  Compte tenu de ce qui précède, un <a href="">script a</a> été écrit en PL / pgSQL, ce qui crée une table partitionnée basée sur la table existante et «jette» tous les liens vers la nouvelle table.  Ainsi, nous obtenons une table partitionnée basée sur la table existante et continuons à travailler avec elle comme avec une table standard. <br>  Le script ne nécessite pas de dépendances supplémentaires et s'exécute dans un circuit séparé qu'il crée lui-même.  Enregistre également les actions de rétablissement et d'annulation.  Ce script résout deux tâches principales: crée une table partitionnée et implémente des liens externes vers celle-ci via les déclencheurs de déclenchement. <br><br>  Exigence de script: PostgreSql v.:11 et supérieur. <br><br>  <b>Passons maintenant en revue le script plus en détail.</b>  L'interface est très simple: <br>  Il y a deux procédures qui font tout le travail. <br><br>  1. Le principal défi - à ce stade, nous ne changeons pas le tableau principal, mais tout le nécessaire pour la coupe sera créé dans un schéma distinct: <br><br><pre> <code class="plaintext hljs"> call partition_run();</code> </pre> <br><br>  2. Appelez les tâches différées qui étaient prévues pendant les travaux principaux: <br><br><pre> <code class="plaintext hljs"> call partition_run_jobs();</code> </pre> <br><br>  Le travail peut être lancé dans plusieurs threads.  Le nombre optimal de threads est proche du nombre de tables partitionnées. <br><br>  <b>Paramètres d'entrée pour le script</b> (enregistrement _pt) <br><br><img src="https://habrastorage.org/webt/8k/pk/pa/8kpkpahwbko3gxpvym9tqnacaxi.jpeg"><br><br>  Le script de l'intérieur, les principales actions: <br><br>  - Créer une table partitionnée <br><pre> <code class="plaintext hljs"> perform _partition_create_parent_table(_pt);</code> </pre> <br>  - Créer des sections <br><pre> <code class="plaintext hljs"> perform _partition_create_child_tables(_pt);</code> </pre> <br>  - Copiez les données dans la section <br><pre> <code class="plaintext hljs"> perform _partition_copy_data(_pt);</code> </pre> <br>  - Ajouter des restrictions (travail) <br><pre> <code class="plaintext hljs"> perform _partition_add_constraints(_pt);</code> </pre> <br>  - Restaurer les liens vers des tables externes <br><pre> <code class="plaintext hljs"> perform _partition_restore_referrences(_pt);</code> </pre> <br>  - Restaurer les déclencheurs <br><pre> <code class="plaintext hljs"> perform _partition_restore_triggers(_pt);</code> </pre> <br>  - Créer un déclencheur d'événement <br><pre> <code class="plaintext hljs"> perform _partition_def_tr_on_delete(_pt);</code> </pre> <br>  - Créer des index (job) <br><pre> <code class="plaintext hljs"> perform _partition_create_index(_pt);</code> </pre> <br>  - Remplacer les vues, les liens de section (travail) <br><pre> <code class="plaintext hljs"> perform _partition_replace_view(_pt);</code> </pre> <br><br>  La durée d'exécution du script dépend de nombreux facteurs, mais les principaux sont la taille des tables cibles, le nombre de relations, les index et les caractéristiques du serveur.  Dans mon cas, une table de 300 Go a été partitionnée en moins d'une heure. <br><br><br><h3>  Résultat </h3><br>  Qu'avons-nous obtenu?  Regardons le plan de requête: <br><br><pre> <code class="plaintext hljs"> EXPLAIN ANALYZE select * from “sales” where dt BETWEEN '01.01.2019'::date and '14.01.2019'::date</code> </pre> <br><br><img src="https://habrastorage.org/webt/gp/__/ga/gp__gatnm2fks5bte3osf7__jow.jpeg"><br><br>  Nous avons obtenu le résultat de la table partitionnée plus rapidement et utilisé moins de ressources de notre serveur par rapport à la requête vers une table régulière. <br><br>  Dans cet exemple, les tables régulières et partitionnées sont sur la même base et ont environ 200 millions d'enregistrements.  C'est un bon résultat, étant donné que nous avons, sans réécrire le code de l'application, accéléré.  Les requêtes sur d'autres index fonctionnent également bien, mais n'oubliez pas: chaque fois que nous pouvons déterminer une section, le résultat sera plusieurs fois plus rapide, car  PostgreSql peut supprimer des sections supplémentaires au stade de la planification de la demande ( <i>définissez enable_partition_pruning sur on</i> ). <br><br><h3>  Résumé </h3><br>  J'ai réussi à implémenter le partitionnement sur des tables qui ont de nombreuses relations et à assurer l'intégrité de la base de données.  Le script est indépendant de structures de données spécifiques et peut être réutilisé. <br><br>  <i>PostgreSQL est la base de données relationnelle open source la plus avancée au monde!</i> <br><br>  Merci à tous! <br><br>  <a href="">Lien vers la source</a> <br><br></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr481694/">https://habr.com/ru/post/fr481694/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr481678/index.html">Examen avant les vacances: lecteur N6IIT01 et casque YB04 Armature - Hi-Fi du sud de la Chine</a></li>
+<li><a href="../fr481680/index.html">Ecrire TodoMVC sur dap. 2e partie</a></li>
+<li><a href="../fr481684/index.html">Un ordinateur portable de Powerbank?</a></li>
+<li><a href="../fr481688/index.html">Pourquoi apprendre Java et comment le faire efficacement. Rapport Yandex</a></li>
+<li><a href="../fr481692/index.html">Utilisation de Intel Processor Trace pour tracer le code du mode de gestion du système</a></li>
+<li><a href="../fr481696/index.html">règle: contrôle dynamique de Go</a></li>
+<li><a href="../fr481698/index.html">WebRTC en streaming dans et autour de la réalité virtuelle</a></li>
+<li><a href="../fr481700/index.html">Une tante</a></li>
+<li><a href="../fr481702/index.html">Du grille-pain au drone. Comment Internet des objets est-il né et pourquoi ne s'est-il déclenché que 30 ans plus tard</a></li>
+<li><a href="../fr481704/index.html">C'est la norme - 2: comment les cartes normales sont cuites</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

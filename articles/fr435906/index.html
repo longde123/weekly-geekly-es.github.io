@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👖 👨🏾‍🤝‍👨🏽 ⛪️ Stockage en cluster de pacemaker + DRBD (double primaire) + ctdb 🕴️ 🔽 😊</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Bonjour, Habrovsk. Il y avait une tâche - déployer un stockage haute disponibilité à tolérance de pannes à l'aide de pacamaker + drbd (en mode primair...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Stockage en cluster de pacemaker + DRBD (double primaire) + ctdb</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/435906/"> Bonjour, Habrovsk.  Il y avait une tâche - déployer un stockage haute disponibilité à tolérance de pannes à l'aide de pacamaker + drbd (en mode primaire double) + clvmd + ctdb, qui sera monté sur le serveur.  Je ferai une réserve que je tombe sur tous ces outils pour la première fois et serai heureux des critiques et des ajouts / corrections.  Sur Internet, il n'y a pas d'instructions spécifiques à cet ensemble ou les informations sont obsolètes.  Cela fonctionne pour le moment, mais il y a un problème dont j'espère trouver la solution dans un proche avenir.  Toutes les actions doivent être effectuées sur les deux nœuds, sauf indication contraire. <br><br><a name="habracut"></a>  Commençons.  Nous avons deux machines virtuelles sur CentOS 7. <br><br>  1) Pour plus de fiabilité, présentez-les à / etc / hosts <br><br><pre><code class="bash hljs">192.168.0.1 node1 192.168.0.2 node2</code> </pre> <br>  2) Il n'y a pas de DRBD dans les référentiels standard, vous devez donc en connecter un tiers. <br><br><pre> <code class="bash hljs">rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org rpm -Uvh https://www.elrepo.org/elrepo-release-7.0-3.el7.elrepo.noarch.rpm</code> </pre><br>  3) Installez drbd version 8.4 (je n'ai pas pu obtenir 9.0 en mode double primaire) <br><br><pre> <code class="bash hljs">yum install -y kmod-drbd84 drbd84-utils</code> </pre><br>  4) Activer et activer le module du noyau drbd au démarrage <br><br><pre> <code class="bash hljs">modprobe drbd <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> drbd &gt; /etc/modules-load.d/drbd.conf</code> </pre><br>  5) Créez le fichier de configuration pour la ressource drbd /etc/drbd.d/r0.res <br><br><pre> <code class="bash hljs">resource r0 { protocol C; device /dev/drbd0; meta-disk internal; disk /dev/sdb; net { allow-two-primaries; } disk { fencing resource-and-stonith; } handlers { fence-peer <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-fence-peer.sh"</span></span>; after-resync-target <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-unfence-peer.sh"</span></span>; } on node1 { address 192.168.0.1:7788; } on node2 { address 192.168.0.2:7788; }</code> </pre><br>  6) Désactivez l'unité drbd (le stimulateur cardiaque en sera responsable plus tard), créez des métadonnées pour le disque drbd, augmentez la ressource <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">disable</span></span> drbd drbdadm create-md r0 drbdadm up r0</code> </pre><br>  7) Sur le premier nœud, rendez la ressource principale <br><br><pre> <code class="bash hljs">drbdadm primary --force r0</code> </pre><br>  8) Mettez le stimulateur cardiaque <br><br><pre> <code class="bash hljs">yum install -y pacemaker pcs resource-agents</code> </pre><br>  9) Définissez un mot de passe pour le hacluster utilisateur pour l'autorisation sur les nœuds <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> CHANGEME | passwd --stdin hacluster</code> </pre><br>  10) Exécutez un stimulateur cardiaque sur les deux nœuds <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> pcsd systemctl start pcsd</code> </pre><br>  11) Connectez-vous au cluster.  A partir de cette étape, nous faisons tout sur un seul nœud <br><br><pre> <code class="bash hljs">pcs cluster auth node1 node2 -u hacluster</code> </pre><br>  12) Créez un cluster nommé samba_cluster <br><br><pre> <code class="bash hljs">pcs cluster setup --force --name samba_cluster node1 node2</code> </pre><br>  13) activer les nœuds <br><br><pre> <code class="bash hljs">pcs cluster <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> --all pcs cluster start --all</code> </pre><br>  14) Puisque nous avons des machines virtuelles comme serveurs, nous désactivons le mécanisme STONITH <br><br><pre> <code class="bash hljs">pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> stonith-enabled=<span class="hljs-literal"><span class="hljs-literal">false</span></span> pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> no-quorum-policy=ignore</code> </pre><br>  15) Créez un VIP <br><br><pre> <code class="bash hljs">pcs resource create virtual_ip ocf:heartbeat:IPaddr2 ip=192.168.0.10 cidr_netmask=24 op monitor interval=60s</code> </pre><br>  16) Créer une ressource drbd <br><br><pre> <code class="bash hljs">pcs cluster cib drbd_cfg pcs -f drbd_cfg resource create DRBD ocf:linbit:drbd drbd_resource=r0 op monitor interval=60s pcs -f drbd_cfg resource master DRBDClone DRBD master-max=2 master-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-max=2 notify=<span class="hljs-literal"><span class="hljs-literal">true</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs cluster cib-push drbd_cfg</code> </pre><br>  17) Installez les packages nécessaires pour clvm et préparez clvm <br><br><pre> <code class="bash hljs">yum install -y lvm2-cluster gfs2-utils /sbin/lvmconf --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-cluster</code> </pre> <br>  18) Ajoutez la ressource dlm et clvd au stimulateur cardiaque <br><br><pre> <code class="bash hljs">pcs resource create dlm ocf:pacemaker:controld op monitor interval=30s on-fail=fence <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> ordered=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs resource create clvmd ocf:heartbeat:clvm op monitor interval=30s on-fail=fence <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> ordered=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs constraint colocation add clvmd-clone with dlm-clone</code> </pre> <br>  19) À ce stade, le démarrage de clvmd et dlm devrait générer une erreur.  Nous allons à l'interface Web pacemaker <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">192.168.0.1</a> : 2224.  Si le cluster n'apparaît pas, ajoutez-le à "Edd existant".  Ensuite, allez dans Resources - dlm - arguments optionnels et définissez la valeur allow_stonith_disabled = true <br><br>  20) Nous définissons la file d'attente de chargement des ressources <br><br><pre> <code class="bash hljs">pcs constraint order start DRBDClone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> dlm-clone pcs constraint order start dlm-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> clvmd-clone</code> </pre><br>  21) Interdire à LVM d'écrire le cache et de l'effacer.  Sur les deux nœuds <br><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'s/write_cache_state = 1/write_cache_state = 0/'</span></span> /etc/lvm/lvm.conf rm /etc/lvm/cache/*</code> </pre><br>  22) Nous éditons /etc/lvm/lvm.conf pour que lvm ne voie pas / dev / sdb.  Sur les deux nœuds <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># This configuration option has an automatic default value. # filter = [ "a|.*/|" ] filter = [ "r|^/dev/sdb$|" ]</span></span></code> </pre><br>  23) Créez une partition CLVM.  Nous ne faisons qu'une seule note <br><br><pre> <code class="bash hljs">$ vgcreate -Ay -cy cl_vg /dev/drbd0 Physical volume <span class="hljs-string"><span class="hljs-string">"/dev/drbd0"</span></span> successfully created. Clustered volume group <span class="hljs-string"><span class="hljs-string">"cl_vg"</span></span> successfully created $ lvcreate -l100%FREE -n r0 cl_vg Logical volume <span class="hljs-string"><span class="hljs-string">"r0"</span></span> created.</code> </pre><br>  24) Nous marquons la section dans gfs2 <br><br><pre> <code class="bash hljs">mkfs.gfs2 -j2 -p lock_dlm -t drbd-gfs2:r0 /dev/cl_vg/r0</code> </pre><br>  25) Ensuite, ajoutez le montage de cette section dans le stimulateur cardiaque et dites-lui de démarrer après clvmd <br><br><pre> <code class="bash hljs">pcs resource create fs ocf:heartbeat:Filesystem device=<span class="hljs-string"><span class="hljs-string">"/dev/cl_vg/r0"</span></span> directory=<span class="hljs-string"><span class="hljs-string">"/mnt/"</span></span> fstype=<span class="hljs-string"><span class="hljs-string">"gfs2"</span></span> --<span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> pcs constraint order start clvmd-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> fs-clone</code> </pre><br>  26) Maintenant c'est au tour de ctdb de lancer samba <br><br><pre> <code class="bash hljs">yum install -y samba ctdb cifs-utils</code> </pre><br>  27) Modifiez la configuration /etc/ctdb/ctdbd.conf <br><br><pre> <code class="bash hljs">CTDB_RECOVERY_LOCK=<span class="hljs-string"><span class="hljs-string">"/mnt/ctdb/.ctdb.lock"</span></span> CTDB_NODES=/etc/ctdb/nodes CTDB_MANAGES_SAMBA=yes CTDB_LOGGING=file:/var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/ctdb.log CTDB_DEBUGLEVEL=NOTICE</code> </pre><br>  28) Créez un fichier avec une liste de nœuds.  ATTENTION!  Après chaque IP dans la liste des nœuds, un saut de ligne doit être présent.  Sinon, le nœud échouera lors de l'initialisation. <br><br><pre> <code class="bash hljs">cat /etc/ctdb/nodes 192.168.0.1 192.168.0.2</code> </pre><br>  29) Ajouter à la configuration /etc/samba/smb.conf <br><br><pre> <code class="bash hljs">[global] clustering = yes private dir = /mnt/ctdb lock directory = /mnt/ctdb idmap backend = tdb2 passdb backend = tdbsam [<span class="hljs-built_in"><span class="hljs-built_in">test</span></span>] comment = Cluster Share path = /mnt browseable = yes writable = yes</code> </pre><br>  30) Enfin, créez la ressource ctdb et indiquez qu'elle doit être chargée après <br><br><pre> <code class="bash hljs">pcs constraint order start fs-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> samba</code> </pre><br>  Et maintenant sur le problème que je n'ai pas encore décidé.  Si vous redémarrez le noeud, le groupe entier s'effondre, car drbd a besoin de temps pour activer / dev / drbd0.  DLM ne voit pas la partition, car elle n'est pas encore activée et ne démarre pas, etc.  La solution consiste à activer la partition manuellement et à redémarrer les ressources du stimulateur cardiaque <br><br><pre> <code class="bash hljs">vgchage -ay pcs resource refresh</code> </pre></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr435906/">https://habr.com/ru/post/fr435906/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr435896/index.html">Utilisation de DiagnosticSource dans .NET Core: théorie</a></li>
+<li><a href="../fr435898/index.html">À quoi penser lors d'une entrevue NALSD</a></li>
+<li><a href="../fr435900/index.html">L'encapsuler</a></li>
+<li><a href="../fr435902/index.html">Vous ne pouvez pas simplement prendre et écrire SELECT si le fournisseur ne le permet pas ... mais nous écrirons</a></li>
+<li><a href="../fr435904/index.html">L'IA a traduit l'activité cérébrale en discours</a></li>
+<li><a href="../fr435908/index.html">Web ascétique: prototypes de marchés aux puces on go et js</a></li>
+<li><a href="../fr435910/index.html">Pourquoi BSD a-t-il perdu la bataille avec GNU / Linux?</a></li>
+<li><a href="../fr435912/index.html">Les principaux problèmes de développement d'interfaces modernes</a></li>
+<li><a href="../fr435914/index.html">Emballage d'applications ASP.NET Core à l'aide de Docker</a></li>
+<li><a href="../fr435916/index.html">Hacking VK, l'authentification à deux facteurs ne sauvera pas</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

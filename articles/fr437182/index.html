@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>➖ 🏛️ 👸 Interception d'appels système dans le module du noyau Linux 🧚 ☝🏿 📼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Le module a été créé dans le cadre de ma thèse de master en 2010. Le thème de la thèse de master est Keylogging in Linux kernel . L'idée principale ét...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Interception d'appels système dans le module du noyau Linux</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/437182/"><p>  Le module a été créé dans le cadre de ma thèse de master en 2010.  Le thème de la thèse de master est <em>Keylogging in Linux kernel</em> .  L'idée principale était de trouver un moyen d'intercepter les appels système pour le noyau Linux arch x64, en particulier pour le noyau 2.6.34.7-61.fc13.x86_64. </p><a name="habracut"></a><br><h1 id="introduction">  Présentation </h1><br><p>  Il y avait beaucoup d'articles différents sur l'interception d'appels système pour arch x32.  Dans le cadre d'une recherche, j'ai été confronté à la question de savoir comment intercepter les appels système pour l'arc x86_64 via le module du noyau Linux. </p><br><p>  Comment intercepter un appel système? </p><br><ol><li>  Découvrez l'adresse de la table syscall. </li><li>  Remplacez l'appel système d'origine par le nouveau. </li></ol><br><h2 id="syscall-table-address">  Adresse de la table Syscall </h2><br><p>  Le <em>gestionnaire d'</em> <em>interruption</em> et le <em>code d'interruption de</em> limites IDT ( <strong>D</strong> escription <strong>T</strong> escription <strong>T</strong> able).  En mode protégé, IDT est un tableau de descripteurs stockés en mémoire.  Chaque processeur possède un registre <strong>IDTR</strong> spécial.  Le registre se compose d'une adresse physique IDT et d'une longueur IDT.  La première hypothèse était d'obtenir l'adresse IDT du registre IDTR et ensuite de calculer l'adresse des tables syscall.  Cependant, l'hypothèse était fausse, car, dans ce cas, nous avons obtenu l'adresse du gestionnaire x32. </p><br><p> La deuxième hypothèse était plus intéressante.  Avant de continuer, je voudrais décrire MSR (enregistrement spécifique à Macodell).  Un MSR est l'un des divers registres de contrôle du jeu d'instructions x86 utilisé pour le débogage, le suivi de l'exécution du programme, la surveillance des performances de l'ordinateur et le basculement de certaines fonctionnalités du processeur.  Parlons de <code>MSR_LSTAR</code> - <code>0xc0000082</code> (cible SYSCALL en mode long).  Vous pouvez obtenir la liste complète sur <code>/usr/include/asm/msr-index.h</code> . </p><br><p>  <code>MSR_LSTAR</code> stocke l'entrée d'appel système pour l'architecture x86-64.  Vous pouvez obtenir l'adresse: </p><br><pre> <code class="plaintext hljs">int i, lo, hi; asm volatile("rdmsr" : "=a" (lo), "=d" (hi) : "c" (MSR_LSTAR)); system_call = (void*)(((long)hi&lt;&lt;32) | lo);</code> </pre> <br><p>  Allons plus loin.  J'avais obtenu l'adresse et recherchais <code>\xff\x14\xc5</code> .  <code>\xff\x14\xc5</code> est un nombre magique.  Si vous consultez le code 2.6.34.7-61.fc13.x86_64 du noyau, en particulier la fonction <code>system_call</code> , vous découvrirez que les 4 octets suivants sont l'adresse syscall_table. </p><br><p>  Nous connaissions l'adresse de la table syscall, cela signifiait que nous pouvions obtenir une adresse de gestionnaire syscall et la remplacer / l'intercepter. </p><br><p>  Le code source: </p><br><pre> <code class="plaintext hljs">unsigned char *ptr; for (ptr=system_call, i=0; i&lt;500; i++) { if (ptr[0] == 0xff &amp;&amp; ptr[1] == 0x14 &amp;&amp; ptr[2] == 0xc5) return (void*)(0xffffffff00000000 | *((unsigned int*)(ptr+3))); ptr++; }</code> </pre> <br><h2 id="system-call-interception">  Interception d'appels système </h2><br><p>  J'ai fait face à un problème.  Une erreur s'est produite en cas de modification d'une adresse dans la table des appels système.  Heureusement, c'était simple comme bonjour: </p><br><ul><li>  Désactivez la protection de la mémoire. </li><li>  Réécrivez une adresse de gestionnaire syscall. </li><li>  Activez la protection de la mémoire. </li></ul><br><p>  Si vous souhaitez désactiver la protection de la mémoire, vous devez savoir: le registre <code>CR0</code> composé de drapeaux.  Les drapeaux gèrent le comportement du processeur.  Le drapeau WP est <code>Write Protect</code> , c'est le 48ème bit à <code>CR0</code> . </p><br><p>  Désactivez la protection de la mémoire: </p><br><pre> <code class="plaintext hljs">asm("pushq %rax"); asm("movq %cr0, %rax"); asm("andq $0xfffffffffffeffff, %rax"); asm("movq %rax, %cr0"); asm("popq %rax");</code> </pre> <br><p>  Activez la protection de la mémoire: </p><br><pre> <code class="plaintext hljs">asm("pushq %rax"); asm("movq %cr0, %rax"); asm("xorq $0x0000000000001000, %rax"); asm("movq %rax, %cr0"); asm("popq %rax");</code> </pre> <br><h1 id="conclusion">  Conclusion </h1><br><iframe width="560" height="315" src="https://www.youtube.com/embed/FgPVCQa0qsw" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><p>  D'une part, cela devrait suffire pour gérer l'interception d'appels système, mais d'autre part, je ne suis pas sûr que rien n'a changé depuis 2010. Alors utilisez-le tel quel.  Le code source se trouve sur <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">github.com/ultral/linux-keylogger</a> . </p><br><p>  PS </p><br><ul><li>  C'est la traduction de mon <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">article</a> . </li><li>  C'est <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">crosspost</a> . </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Code source</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr437182/">https://habr.com/ru/post/fr437182/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr437170/index.html">Facebook suggère d'utiliser des lasers spatiaux pour les communications mondiales</a></li>
+<li><a href="../fr437172/index.html">IBM MQ et JMeter: premier contact</a></li>
+<li><a href="../fr437174/index.html">.NET, TensorFlow et les moulins à vent de Kaggle - le voyage commence</a></li>
+<li><a href="../fr437176/index.html">Application pour iOS et Android sur Kotlin + Flutter UI</a></li>
+<li><a href="../fr437180/index.html">JVM de Sibérie dure: grande interview sur Excelsior JET</a></li>
+<li><a href="../fr437184/index.html">Nikolay Durov a terminé à 90% le développement de la plate-forme Telegram Open Network</a></li>
+<li><a href="../fr437186/index.html">Monolith à microservices. Point de vue infrastructure</a></li>
+<li><a href="../fr437190/index.html">À propos de la surveillance</a></li>
+<li><a href="../fr437194/index.html">Liste de contrôle du cloud ou comment le client nous a évalués</a></li>
+<li><a href="../fr437196/index.html">Global Game Jam 2019 (annonce)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

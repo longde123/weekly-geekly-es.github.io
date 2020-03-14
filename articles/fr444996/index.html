@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🥕 🔖 ✊🏻 Redis Streams en tant que structure de données propre 🧙 🏈 👩🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="La nouvelle structure de données Redis 5, appelée flux, a suscité un vif intérêt dans la communauté. D'une manière ou d'une autre, je parlerai à ceux ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Redis Streams en tant que structure de données propre</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/444996/">  La nouvelle structure de données Redis 5, appelée flux, a suscité un vif intérêt dans la communauté.  D'une manière ou d'une autre, je parlerai à ceux qui utilisent des flux en production et j'écrirai à ce sujet.  Mais maintenant, je veux considérer un sujet légèrement différent.  Il me semble que beaucoup de gens considèrent les flux comme une sorte d'outil surréaliste pour résoudre des tâches terriblement difficiles.  En effet, cette structure de données * fournit également des messages, mais ce sera une simplification incroyable de supposer que la fonctionnalité de Redis Streams n'est limitée que par cela. <br><br>  Les flux sont un modèle et un «modèle mental» formidables qui peuvent être utilisés avec grand succès dans la conception de systèmes, mais en réalité, comme la plupart des structures de données Redis, sont une structure plus générale et peuvent être utilisés pour un tas d'autres tâches.  Dans cet article, nous présenterons les flux comme une structure de données pure, ignorant complètement les opérations de blocage, les groupes de destinataires et toutes les autres fonctionnalités de messagerie. <br><a name="habracut"></a><br><h1>  Streams - Ceci est CSV sur les stéroïdes </h1><br>  Si vous souhaitez enregistrer un certain nombre d'éléments de données structurés et pensez que la base de données sera un excès ici, vous pouvez simplement ouvrir le fichier en mode <code>append only</code> et écrire chaque ligne en CSV (Comma Separated Value): <br><br><pre> <code class="plaintext hljs">(open data.csv in append only) time=1553096724033,cpu_temp=23.4,load=2.3 time=1553096725029,cpu_temp=23.2,load=2.1</code> </pre> <br>  Ça a l'air simple.  Les gens l'ont fait il y a longtemps et le font toujours: c'est un modèle fiable, si vous savez quoi.  Mais quel sera l'équivalent en mémoire?  En mémoire, un traitement des données beaucoup plus avancé devient possible, et de nombreuses restrictions des fichiers CSV sont automatiquement supprimées, telles que: <br><br><ol><li>  Il est difficile (inefficace) de répondre aux demandes de plage. <br></li><li>  Trop d'informations redondantes: chaque enregistrement a presque le même temps et les champs sont dupliqués.  Dans le même temps, la suppression de données rendra le format moins flexible si je souhaite basculer vers un autre ensemble de champs. <br></li><li>  Les décalages d'éléments sont simplement des décalages d'octets dans le fichier: si nous changeons la structure du fichier, les décalages deviendront faux, il n'y a donc pas de véritable concept d'identifiant principal.  Les inscriptions ne peuvent pas être présentées sans ambiguïté. <br></li><li>  Sans la possibilité de collecter les déchets et sans réécrire le journal, vous ne pouvez pas supprimer les entrées, mais uniquement les marquer comme non valides.  La réécriture des journaux craint généralement pour plusieurs raisons, il est conseillé de l'éviter. </li></ol><br>  En même temps, un tel journal CSV est bon à sa manière: il n'y a pas de structure fixe, les champs peuvent changer, il est trivial de le générer et il est assez compact.  L'idée avec les flux Redis était de préserver les vertus, mais de surmonter les limites.  Le résultat est une structure de données hybride très similaire aux ensembles triés de Redis: ils * ressemblent * à la structure de données fondamentale, mais utilisent plusieurs représentations internes pour obtenir cet effet. <br><br><h1>  Introduction aux threads (vous pouvez sauter si vous connaissez déjà les bases) </h1><br>  Les flux Redis sont représentés comme des nœuds de macro compressés en delta connectés par une arborescence de base.  Par conséquent, vous pouvez rechercher très rapidement des enregistrements aléatoires, obtenir des plages, supprimer d'anciens éléments, etc. En même temps, l'interface du programmeur est très similaire à un fichier CSV: <br><br><pre> <code class="plaintext hljs">&gt; XADD mystream * cpu-temp 23.4 load 2.3 "1553097561402-0" &gt; XADD mystream * cpu-temp 23.2 load 2.1 "1553097568315-0"</code> </pre> <br>  Comme vous pouvez le voir dans l'exemple, la commande XADD génère et renvoie automatiquement l'identifiant de l'enregistrement, qui augmente de façon monotone et se compose de deux parties: &lt;time&gt; - &lt;counter&gt;.  Temps en millisecondes et le compteur est incrémenté pour les enregistrements avec la même heure. <br><br>  Ainsi, la première nouvelle abstraction pour l'idée d'un fichier CSV en mode <code>append only</code> est d'utiliser l'astérisque comme argument ID pour XADD: c'est ainsi que nous obtenons gratuitement l'identifiant d'enregistrement du serveur.  Cet identifiant est utile non seulement pour indiquer un élément spécifique dans le flux, il est également associé à l'heure à laquelle l'enregistrement a été ajouté au flux.  En fait, avec XRANGE, vous pouvez exécuter des requêtes de plage ou récupérer des éléments individuels: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097561402-0 1553097561402-0 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3"</code> </pre> <br>  Dans ce cas, j'ai utilisé le même ID pour démarrer et terminer la plage pour identifier un élément.  Cependant, je peux utiliser n'importe quelle plage et argument COUNT pour limiter le nombre de résultats.  De même, il n'est pas nécessaire de spécifier des identifiants complets pour une plage, je peux simplement utiliser uniquement le temps unix pour obtenir des éléments dans une plage de temps donnée: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097560000 1553097570000 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3" 2) 1) "1553097568315-0" 2) 1) "cpu-temp" 2) "23.2" 3) "load" 4) "2.1"</code> </pre> <br>  Pour le moment, il n'est pas nécessaire de vous montrer d'autres fonctionnalités de l'API, il existe une documentation pour cela.  Pour l'instant, concentrons-nous uniquement sur ce modèle d'utilisation: XADD pour ajouter, XRANGE (et aussi XREAD) pour extraire des plages (selon ce que vous voulez faire), et voyons pourquoi les flux sont si puissants qu'ils les appellent des structures de données. <br><br>  Si vous souhaitez en savoir plus sur les flux et les API, assurez-vous de lire le <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">didacticiel</a> . <br><br><h1>  Joueurs de tennis </h1><br>  Il y a quelques jours, un de mes amis qui a commencé à étudier Redis et moi avons simulé une application pour suivre les courts de tennis, les joueurs et les matchs locaux.  La façon de modéliser les joueurs est évidente, le joueur est un petit objet, nous n'avons donc besoin que d'un hachage avec des clés comme <code>player:&lt;id&gt;</code> .  Ensuite, vous réaliserez immédiatement que vous avez besoin d'un moyen de suivre les matchs dans des clubs de tennis spécifiques.  Si <code>player:1</code> et <code>player:2</code> joué entre eux et <code>player:1</code> gagné, nous pouvons envoyer le record suivant au stream: <br><br><pre> <code class="plaintext hljs">&gt; XADD club:1234.matches * player-a 1 player-b 2 winner 1 "1553254144387-0"</code> </pre> <br>  Une opération aussi simple nous donne: <br><br><ol><li>  Identifiant de correspondance unique: ID dans le flux. <br></li><li>  Il n'est pas nécessaire de créer un objet pour l'identification de correspondance. <br></li><li>  Demandes de portée libre pour les matchs de pagination ou de regarder des matchs pour une date et une heure spécifiques. </li></ol><br>  Avant que les flux n'apparaissent, nous devions créer un ensemble trié par le temps: les éléments de l'ensemble trié seraient des identificateurs de correspondance, qui sont stockés dans une clé différente en tant que valeur de hachage.  Ce n'est pas seulement plus de travail, mais aussi plus de mémoire.  Beaucoup, beaucoup plus de mémoire (voir ci-dessous). <br><br>  Maintenant, notre objectif est de montrer que les flux Redis sont une sorte d'ensemble trié en mode <code>append only</code> , avec des clés par heure, où chaque élément est un petit hachage.  Et dans sa simplicité, c'est une véritable révolution dans le contexte de la modélisation. <br><br><h1>  La mémoire </h1><br>  Le cas d'utilisation ci-dessus n'est pas seulement un modèle de programmation plus cohérent.  La consommation de mémoire dans les threads est tellement différente de l'ancienne approche avec un ensemble trié + hachage pour chaque objet que certaines choses commencent maintenant à fonctionner qui étaient auparavant impossible à implémenter. <br><br>  Voici des statistiques sur la quantité de mémoire pour stocker un million de correspondances dans la configuration présentée précédemment: <br><br><pre> <code class="plaintext hljs">  +  = 220  (242 RSS)  = 16,8  (18.11 RSS)</code> </pre> <br>  La différence est supérieure à un ordre de grandeur (à savoir 13 fois).  Cela signifie pouvoir travailler avec des tâches qui étaient auparavant trop coûteuses pour être exécutées en mémoire.  Maintenant, ils sont tout à fait viables.  La magie consiste à introduire les flux Redis: les nœuds de macro peuvent contenir plusieurs éléments qui sont codés de manière très compacte dans une structure de données appelée listpack.  Cette structure prendra soin, par exemple, de coder des entiers sous forme binaire, même s'il s'agit de chaînes sémantiques.  De plus, nous appliquons la compression delta et compressons les mêmes champs.  Cependant, il reste possible de rechercher par ID ou par heure, car ces macro-nœuds sont liés dans une arborescence de base, également conçue avec une optimisation de la mémoire.  Ensemble, cela explique l'utilisation économique de la mémoire, mais la partie intéressante est que sémantiquement l'utilisateur ne voit aucun détail d'implémentation qui rend les threads si efficaces. <br><br>  Maintenant comptons.  Si je peux stocker 1 million d'enregistrements dans environ 18 Mo de mémoire, je peux en stocker 10 millions sur 180 Mo et 100 millions sur 1,8 Go.  Avec seulement 18 Go de mémoire, je peux avoir 1 milliard d'articles. <br><br><h1>  Séries chronologiques </h1><br>  Il est important de noter que l'exemple ci-dessus avec des matchs de tennis est sémantiquement * très différent * de l'utilisation de flux Redis pour les séries chronologiques.  Oui, logiquement, nous enregistrons toujours une sorte d'événement, mais il y a une différence fondamentale.  Dans le premier cas, nous enregistrons et créons des enregistrements pour le rendu des objets.  Et dans la série chronologique, nous mesurons simplement quelque chose qui se passe à l'extérieur et qui ne représente pas réellement l'objet.  Vous pouvez dire que cette distinction est triviale, mais elle ne l'est pas.  Il est important de comprendre l'idée que les threads Redis peuvent être utilisés pour créer de petits objets avec un ordre commun et attribuer des identifiants à ces objets. <br><br>  Mais même la manière la plus simple d'utiliser les séries temporelles est évidemment une énorme percée, car avant l'avènement des threads, Redis était pratiquement impuissant à faire quoi que ce soit ici.  Les caractéristiques de la mémoire et la flexibilité des flux, ainsi que la possibilité de limiter les flux plafonnés (voir les paramètres XADD) sont des outils très importants entre les mains du développeur. <br><br><h1>  Conclusions </h1><br>  Les flux sont flexibles et offrent de nombreux cas d'utilisation, mais je voulais écrire un très court article pour montrer clairement les exemples et la consommation de mémoire.  Pour de nombreux lecteurs, cette utilisation des flux était peut-être évidente.  Cependant, les conversations avec les développeurs au cours des derniers mois m'ont donné l'impression que beaucoup ont une forte association entre les flux et les données en streaming, comme si la structure des données n'était bonne que là-bas.  Ce n'est pas le cas.  :-) </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr444996/">https://habr.com/ru/post/fr444996/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr444982/index.html">Mockito et comment le faire cuire</a></li>
+<li><a href="../fr444984/index.html">D'où viennent les photos pour tester les systèmes de reconnaissance faciale?</a></li>
+<li><a href="../fr444986/index.html">IETF approuve ACME - Il s'agit de la norme pour travailler avec des certificats SSL</a></li>
+<li><a href="../fr444992/index.html">Erreurs intégrées au système: leur rôle dans les statistiques</a></li>
+<li><a href="../fr444994/index.html">À propos des lecteurs et de leur utilisation sur les ordinateurs modernes</a></li>
+<li><a href="../fr444998/index.html">La vulnérabilité critique des dispositifs de survie implantés donne aux attaquants la possibilité de les contrôler</a></li>
+<li><a href="../fr445002/index.html">Comment se préparer rapidement à un entretien d'embauche avec des questions sur les algorithmes et les technologies</a></li>
+<li><a href="../fr445004/index.html">Le profileur SQL est-il dangereux?</a></li>
+<li><a href="../fr445006/index.html">Microélectronique pour les étudiants de la source même</a></li>
+<li><a href="../fr445008/index.html">Examens Azure (version révisée et révisée)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

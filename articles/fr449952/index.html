@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧕🏻 👆🏾 👨🏻‍🚒 Configuration de la livraison continue sur gitlab.com 🐟 🔶 🉑</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Une fois, j'ai pensé à automatiser le déploiement de mon projet. gitlab.com fournit aimablement tous les outils pour cela, et bien sûr j'ai décidé de ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Configuration de la livraison continue sur gitlab.com</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/449952/">  Une fois, j'ai pensé à automatiser le déploiement de mon projet.  gitlab.com fournit aimablement tous les outils pour cela, et bien sûr j'ai décidé de l'utiliser en triant et en écrivant un petit script de déploiement.  Dans cet article, je partage mon expérience avec la communauté. <br><a name="habracut"></a><br><h3>  TL; DR </h3><br><ol><li>  Configurer VPS: désactiver root, connexion par mot de passe, installer dockerd, configurer ufw </li><li>  Générer des certificats pour le serveur et le client <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=https://docs.docker.com/engine/security/" rel="nofollow">docs.docker.com/engine/security/https/#create-a-ca-server-and-client-keys-with-openssl</a> Activer le contrôle <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=https://docs.docker.com/engine/security/" rel="nofollow">dockerd</a> via le socket tcp: supprimez l'option -H fd: / / depuis la configuration de docker. </li><li>  Enregistrer les chemins de certificat dans docker.json </li><li>  Enregistrez-vous dans les variables gitlab dans les paramètres CI / CD avec le contenu du certificat.  Écrivez un script .gitlab-ci.yml pour le déploiement. </li></ol><br>  Je vais montrer tous les exemples sur le kit de distribution Debian. <br><br><h3>  Configuration initiale de VPS </h3><br>  Vous avez donc acheté une instance par exemple sur <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=" rel="nofollow">DO</a> , la première chose à faire est de protéger votre serveur du monde extérieur agressif.  Je ne prouverai et ne revendiquerai rien, il suffit de montrer le journal / var / log / messages de mon serveur virtuel: <br><br><div class="spoiler">  <b class="spoiler_title">Capture d'écran</b> <div class="spoiler_text"><img src="https://habrastorage.org/getpro/habr/post_images/1dc/3c5/054/1dc3c5054e545134f91441819476b8f4.png" alt="image"><br></div></div><br>  Tout d'abord, installez le pare-feu ufw: <br><br><pre><code class="plaintext hljs">apt-get update &amp;&amp; apt-get install ufw</code> </pre> <br>  Activez la stratégie par défaut: bloquez toutes les connexions entrantes, autorisez toutes les connexions sortantes: <br><br><pre> <code class="plaintext hljs">ufw default deny incoming ufw default allow outgoing</code> </pre> <br>  Important: n'oubliez pas d'autoriser la connexion ssh: <br><br><pre> <code class="plaintext hljs">ufw allow OpenSSH</code> </pre> <br>  La syntaxe générale est la suivante: Autoriser une connexion au port: ufw allow 12345, où 12345 est le numéro de port ou le nom du service.  Refuser: ufw deny 12345 <br><br>  Activez le pare-feu: <br><br><pre> <code class="plaintext hljs">ufw enable</code> </pre> <br>  Nous quittons la session et nous reconnectons via ssh. <br><br>  Ajoutez l'utilisateur, attribuez-lui un mot de passe et ajoutez-le au groupe sudo. <br><br><pre> <code class="plaintext hljs">apt-get install sudo adduser scoty usermod -aG sudo scoty</code> </pre> <br>  Ensuite, selon le plan, vous devez désactiver la saisie du mot de passe.  Pour ce faire, copiez votre clé ssh sur le serveur: <br><br><pre> <code class="plaintext hljs">ssh-copy-id root@10.101.10.28</code> </pre> <br>  L'IP de votre serveur doit être spécifiée.  Essayez maintenant de vous connecter sous l'utilisateur créé précédemment, vous n'avez plus besoin de saisir de mot de passe.  Ensuite, dans les paramètres de configuration, modifiez les éléments suivants: <br><br><pre> <code class="plaintext hljs">sudo nano /etc/ssh/sshd_config</code> </pre> <br>  désactiver la saisie du mot de passe: <br><br><pre> <code class="plaintext hljs">PasswordAuthentication no</code> </pre> <br>  Redémarrez le démon sshd: <br><br><pre> <code class="plaintext hljs">sudo systemctl reload sshd</code> </pre> <br>  Maintenant, si vous ou quelqu'un d'autre essayez de vous connecter en tant que root, cela ne fonctionnera pas. <br><br>  Ensuite, définissez dockerd, je ne décrirai pas le processus ici, car tout peut déjà être modifié, suivez le lien vers le site officiel et suivez les étapes pour installer docker sur votre machine virtuelle: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=" rel="nofollow">https://docs.docker.com/install/linux/docker- ce / debian /</a> <br><br><h3>  Génération de certificats </h3><br>  Pour gérer le démon Docker à distance, une connexion TLS chiffrée est requise.  Pour ce faire, vous devez disposer d'un certificat et d'une clé, qui doivent être générés et transférés sur votre machine distante.  Suivez les étapes indiquées dans les instructions sur le site Web officiel de docker: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=https://docs.docker.com/engine/security/" rel="nofollow">https://docs.docker.com/engine/security/https/#create-a-ca-server-and-client-keys-with-openssl</a> Tout généré * .pem les fichiers du serveur, à savoir ca.pem, server.pem, key.pem doivent être placés dans le répertoire / etc / docker du serveur. <br><br><h3>  Configuration de Dockerd </h3><br>  Dans le script pour lancer le démon docker, supprimez l'option -H df: //, cette option répond à l'hôte qui peut contrôler le démon docker. <br><br><pre> <code class="plaintext hljs"># At /lib/systemd/system/docker.service [Service] Type=notify ExecStart=/usr/bin/dockerd</code> </pre> <br>  Ensuite, créez un fichier de paramètres, s'il n'est pas déjà là et prescrivez des options: <br><br><div class="spoiler">  <b class="spoiler_title">/etc/docker/daemon.json</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">{ "hosts": [ "unix:///var/run/docker.sock", "tcp://0.0.0.0:2376" ], "labels": [ "is-our-remote-engine=true" ], "tls": true, "tlscacert": "/etc/docker/ca.pem", "tlscert": "/etc/docker/server.pem", "tlskey": "/etc/docker/key.pem", "tlsverify": true }</code> </pre> <br></div></div><br>  Activons les connexions sur le port 2376: <br><br><pre> <code class="plaintext hljs">sudo ufw allow 2376</code> </pre> <br>  Redémarrez dockerd avec les nouveaux paramètres: <br><br><pre> <code class="plaintext hljs">sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart docker</code> </pre> <br>  Vérifier: <br><br><pre> <code class="plaintext hljs">sudo systemctl status docker</code> </pre> <br>  Si tout est vert, nous pensons que nous avons réussi à configurer docker sur le serveur. <br><br><h3>  Configuration de la livraison continue sur gitlab </h3><br>  Pour que le travailleur gitalab puisse exécuter des commandes sur l'hôte distant docker, il est nécessaire de déterminer comment et où stocker les certificats et la clé pour une connexion cryptée avec dockerd.  J'ai résolu ce problème en l'écrivant simplement dans des variables dans les paramètres de gitlbab: <br><br><div class="spoiler">  <b class="spoiler_title">Cap de spoiler</b> <div class="spoiler_text"><img src="https://habrastorage.org/getpro/habr/post_images/221/806/3d9/2218063d98a375d36e38fcb214a36bb7.png" alt="image"><br></div></div><br>  Affichez simplement le contenu des certificats et de la clé via cat: <code>cat ca.pem</code> .  Copiez et collez dans la valeur des variables. <br><br>  Écrivons le script du déploiement via gitlab.  L'image docker-in-docker (dind) sera utilisée. <br><br><div class="spoiler">  <b class="spoiler_title">.gitlab-ci.yml</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">image: name: docker/compose:1.23.2 #  entrypoint ,    dind entrypoint: ["/bin/sh", "-c"] variables: DOCKER_HOST: tcp://docker:2375/ DOCKER_DRIVER: overlay2 services: - docker:dind stages: - deploy deploy: stage: deploy script: - bin/deploy.sh #   </code> </pre><br></div></div><br>  Le contenu du script de déploiement avec commentaires: <br><br><div class="spoiler">  <b class="spoiler_title">bin / deploy.sh</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">#!/usr/bin/env sh #  ,   -  set -e # ,  ,   set -v # DOCKER_COMPOSE_FILE=docker-compose.yml #   DEPLOY_HOST=185.241.52.28 #    ,      - gitlab- DOCKER_CERT_PATH=/root/.docker # ,      docker info docker-compose version #   (    -  gitlab') mkdir $DOCKER_CERT_PATH #   ,         . echo "$CA_PEM" | tr -d '\r' &gt; $DOCKER_CERT_PATH/ca.pem echo "$CERT_PEM" | tr -d '\r' &gt; $DOCKER_CERT_PATH/cert.pem echo "$KEY_PEM" | tr -d '\r' &gt; $DOCKER_CERT_PATH/key.pem #       chmod 400 $DOCKER_CERT_PATH/ca.pem chmod 400 $DOCKER_CERT_PATH/cert.pem chmod 400 $DOCKER_CERT_PATH/key.pem #       docker-. ,   export DOCKER_TLS_VERIFY=1 export DOCKER_HOST=tcp://$DEPLOY_HOST:2376 # ,     docker-compose \ -f $DOCKER_COMPOSE_FILE \ ps #   docker-,     ""  docker login -u $DOCKER_USER -p $DOCKER_PASSWORD docker-compose \ -f $DOCKER_COMPOSE_FILE \ pull app #   docker-compose \ -f $DOCKER_COMPOSE_FILE \ up -d app</code> </pre><br></div></div><br>  Le principal problème était «d'extraire» le contenu des certificats sous forme normale à partir des variables gitlab CI / CD.  Je ne pouvais pas comprendre pourquoi la connexion à l'hôte distant ne fonctionnait pas.  Sur l'hôte, j'ai regardé le journal de docker sudo journalctl -u, il y a une erreur de prise de contact.  J'ai décidé de regarder ce qui est généralement stocké dans les variables, pour cela, vous pouvez voir cat -A $ DOCKER_CERT_PATH / key.pem.  L'erreur a été surmontée en ajoutant la suppression du symbole de chariot tr -d '\ r'. <br><br>  Plus loin dans le script, vous pouvez ajouter des tâches post-publication à votre discrétion.  Vous pouvez voir la version de travail dans mon référentiel <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=" rel="nofollow">https://gitlab.com/isqad/gitlab-ci-cd</a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr449952/">https://habr.com/ru/post/fr449952/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr449940/index.html">Comment presser 16 Go de mémoire sur une carte mère qui ne prend pas en charge ce montant</a></li>
+<li><a href="../fr449942/index.html">Comment tester une fonctionnalité de TK à la post-production et maintenir des relations amicales au sein de l'équipe</a></li>
+<li><a href="../fr449944/index.html">Docker: mauvais conseils</a></li>
+<li><a href="../fr449946/index.html">1C Developer Tales: admin</a></li>
+<li><a href="../fr449948/index.html">JavaScript: 7 petites choses utiles</a></li>
+<li><a href="../fr449954/index.html">Installer Zimbra Open-Source Edition sur CentOS 7</a></li>
+<li><a href="../fr449956/index.html">AI @ MIPT: Big data pour les modèles mathématiques du génome humain</a></li>
+<li><a href="../fr449960/index.html">Sources d'inspiration lors du développement pour UDB</a></li>
+<li><a href="../fr449962/index.html">Routeurs industriels 4G SmartMotion</a></li>
+<li><a href="../fr449964/index.html">Essai routier nanoCAD SPDS Chantier de construction 8. Partie 2</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

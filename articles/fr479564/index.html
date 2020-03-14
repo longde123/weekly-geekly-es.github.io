@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏰 🎅🏾 🐨 ClickHouse + Graphite: comment réduire considérablement la consommation d'espace disque 🧘🏼 📔 👩🏾‍🔧</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Salutations habr. 
+
+
+ Si quelqu'un exécute un système Web graphite et rencontre un problème de performances de stockage silencieux (IO, consommation d...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>ClickHouse + Graphite: comment réduire considérablement la consommation d'espace disque</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/479564/"><p><img src="https://habrastorage.org/webt/qq/sw/qe/qqswqech4q2d--d55t5rujx9hrm.png"></p><br><p>  Salutations habr. </p><br><p> Si quelqu'un <a href="https://github.com/graphite-project/graphite-web" rel="nofollow">exécute un système Web graphite</a> et rencontre un problème de performances de stockage silencieux (IO, consommation d'espace disque), la chance que ClickHouse soit casté en remplacement devrait viser un.  Cette déclaration implique qu'une implémentation tierce, telle que <a href="https://github.com/grobian/carbonwriter" rel="nofollow">carbonwriter</a> ou <a href="https://github.com/go-graphite/go-carbon" rel="nofollow">go-carbon, est</a> déjà utilisée comme métrique de réception du démon. </p><br><p>  ClickHouse résout bien les problèmes décrits.  Par exemple, après avoir transféré des données 2TiB à partir d'un murmure, elles tiennent dans 300GiB.  Je ne m'attarderai pas sur la comparaison en détail, il y a suffisamment d'articles sur ce sujet.  De plus, jusqu'à récemment, tout était parfait avec notre stockage ClickHouse. </p><a name="habracut"></a><br><h3 id="problemy-s-potreblyaemym-mestom">  Problèmes de consommation </h3><br><p> À première vue, tout devrait bien fonctionner.  Suite à la <a href="https://clickhouse.yandex/docs/ru/operations/table_engines/graphitemergetree/" rel="nofollow">documentation</a> , nous créons une configuration pour le schéma de stockage des métriques (ci-après <code>retention</code> ), puis créons une table selon la recommandation du backend sélectionné pour graphite-web: <a href="https://github.com/lomik/carbon-clickhouse" rel="nofollow">carbon-clickhouse</a> + <a href="https://github.com/lomik/graphite-clickhouse" rel="nofollow">graphite-clickhouse</a> ou <a href="https://github.com/ClickHouse/graphouse" rel="nofollow">graphouse</a> , selon la pile utilisée.  Et ... la bombe à retardement se déclenche. </p><br><p>  Afin de comprendre lequel, vous devez savoir comment les insertions et le chemin de vie des données dans les tableaux de la famille de moteurs * <em>MergeTree</em> ClickHouse (diagrammes tirés de la <a href="https://youtu.be/PLMSA_gDdyM" rel="nofollow">présentation d'</a> Alexei Zatelepin): </p><br><ul><li>  Un <code></code> données <code></code> inséré.  Dans notre cas, les métriques sont arrivées. <br><img src="https://habrastorage.org/webt/sg/w-/j-/sgw-j-iqinterrfern_vltigkzk.png"></li><li>  Chacun de ces blocs avant d'écrire sur le disque est trié selon la clé <code>ORDER BY</code> spécifiée lors de la création de la table. </li><li>  Après le tri, une donnée est écrite sur le disque. <br><img src="https://habrastorage.org/webt/pw/jn/i2/pwjni2dacybsmesxpbhsjzcbsnu.png"></li><li>  Le serveur surveille en arrière-plan qu'il n'y en a pas beaucoup et démarre les <code></code> arrière-plan ( <code>merge</code> , ci-après fusion). <br><img src="https://habrastorage.org/webt/bl/jx/ge/bljxge8pm7mw1dknwvqptruwqcu.png"><br><img src="https://habrastorage.org/webt/le/nx/bk/lenxbkzrtkajgoat-tqdfuqnzkk.png"></li><li>  Le serveur arrête de démarrer la fusion de lui-même dès que les données n'entrent plus activement <code></code> <code>partition</code> , mais vous pouvez démarrer le processus manuellement avec la commande <code>OPTIMIZE</code> . </li><li>  S'il ne reste qu'une seule pièce dans la partition, vous ne pouvez pas démarrer la fusion avec la commande habituelle, vous devez utiliser <code>OPTIMIZE ... FINAL</code> </li></ul><br><p>  Ainsi, les premières mesures arrivent.  Et ils occupent un certain espace.  Les événements ultérieurs peuvent varier légèrement en fonction de nombreux facteurs: </p><br><ul><li>  La clé de partitionnement peut être très petite (jour) ou très grande (plusieurs mois). </li><li>  La configuration de rétention peut prendre en charge plusieurs seuils d'agrégation de données significatifs au sein de la partition active (où va l'enregistrement des métriques), ou non. </li><li>  S'il y a beaucoup de données, les premières pièces, qui en raison des fusions d'arrière-plan peuvent déjà être énormes (lors du choix d'une clé de partition sous-optimale), ne pourront pas se tripoter avec de petites pièces fraîches. </li></ul><br><p>  Et tout finit toujours pareil.  La place occupée par les métriques dans ClickHouse ne se développe que si: </p><br><ul><li>  n'appliquez pas <code>OPTIMIZE ... FINAL</code> manuellement ou </li><li>  n'insérez pas de données dans toutes les partitions de façon continue afin de démarrer une fusion en arrière-plan tôt ou tard </li></ul><br><p>  La deuxième méthode semble la plus simple à mettre en œuvre <del>  et, par conséquent, il a tort </del>  et a été testé en premier. <br>  J'ai écrit un script python assez simple qui a envoyé des métriques factices pour chaque jour au cours des 4 dernières années et a été exécuté toutes les heures par la couronne. <br>  Étant donné que tout le travail de ClickHouse DBMS est basé sur le fait que ce système fera tout le travail d'arrière-plan tôt ou tard, mais on ne sait pas quand, je ne pouvais pas attendre que les énormes pièces anciennes daignent commencer à fusionner avec de nouvelles petites.  Il est devenu clair que nous devions chercher un moyen d'automatiser les optimisations forcées. </p><br><img src="https://habrastorage.org/webt/ph/p0/1q/php01q8tw0cn8r5hxyr44dvc6hk.png" width="300"><br><h3 id="informaciya-v-sistemnyh-tablicah-clickhouse">  Informations dans les tables système ClickHouse </h3><br><p>  <a href="https://clickhouse.yandex/docs/ru/operations/system_tables/" rel="nofollow">Jetez un</a> œil à la structure de la table <a href="https://clickhouse.yandex/docs/ru/operations/system_tables/" rel="nofollow">system.parts</a> .  Il s'agit d'informations complètes sur chaque élément de toutes les tables du serveur ClickHouse.  Il contient, entre autres, les colonnes suivantes: </p><br><ul><li>  Nom de la <code>database</code> ( <code>database</code> ); </li><li>  nom de table ( <code>table</code> ); </li><li>  Nom et ID de la <code>partition</code> ( <code>partition</code> &amp; <code>partition_id</code> ); </li><li>  quand la pièce a été créée ( <code>modification_time</code> ); </li><li>  date minimum et maximum dans un morceau (le partitionnement se fait par jour) ( <code>min_date</code> &amp; <code>max_date</code> ); </li></ul><br><p>  Il existe également une table <a href="https://clickhouse.yandex/docs/ru/operations/system_tables/" rel="nofollow">system.graphite_retentions</a> , avec les champs intéressants suivants: </p><br><ul><li>  Nom de la base de données ( <code>Tables.database</code> ); </li><li>  nom de la table ( <code>Tables.table</code> ); </li><li>  l'âge de la mesure lorsque la prochaine agrégation ( <code>age</code> ) doit être appliquée; </li></ul><br><p>  Donc: </p><br><ol><li>  Nous avons un tableau de pièces et un tableau de règles d'agrégation. </li><li>  Combinez leur intersection et obtenez toutes les tables * GraphiteMergeTree. </li><li>  Nous recherchons toutes les partitions dans lesquelles: <br><ul><li>  plus d'une pièce </li><li>  ou le moment est venu d'appliquer la règle d'agrégation suivante, et <code>modification_time</code> plus ancien que ce moment. </li></ul></li></ol><br><h3 id="realizaciya">  Implémentation </h3><br><div class="spoiler">  <b class="spoiler_title">Cette demande</b> <div class="spoiler_text"><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">concat</span></span>(p.database, <span class="hljs-string"><span class="hljs-string">'.'</span></span>, p.table) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">table</span></span>, p.partition_id <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> partition_id, p.partition <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">partition</span></span>, <span class="hljs-comment"><span class="hljs-comment">--  "" ,      -- ,    ,  (*) max(g.age) AS age, --     countDistinct(p.name) AS parts, --        00:00:00   toDateTime(max(p.max_date + 1)) AS max_time, --      max_time + age AS rollup_time, --         min(p.modification_time) AS modified_at FROM system.parts AS p INNER JOIN ( --      *GraphiteMergeTree SELECT Tables.database AS database, Tables.table AS table, age FROM system.graphite_retentions ARRAY JOIN Tables GROUP BY database, table, age ) AS g ON (p.table = g.table) AND (p.database = g.database) WHERE --    p.active -- (*)   ,        AND ((toDateTime(p.max_date + 1) + g.age) &lt; now()) GROUP BY table, partition HAVING --  ,     (modified_at &lt; rollup_time) --     OR (parts &gt; 1) ORDER BY table ASC, partition ASC, age ASC</span></span></code> </pre> </div></div><br><p>  renvoie chacune des partitions des tables * GraphiteMergeTree dont la fusion devrait libérer de l'espace disque.  Il ne reste que la petite chose: parcourez-les tous avec la requête <code>OPTIMIZE ... FINAL</code> .  L'implémentation finale a également pris en compte le moment où il n'est pas nécessaire de toucher les partitions avec un enregistrement actif. </p><br><p>  C'est exactement ce que fait le projet <a href="https://github.com/innogames/graphite-ch-optimizer" rel="nofollow">graphite-ch-optimizer</a> .  D'anciens collègues de Yandex.Market l'ont testé dans la prod, le résultat du travail peut être vu ci-dessous. </p><br><p><img src="https://habrastorage.org/webt/23/wv/mw/23wvmwkqw9ckohfvfqfshwhbqmu.jpeg" alt="résultat"></p><br><p>  Si vous exécutez le programme sur le serveur avec ClickHouse, il commencera simplement à fonctionner en mode démon.  Une fois par heure, une requête sera exécutée, vérifiant s'il existe de nouvelles partitions de plus de trois jours pouvant être optimisées. </p><br><p>  Dans un avenir proche - pour fournir au moins les packages deb, et si possible - également rpm. </p><br><p>  <strong>UPD: les</strong> packages sont disponibles <a href="https://github.com/innogames/graphite-ch-optimizer/releases" rel="nofollow">sur les versions de github</a> , et des images de travail peuvent être trouvées sur docker-hub dans le référentiel innogames / graphite-ch-optimizer. </p><br><h3 id="vmesto-zaklyucheniya">  Au lieu d'une conclusion </h3><br><p>  Au cours des 9 derniers mois et plus, j'ai passé beaucoup de temps au sein de ma société <a href="https://www.innogames.com/ru/" rel="nofollow">InnoGames</a> à la jonction de ClickHouse et de graphite-web.  Ce fut une bonne expérience, qui a permis de passer rapidement de chuchotement à ClickHouse en tant que référentiel de métriques.  J'espère que cet article est quelque chose comme le début d'un cycle sur les améliorations que nous avons apportées à différentes parties de cette pile, et ce qui sera fait à l'avenir. </p><br><p>  Plusieurs litres de bière et des journées d'administration ont été consacrés au développement de demandes avec <a href="https://habr.com/ru/users/v0devil/" class="user_link">v0devil</a> , pour lequel je tiens à lui exprimer ma gratitude.  Et aussi pour avoir revu cet article. </p><br><p>  <a href="https://github.com/innogames/graphite-ch-optimizer" rel="nofollow">Page du projet sur github</a> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr479564/">https://habr.com/ru/post/fr479564/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr479548/index.html">Le chemin des stages aux performances à HighLoad 2019</a></li>
+<li><a href="../fr479550/index.html">MVC dans Unity avec des objets scriptables. 3e partie</a></li>
+<li><a href="../fr479552/index.html">Les ingénieurs DevOps n'existent pas. Qui existe alors et que faire à ce sujet?</a></li>
+<li><a href="../fr479554/index.html">Contre tout le monde: assistants vocaux intégrés à l'application</a></li>
+<li><a href="../fr479562/index.html">Créer la structure d'un bot multi-plateforme simple</a></li>
+<li><a href="../fr479566/index.html">Système de suppression de potentiel ou reverse engineering de la Matrice + preuve de temps simultané</a></li>
+<li><a href="../fr479568/index.html">Je travaille en tant que programmeur dans une entreprise, mais je veux rencontrer mes 50 ans différemment</a></li>
+<li><a href="../fr479570/index.html">Points d'entrée Python</a></li>
+<li><a href="../fr479572/index.html">Comment Netflix Microservices gère les données Pub-Sub</a></li>
+<li><a href="../fr479574/index.html">4 aspects de la gestion des services ITIL</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

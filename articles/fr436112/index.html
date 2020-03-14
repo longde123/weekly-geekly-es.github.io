@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚶🏼 🥓 💚 Plugin Kubectl-debug pour le débogage dans les pods Kubernetes 👲🏾 🕵🏼 🧕🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="À la fin de l'année dernière, Reddit a introduit un plugin pour kubectl, qui aide à déboguer dans les pods du cluster Kubernetes - kubectl-debug . Cet...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Plugin Kubectl-debug pour le débogage dans les pods Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/436112/"><img src="https://habrastorage.org/webt/t4/le/ko/t4lekoyyijply0zcuwy84_3mhay.jpeg"><br><br>  À la fin de l'année dernière, Reddit a <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">introduit un</a> plugin pour kubectl, qui aide à déboguer dans les pods du cluster <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Kubernetes</a> - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">kubectl-debug</a> .  Cette idée a tout de suite semblé intéressante et utile à nos ingénieurs, nous avons donc décidé de regarder sa mise en œuvre et sommes heureux de partager nos résultats avec les lecteurs de l'hubr. <a name="habracut"></a><br><br><h2>  Pourquoi est-ce même nécessaire? </h2><br>  Pour le moment, il y a un sérieux inconvénient dans le processus de débogage de quelque chose dans le cadre de pods.  L'objectif principal lors de l'assemblage de l'image du conteneur est de la <b>minimiser</b> , c'est-à-dire  le rendre aussi petit que possible en taille et contenant le moins possible "d'excès" à l'intérieur.  Cependant, lorsqu'il s'agit de problèmes de fonctionnement du logiciel final dans des conteneurs ou de débogage de sa communication avec d'autres services du cluster / extérieur ... le minimalisme nous joue un tour - après tout, <b>il n'y a rien</b> dans les conteneurs pour le processus réel de recherche de problèmes.  En règle générale, les utilitaires tels que netstat / ip / ping / curl / wget, etc. ne sont pas disponibles. <br><br>  Et souvent, tout se termine par le fait que l'ingénieur prépare le logiciel nécessaire directement dans le conteneur en cours d'exécution afin de «voir» et de voir le problème.  C'est dans de tels cas que le plugin kubectl-debug semble être un outil très utile - car il évite les douleurs urgentes. <br><br>  Avec son aide, vous pouvez <b>lancer un conteneur avec tous les outils nécessaires</b> à bord dans le cadre d'un <b>pod de</b> problème <b>avec une seule commande</b> et étudier tous les processus «de l'extérieur», à l'intérieur.  Si vous avez déjà rencontré le dépannage de Kubernetes, cela semble attrayant, n'est-ce pas? <br><br><h2>  Quel est ce plugin? </h2><br>  D'une manière générale, l'architecture de cette solution ressemble à un tas de <b>plugins</b> pour kubectl et à un <b>agent</b> qui commence à utiliser le contrôleur DaemonSet.  Le plugin sert des commandes commençant par le <code>kubectl debug …</code> et interagit avec les agents sur les nœuds du cluster.  L'agent, à son tour, s'exécute sur le réseau hôte et l'hôte docker.sock est monté dans le conteneur d'agent pour un accès complet aux conteneurs sur ce serveur. <br><br>  Par conséquent, lorsque vous demandez à lancer un conteneur de débogage dans le module spécifié: <br>  il existe un processus pour identifier le <code>hostIP</code> et une demande est envoyée à l'agent (travaillant sur un hôte approprié) pour lancer un conteneur de débogage dans les espaces de noms correspondant au pod cible. <br><br>  Une vue plus détaillée de ces étapes est disponible dans la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">documentation</a> du <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">projet</a> . <br><br><h2>  Qu'est-ce qui est nécessaire pour travailler? </h2><br>  L'auteur de kubectl-debug prétend être compatible avec les versions du client / cluster <b>Kubernetes 1.12.0+</b> , cependant, j'avais K8s 1.10.8 à portée de main, sur lequel tout fonctionnait sans problèmes visibles ... avec une seule note: pour que l'équipe de <code>kubectl debug</code> fonctionne sous cette forme, la version <b>kubectl est</b> exactement <b>1.12+</b> .  Sinon, toutes les commandes sont similaires, mais ne sont appelées que via <code>kubectl-debug …</code> <br><br>  Lorsque vous démarrez le modèle DaemonSet décrit dans <code>README</code> vous ne devez pas oublier la souillure que vous utilisez sur les nœuds: sans les tolérances appropriées, les pods de l'agent ne s'y installeront pas et, par conséquent, vous ne pourrez pas utiliser les pods vivant sur ces nœuds. peut se connecter avec un débogueur. <br><br>  L’aide du débogueur est très complète et semble décrire toutes les possibilités actuelles de lancement / configuration du plugin.  En général, l'utilitaire satisfait avec un grand nombre de directives à exécuter: vous pouvez attacher des certificats, spécifier le contexte kubectl, spécifier une configuration kubectl distincte ou l'adresse du serveur API de cluster, et plus encore. <br><br><h2>  Travailler avec un débogueur </h2><br>  L'installation jusqu'au moment où «tout fonctionne» est réduite à deux étapes: <br><br><ol><li>  exécuter <code>kubectl apply -f agent_daemonset.yml</code> ; </li><li>  installez directement le plugin lui-même - en général, tout est comme décrit <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">ici</a> . </li></ol><br>  Comment l'utiliser?  Supposons que nous ayons le problème suivant: les métriques de l'un des services du cluster ne sont pas collectées - et nous voulons vérifier s'il y a des problèmes de réseau entre Prometheus et le service cible.  Comme vous pouvez le deviner, l'image Prometheus n'a pas les outils nécessaires. <br><br>  Essayons de nous connecter au conteneur avec Prometheus (s'il y a plusieurs conteneurs dans le pod, vous devrez spécifier celui auquel se connecter, sinon le débogueur sélectionnera le premier par défaut): <br><br><pre> <code class="plaintext hljs">kubectl-debug --namespace kube-prometheus prometheus-main-0 Defaulting container name to prometheus. pulling image nicolaka/netshoot:latest... latest: Pulling from nicolaka/netshoot 4fe2ade4980c: Already exists ad6ddc9cd13b: Pull complete cc720038bf2b: Pull complete ff17a2bb9965: Pull complete 6fe9f5dade08: Pull complete d11fc7653a2e: Pull complete 4bd8b4917a85: Pull complete 2bd767dcee18: Pull complete Digest: sha256:897c19b0b79192ee5de9d7fb40d186aae3c42b6e284e71b93d0b8f1c472c54d3 Status: Downloaded newer image for nicolaka/netshoot:latest starting debug container... container created, open tty... [1] → root @ /</code> </pre> <br>  Auparavant, nous avons découvert que le service problématique vit sur l'adresse 10.244.1.214 et écoute sur le port 8080. Bien sûr, nous pouvons également vérifier la disponibilité à partir des hôtes, cependant, pour un processus de débogage fiable, ces opérations doivent être reproduites dans des conditions identiques (ou aussi proches que possible).  Par conséquent, la vérification à partir d'un pod / conteneur avec Prometheus est la meilleure option.  Commençons par un simple: <br><br><pre> <code class="plaintext hljs"> [1] → ping 10.244.1.214 PING 10.244.1.214 (10.244.1.214) 56(84) bytes of data. 64 bytes from 10.244.1.214: icmp_seq=1 ttl=64 time=0.056 ms 64 bytes from 10.244.1.214: icmp_seq=2 ttl=64 time=0.061 ms 64 bytes from 10.244.1.214: icmp_seq=3 ttl=64 time=0.047 ms 64 bytes from 10.244.1.214: icmp_seq=4 ttl=64 time=0.049 ms ^C --- 10.244.1.214 ping statistics --- 4 packets transmitted, 4 received, 0% packet loss, time 61ms rtt min/avg/max/mdev = 0.047/0.053/0.061/0.007 ms</code> </pre> <br>  Tout va bien.  Peut-être que le port n'est pas disponible? <br><br><pre> <code class="plaintext hljs"> [1] → curl -I 10.244.1.214:8080 HTTP/1.1 200 OK Date: Sat, 12 Jan 2019 14:01:29 GMT Content-Length: 143 Content-Type: text/html; charset=utf-8</code> </pre> <br>  Et il n'y a aucun problème.  Ensuite, nous vérifierons si la communication réelle entre Prometheus et le point final avec des métriques a lieu: <br><br><pre> <code class="plaintext hljs"> [2] → tcpdump host 10.244.1.214 tcpdump: verbose output suppressed, use -v or -vv for full protocol decode listening on eth0, link-type EN10MB (Ethernet), capture size 262144 bytes 14:04:19.234101 IP prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278 &gt; 10.244.1.214.8080: Flags [P.], seq 4181259750:4181259995, ack 2078193552, win 1444, options [nop,nop,TS val 3350532304 ecr 1334757657], length 245: HTTP: GET /metrics HTTP/1.1 14:04:19.234158 IP 10.244.1.214.8080 &gt; prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278: Flags [.], ack 245, win 1452, options [nop,nop,TS val 1334787600 ecr 3350532304], length 0 14:04:19.290904 IP 10.244.1.214.8080 &gt; prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278: Flags [P.], seq 1:636, ack 245, win 1452, options [nop,nop,TS val 1334787657 ecr 3350532304], length 635: HTTP: HTTP/1.1 200 OK 14:04:19.290923 IP prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278 &gt; 10.244.1.214.8080: Flags [.], ack 636, win 1444, options [nop,nop,TS val 3350532361 ecr 1334787657], length 0 ^C 4 packets captured 4 packets received by filter 0 packets dropped by kernel</code> </pre> <br>  Des demandes de réponses arrivent.  Sur la base des résultats de ces opérations, nous pouvons conclure qu'il n'y a pas de problème au niveau de l'interaction réseau, ce qui signifie (très probablement) que vous devez regarder du côté appliqué.  Nous nous connectons au conteneur avec l'exportateur (également, bien sûr, en utilisant le débogueur en question, car les exportateurs ont toujours des images extrêmement minimalistes) et ... nous sommes surpris de constater qu'il y a un problème dans la configuration du service - par exemple, nous avons oublié de diriger l'exportateur vers le bon Adresse de l'application de destination  <b>L'affaire est résolue!</b> <br><br>  Bien sûr, d'autres moyens de débogage sont possibles dans la situation décrite ici, mais nous les laisserons hors du champ de l'article.  Le résultat est que kubectl-debug a de nombreuses possibilités d'utilisation: vous pouvez exécuter n'importe quelle image dans le travail, et si vous le souhaitez, vous pouvez même en assembler une spécifique (avec l'ensemble d'outils nécessaire). <br><br>  Quelles autres applications vous viennent immédiatement à l'esprit? <br><br><ul><li>  Une application "silencieuse", à laquelle <s>les</s> développeurs <s>nuisibles</s> n'ont pas implémenté la journalisation normale.  Mais il a la possibilité de se connecter au port de service et de déboguer avec un outil spécifique, qui, bien sûr, ne doit pas être mis dans l'image finale. </li><li>  Lancez à côté de l'application de combat identique en mode «manuel», mais avec le débogage activé - pour vérifier l'interaction avec les services voisins. </li></ul><br>  En général, il est évident qu'il existe beaucoup plus de situations dans lesquelles un tel outil peut être utile.  Les ingénieurs qui les rencontrent quotidiennement au travail pourront évaluer le potentiel de l'utilitaire en termes de débogage «en direct». <br><br><h2>  Conclusions </h2><br>  Kubectl-debug est un outil utile et prometteur.  Bien sûr, il existe des clusters et des applications Kubernetes pour lesquels cela n'a pas beaucoup de sens, mais il y a encore plus de cas où il fournira une aide inestimable dans le débogage - surtout s'il s'agit de l'environnement de combat et de la nécessité de trouver rapidement, ici et maintenant, les raisons le problème que vous avez rencontré. <br><br>  La première expérience d'utilisation a révélé un besoin urgent de pouvoir se connecter à un pod / conteneur, qui ne démarre pas jusqu'au bout (par exemple, il se bloque dans <code>CrashLoopbackOff</code> ), juste pour vérifier à la volée les raisons pour lesquelles l'application ne démarre pas.  À cette occasion, j'ai créé un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">problème correspondant</a> dans le référentiel du projet, auquel le développeur a répondu positivement et a promis la mise en œuvre dans un proche avenir.  Très satisfait de la rétroaction rapide et adéquate.  Nous attendons donc avec impatience les nouvelles fonctionnalités de l'utilitaire et son développement! <br><br><h2>  PS </h2><br>  Lisez aussi dans notre blog: <br><br><ul><li>  « <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Outils pour les développeurs d'applications fonctionnant sur Kubernetes</a> »; </li><li>  « <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Trucs et astuces Kubernetes: accès aux sites de développement</a> »; </li><li>  « <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Kubebox et autres coques de console pour Kubernetes</a> »; </li><li>  « <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Présentation de loghouse - un système open source pour travailler avec les journaux dans Kubernetes</a> »; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Monitoring and Kubernetes (revue et reportage vidéo)</a> ." </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr436112/">https://habr.com/ru/post/fr436112/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr436100/index.html">Il ne reste qu'un an avant la fin de la prise en charge gratuite de Windows 7</a></li>
+<li><a href="../fr436104/index.html">Dodocode ou comment les concepts de «mot de code» et de «code de confirmation numérique» sont gâchés dans le système de travail via SMS</a></li>
+<li><a href="../fr436106/index.html">D'où viennent les textes: un petit guide pour ceux qui veulent économiser sur le contenu SEO</a></li>
+<li><a href="../fr436108/index.html">Examen de l'imprimante 3D HP à IMTS 2018</a></li>
+<li><a href="../fr436110/index.html">Les mathématiciens prouvent que les polynômes n'aideront pas à pirater RSA</a></li>
+<li><a href="../fr436116/index.html">PERDIX: un algorithme pour la conception automatique d'ADN-origami de géométrie différente</a></li>
+<li><a href="../fr436118/index.html">L'expérience de la création du premier robot sur Arduino (robot-chasseur)</a></li>
+<li><a href="../fr436120/index.html">Le bug difficile à attraper dans LittleBigPlanet</a></li>
+<li><a href="../fr436122/index.html">Intel Lakefield: processeur hybride Atom + Core en 3D</a></li>
+<li><a href="../fr436124/index.html">Nous lisons les commentaires sur Habré avec commodités</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

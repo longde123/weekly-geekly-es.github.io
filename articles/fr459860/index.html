@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏾‍🎓 👨🏾‍⚕️ 🐢 Configurer ClickHouse pour les tests d'intégration dans gitlab-ci 🤾 👨🏾 💩</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nous avions un service sur golang, un sujet séparé kafka, clickhouse, gitlab-ci et une ligne de paiement en baisse, une clé ssh pourrie et c'est tout,...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Configurer ClickHouse pour les tests d'intégration dans gitlab-ci</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/459860/"> Nous avions un service sur golang, un sujet séparé kafka, clickhouse, gitlab-ci et une ligne de paiement en baisse, une clé ssh pourrie et c'est tout, avec une saison de vacances, de terribles pluies dans la ville, un ordinateur portable cassé, des alertes la nuit et une vente chaude .  Non pas que tout cela ait été nécessaire pour cet article, mais une fois que vous montrez la vie quotidienne typique du testeur, allez dans votre intention jusqu'à la fin.  La seule chose qui me dérangeait était p0.  Dans le monde, il n'y a rien de plus désespéré, sombre et déprimé que le testeur qui l'a manqué sur la prod.  Mais je savais que très bientôt je m'y plongerais. <br><a name="habracut"></a><br><h3>  Pourquoi tout ça? </h3><br>  Il existe un ensemble commun de services - le service lui-même qui fait quelque chose - et une base de données dans laquelle ces résultats sont écrits.  parfois, cela se produit directement, c'est-à-dire «service - base».  Dans mon cas, l'enregistrement se fait par un intermédiaire, c'est-à-dire «service - file d'attente - base». <br><br>  Au total, il y a plusieurs éléments, et la frontière de ces éléments - la sortie de l'un et l'entrée de l'autre - c'est l'endroit où les problèmes apparaissent.  Ils ne peuvent tout simplement pas ne pas y apparaître. <br><br>  Un exemple frappant: dans le service, le champ de prix est traité comme float32, dans la base de données, il est configuré en décimal (18, 5), nous alimentons la valeur maximale de float32 en tant que scénario de test à partir de la sortie du service dans la base de données - oh, la base de données ne répond pas.  Ou un exemple plus triste - la base de données ne plante pas, mais il n'y a pas d'erreur dans les journaux de données de la base de données.  c'est juste que la base de données ne se déverse plus.  Ou l'enregistrement passe, mais avec perte de données ou avec distorsion: le champ quitte le service en float64 et est enregistré en float32. <br><br>  Ou, au cours du cycle de vie du service, ils ont décidé qu'il fallait changer le type de tel ou tel domaine.  Le champ est implanté depuis longtemps sur le prod, mais ici il faut le modifier.  Et bien sûr, nous l'avons changé en un seul endroit.  Hoba, quelque chose s'est mal passé. <br><br><h3>  Défi </h3><br>  Je ne veux pas garder une trace de tous ces changements.  Je veux qu'il ne tombe pas.  Je veux que l'enregistrement aille bien. <br><br>  Sortie: tests d'intégration! <br><br><h3>  Mise en œuvre et difficultés </h3><br><h4>  Où rompre? </h4><br>  Il existe un environnement de développement: terriblement instable et est généralement utilisé par les développeurs comme sandbox.  Il y a le chaos et l'anarchie caractéristiques d'un backend dur. <br><br>  Il y a un environnement de test ou qa-stand: il est mieux réglé, même les devops le regardent, mais jusqu'à ce que vous les frappiez, rien ne se passera.  et cet environnement est souvent mis à jour.  et encore plus souvent, quelque chose y est cassé. <br><br>  Et il y a une prod - le saint des saints: il vaut mieux ne pas y conduire quelque chose comme ça.  les tests d'intégration suggèrent la possibilité d'un bogue qu'ils doivent trouver avant qu'il n'atteigne le prod. <br><br>  Alors, que faire de l'environnement quand il est instable ou au combat?  C'est vrai, créez le vôtre! <br><br><h4>  Que faire de la base? </h4><br>  La base de données peut être lancée de plusieurs manières. <br><br>  Comme nous l'avons vu ci-dessus, nous ne nous connecterons pas à la base réelle de tel ou tel environnement. <br><br>  Tout d'abord, vous pouvez augmenter le serveur <s>cricket</s> clickhouse avec les paramètres nécessaires, y déployer le sql nécessaire et communiquer avec lui via clickhouse-client.  Lors de la première tentative réussie de mettre une base similaire, ci était triste.  les tests ont clignoté, le serveur n'est pas sorti et a continué à fonctionner.  Disons simplement, cela reste un mystère pour moi pourquoi cela a même commencé.  (elle-même, je n'y suis pour rien).  Je ne recommande pas cette option. <br><br>  Une option pratique prête à l'emploi est l'utilisation d'une <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">image docker</a> . <br>  Téléchargez la version souhaitée sur votre voiture.  Clickhouse a besoin de config.xml avec des paramètres pour démarrer.  Plus de détails <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">ici</a> <br>  Pour l'image de clic réutilisée, vous devez créer le dockerfile correct.  Nous y indiquons que nous voulons copier config.xl dans le dossier, nous ancrons les autres configurations requises.  Assurez-vous de copier les scripts pour déployer votre base. <br><br>  Puisque nous accéderons à l'image de l'extérieur, nous devons ouvrir les ports par lesquels nous communiquerons avec la clickhouse.  Cliquez sur fonctionne sur 8123 sur http et sur 9000 sur tcp. <br><br>  Nous obtenons le dockerfile suivant: <br><br><pre><code class="plaintext hljs">From yandex/clickhouse-server Expose 8123 Expose 9000 Add config.xml /etc/clickhouse-server/config.xml Add my_init_script.sql /docker-entrypoint-initdb.d/</code> </pre> <br><h4>  Comment jeter une image en ci? </h4><br>  Pour travailler d'une manière ou d'une autre avec l'image docker dans ci, vous devez l'appeler d'une manière ou d'une autre. <br><br>  Vous pouvez valider et exécuter l'image dans votre référentiel et exécuter docker run avec les paramètres nécessaires dans le cadre de l'exécution des tests.  Seulement ici, l'image docker du clic pèse moins de 350 Mo.  il est indécent de conserver ces fichiers dans git. <br><br>  De plus, si la même image Docker est nécessaire sur différents projets (par exemple, différents services sont écrits dans la même base de données), d'autant plus que vous ne devez pas le faire.  Vous pouvez utiliser le stockage d'images de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">registre</a> Docker <br>  Nous pensons que dans notre projet, il existe déjà et est utilisé.  Par conséquent, connectez-vous, récupérez l'image docker et poussez-la là. <br><br><pre> <code class="plaintext hljs">docker build -t my_clickhouse_image . docker login my_registry_path.domain.com docker push my_clickhouse_image</code> </pre><br>  Allumé et notre image a volé dans le registre.  Assurez-vous de spécifier l'étiquette lors de l'assemblage! <br><br>  La base est prête. <br><br>  En savoir plus sur le registre <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">ici</a> <br><br><h4>  Que faire avec ci? </h4><br>  Comment lancer à la fois votre service et votre base de données en une seule étape? <br><br>  Tout dépend de la façon dont nous commençons et utilisons le service.  Si vous travaillez avec le service comme avec une image docker, et que l'ensemble du .gitlab-ci.yml ne fonctionne qu'avec eux, alors tout est simple. <br>  Il y a un dind errant - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">docker-in-docker</a> .  Il est indiqué comme le service principal ci fonctionne et vous permet d'utiliser pleinement le docker et de ne pas forcer du tout. <br><br>  Nous pompons la dernière image, ajoutons l'étape de test requise aux étapes et décrivons notre séquence d'actions. <br><br><pre> <code class="plaintext hljs">image: docker:stable services: - docker:dind stages: - build … - test-click ... - test - release … test-click: variables: VERY_IMPORTANT_VARIABLE: “its value” before_script: - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY script: - docker pull My_Service_Image - docker pull My_ClickHouse_Image - docker run -FLAGS My_ClickHouse_Image - docker run My_Service_Image /path/to/tests</code> </pre><br>  Le docker officiel docker déclare qu'il n'est pas recommandé d'utiliser <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">dind</a> , mais si vous en avez vraiment besoin ... <br><br>  Dans mon projet, le service doit être testé via le lancement du binaire.  C'est là que la magie commence. <br>  Pour ce faire, utilisez la base de données en tant que service.  La documentation officielle de gitlab-ci cite l'utilisation d'un conteneur avec une base comme <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">exemple du</a> cas d'utilisation <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">le</a> plus courant pour un conteneur docker en ci.  Même des <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">exemples de</a> paramètres mysql, postress et redis sont fournis.  Mais nous ne cherchons pas de moyens simples, nous avons besoin d'un clickhouse. <br><br>  Connectez la base!  Assurez-vous de spécifier un alias.  s'il n'est pas spécifié, la base se verra attribuer un nom aléatoire et une ip aléatoire.  Autrement dit, il ne sera pas clair exactement comment y accéder.  Il n'y aura pas un tel problème avec l'alias - dans le code de test, l'appel ressemblera, par exemple, à <code>http://my_alias_name:8123</code> . <br><br>  Pour les tests, une image de la base de données est toujours requise, que nous avons soigneusement insérée dans le registre.  Pour télécharger l'image, vous devez vous connecter à Docker et tirer Docker, seul ci ne sait pas ce qu'est Docker - vous devez l'installer. <br><br>  Le code résultant de l'étape dans gitlab-ci.yml: <br><br><pre> <code class="plaintext hljs">Integration tests: Services: - name: my_clickhouse:latest alias: clicktest Stage: tests Variables: Variables_for_my_service: “value” Before_script: - curl -ssl https://get.docker.com/ | sh - docker login -u gitlab-ci-token -p $ci_build_token my_registry_path.domain.com Script: - ./bin/my_service &amp; - go test -v ./tests -tags=integration Dependencies: - build</code> </pre><br><h3>  Bénéfice </h3><br><ul><li>  J'ai un tas de base de service. </li><li>  Dans le cadre de l'autotest, il est facile d'accéder à la base de données - simplement par alias. </li><li>  Je réinitialise les enregistrements et les paramètres de la base de données dans le cadre du test de configuration, appelle le service, il écrit dans la base de données, je me tourne vers la base de données, je vois que la base de données n'est pas tombée, je vois ce qui est arrivé, je valide.  lancer plus de tests. </li><li>  Vous ne pouvez pas tester avec des stylos! </li></ul><br><h3>  Résultats </h3><br>  Il semblerait que quelques lignes de configuration dans gitlab-ci.  Construire une image docker est facile.  Exécuter localement localement est simple.  J'ai obtenu l'intégration avec les premiers tests qui ont trouvé des problèmes en une journée.  Mais les tentatives de lancement à ci se sont transformées en une semaine de douleur et de désespoir.  Et maintenant, dans les semaines de douleur et de désespoir des développeurs qui doivent réparer tout ce qu'ils ont programmé là-bas. <br><br><h3>  Qu'avons-nous réussi à faire? </h3><br><ul><li>  Nous avons mis en place un container avec clickhouse. </li><li>  Nous avons commencé le conteneur dans un stockage local. </li><li>  Nous avons appris à tirer cette image à l'étape ci. </li><li>  Je l'ai lancé dans le coureur. </li></ul><br>  Envoyez facilement des données à la base de données et accédez-y depuis le test. <br><br>  L'automatisation est un moyen assez simple de se débarrasser de la routine d'intégration de perçage manuel. <br><br>  Ce qui est important de faire attention: assurez-vous que les types d'entrée de la base correspondent aux types de sortie du lien précédent.  (et documentation <s>, le cas échéant</s> ). </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr459860/">https://habr.com/ru/post/fr459860/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr459842/index.html">Louxor</a></li>
+<li><a href="../fr459844/index.html">Pingouin dans la fenêtre: sur le potentiel et les perspectives de WSL2</a></li>
+<li><a href="../fr459850/index.html">Technologie radioamateur: comment j'ai commandé l'installation d'une carte de circuit imprimé dans une usine chinoise</a></li>
+<li><a href="../fr459852/index.html">La pratique de l'utilisation de la bibliothèque Lottie dans l'application mobile de la banque</a></li>
+<li><a href="../fr459858/index.html">Explorer les logiciels malveillants modernes Cerberus pour Android</a></li>
+<li><a href="../fr459862/index.html">Interface Berkeley DB STL</a></li>
+<li><a href="../fr459866/index.html">Résolution de problèmes avec pwnable.kr 02 - collision. Collision de hachage</a></li>
+<li><a href="../fr459870/index.html">Exemple d'architecture Model-View-Update en F #</a></li>
+<li><a href="../fr459872/index.html">Patton Jeff. Histoires personnalisées. L'art du développement logiciel agile</a></li>
+<li><a href="../fr459874/index.html">Tu as quelque chose à cacher</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

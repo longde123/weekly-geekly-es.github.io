@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏳️ 🌨️ 👩🏿‍✈️ "À propos, oui pas un cluster" ou comme nous avons importé un SGBD 📘 🤙🏽 🙍🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="(c) Yandex.Photos 
+
+ Tous les personnages sont fictifs, les marques appartiennent à leurs propriétaires, toutes les coïncidences sont aléatoires et en...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>"À propos, oui pas un cluster" ou comme nous avons importé un SGBD</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/481302/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/j7/1m/jk/j71mjk8snfuh_6n_rtzp07y8a8i.jpeg" alt="image"></div><br>  (c) Yandex.Photos <br><br>  Tous les personnages sont fictifs, les marques appartiennent à leurs propriétaires, toutes les coïncidences sont aléatoires et en général, c'est mon "jugement de valeur subjective, s'il vous plaît ne pas casser la porte ...". <br><br>  Nous avons une expérience considérable dans la traduction de systèmes d'information avec logique dans la base de données d'un SGBD à un autre.  Dans le cadre du décret gouvernemental n ° 1236 du 16/11/2016, il s'agit souvent d'un transfert d'Oracle vers Postgresql.  Comment organiser le processus de la manière la plus efficace et la plus indolore possible - nous pouvons vous dire séparément, nous parlerons aujourd'hui des caractéristiques de l'utilisation d'un cluster et des problèmes que vous pouvez rencontrer lors de la construction de systèmes distribués très chargés avec une logique complexe dans les procédures et les fonctions. <br><a name="habracut"></a><br>  Spoiler - oui cap, RAC et pg multimaster sont des solutions très différentes. <br><br>  Supposons que vous ayez déjà transféré toute la logique de pl \ sql vers pg \ sql.  Et vos tests de régression sont tout à fait OK, maintenant vous pensez bien sûr à l'échelle, car  les tests de charge ne vous plaisent pas beaucoup, surtout sur le matériel initialement prévu dans le projet, sous ce SGBD très différent.  Supposons que vous ayez trouvé une solution du fournisseur national «Postgres Professional» avec une option appelée «multimaster», qui n'est disponible que dans la version «maximale» de «Postgres Pro Enterprise» et selon la description - elle est très similaire à ce dont vous avez besoin, et lors de la première étude de surface, elle viendra dans ma tête la pensée: "Oh!  Au lieu de RAC, alors!  Oui, et avec le pipeline technique dans le pays d'origine! ” <br><br>  Mais ne vous précipitez pas pour vous réjouir, et nous décrirons plus loin pourquoi vous devez connaître ces nuances, car  ils sont difficiles à envisager même après avoir bien lu la documentation produit.  Évaluez si vous serez prêt à mettre à jour fréquemment la version du SGBD directement sur le site industriel, comme  certains défauts ne sont pas compatibles avec un fonctionnement industriel et sont difficiles à détecter lors des tests. <br>  Commencez par lire attentivement la section «multimaître» - «restriction» sur le site Web du fabricant. <br><br>  La première chose que vous pouvez rencontrer est les caractéristiques du fonctionnement des transactions, dites  Mode "biphasé", et parfois, sauf en réécrivant toute la logique de votre procédure, cela ne peut pas être corrigé.  Voici un exemple simple: <br><br><pre><code class="plaintext hljs">create table test1 (id integer, id1 integer); insert into test1 values (1, 1),(1, 2); ALTER TABLE test1 ADD CONSTRAINT test1_uk UNIQUE (id,id1) DEFERRABLE INITIALLY DEFERRED; update test1 set id1 = case id1 when 1 then 2 else id1 - sign(2 - 1) end where id1 between 1 and 2;</code> </pre> <br>  Une erreur se produit: <br><br><pre> <code class="plaintext hljs">: [MTM] Transaction MTM-1-2435-10-605783555137701 (10654) is aborted on node 3. Check its log to see error details.</code> </pre> <br>  Ensuite, vous pouvez lutter contre le blocage mort pendant une longue période dans les versions 10.5, 10.6 et le seul salut connu qui tue toute l'essence du cluster est de supprimer les tables de "problèmes" du cluster, c'est-à-dire  faites make_table_local, mais au moins cela vous permettra de travailler, et ne "jouera" pas tout à cause des attentes suspendues de commettre des transactions.  Eh bien, ou mettez une mise à jour de la version 11.2, qui devrait aider, ou peut-être pas, n'oubliez pas de vérifier. <br><br>  Dans certaines versions, vous pouvez obtenir un verrou encore plus mystérieux: <br><br><pre> <code class="plaintext hljs">username= mtm  backend_type = background worker</code> </pre> <br>  Et dans cette situation, seule la mise à jour de la version du SGBD vers 11.2 et plus vous aidera, ou cela ne vous aidera pas. <br><br>  Certaines opérations avec des index peuvent entraîner des erreurs où il est clairement indiqué que le problème est dans la réplication bidirectionnelle, dans les journaux MTM, vous verrez directement BDR.  Vraiment 2ndQuadrant?  Oh non ... nous avons acheté un multimaître, c'est juste une coïncidence, c'est le nom de la technologie. <br><br><pre> <code class="plaintext hljs">[MTM] bdr doesn't support index rechecks [MTM] 12124: REMOTE begin abort transaction 4083 [MTM] 12124: send ABORT notification for transaction (5467) local xid=4083 to coordinator 3 [MTM] Receive ABORT_PREPARED logical message for transaction MTM-3-25030-83-605694076627780 from node 3 [MTM] Abort prepared transaction MTM-3-25030-83-605694076627780 status InProgress from node 3 originId=3 [MTM] MtmLogAbortLogicalMessage node=3 transaction=MTM-3-25030-83-605694076627780 lsn=9fff448</code> </pre> <br>  Si vous utilisez des tables temporaires, malgré les assurances: «L'extension multimaître réplique les données de manière complètement automatique.  "Vous pouvez simultanément écrire des transactions et travailler avec des tables temporaires sur n'importe quel nœud du cluster." <br><br>  Ensuite, en fait, vous obtiendrez que la réplication ne fonctionne pas pour toutes les tables utilisées dans la procédure, si le code contient la création d'une table temporaire, et même si l'utilisation de multimaster.remote_functions n'aide pas, vous devrez mettre à jour ou réécrire votre logique dans la procédure.  Si vous devez utiliser deux extensions multimaster et pg_pathman en même temps dans le cadre de Postgres Pro Enterprise v 10.5, vérifiez cela avec cet exemple simple: <br><br><pre> <code class="plaintext hljs">CREATE TABLE measurement ( city_id int not null, logdate date not null, peaktemp int, unitsales int ) PARTITION BY RANGE (logdate); CREATE TABLE measurement_y2019m06 PARTITION OF measurement FOR VALUES FROM ('2019-06-01') TO ('2019-07-01'); insert into measurement values (1, to_date('27.06.2019', 'dd.mm.yyyy'), 1, 1); insert into measurement values (2, to_date('28.06.2019', 'dd.mm.yyyy'), 1, 1); insert into measurement values (3, to_date('29.06.2019', 'dd.mm.yyyy'), 1, 1); insert into measurement values (4, to_date('30.06.2019', 'dd.mm.yyyy'), 1, 1);</code> </pre> <br>  Les erreurs suivantes commencent à verser les journaux sur les nœuds du SGBD: <br><br><pre> <code class="plaintext hljs">… PATHMAN_CONFIG doesn't contain relation 23245 &gt; find_in_dynamic_libpath: trying "/opt/…/ent-10/lib/pg_pathman" &gt; find_in_dynamic_libpath: trying "/opt//…/ent-10/lib/pg_pathman.so" &gt; : find_in_dynamic_libpath: trying "/opt/…/ent-10/lib/pg_pathman" &gt; find_in_dynamic_libpath: trying "/opt/…/ent-10/lib/pg_pathman.so" &gt; PrepareTransaction(1) name: unnamed; blockState: PREPARE; state: INPROGR, xid/subid/cid: 6919/1/40 &gt; StartTransaction(1) name: unnamed; blockState: DEFAULT; state: INPROGR, xid/subid/cid: 0/1/0 &gt; switched to timeline 1 valid until 0/0 … Transaction MTM-1-13604-7-612438856339841 (6919) is aborted on node 2. Check its log to see error details. ... [MTM] 28295: REMOTE begin abort transaction 7017 … [MTM] 28295: send ABORT notification for transaction (6919) local xid=7017 to coordinator 1</code> </pre><br>  Vous pouvez découvrir quelles sont ces erreurs dans le support technique, ce n'est pas pour rien que vous l'avez acheté. <br><br>  Que faire  Ok!  Mise à niveau vers Postgres Pro Enterprise vers la version 11.2 <br><br>  Vous devez savoir séparément que, étant un objet d'une base de données répliquée, il n'a pas de valeur transversale dans le cluster, chaque séquence est locale à chaque nœud et si vous avez des champs avec des restrictions uniques et utilisez une séquence, vous ne pouvez incrémenter le numéro de nœud que dans cluster, car  combien de nœuds dans le cluster sont tellement plus rapides que la séquence va grandir, et int se terminera plus vite que prévu.  Pour simplifier le travail avec la séquence dans le produit, vous trouverez même la fonction alter_sequences, qui effectuera les incréments nécessaires pour chaque séquence sur tous les nœuds, mais soyez prêt à ce que la fonction ne fonctionne pas dans toutes les versions.  Bien sûr, vous pouvez l'écrire vous-même, en prenant le code de github comme base ou en vous corrigeant directement dans le SGBD.  Dans le même temps, les champs de type serial \ bigserial fonctionneront plus correctement, mais pour les utiliser, vous devrez probablement réécrire le code de vos procédures et fonctions.  Peut-être que quelqu'un trouvera la fonction monotonic_sequences utile. <br><br>  Avant la version 11.2 de Postgres Pro Enterprise, la réplication ne fonctionne que s'il existe des clés primaires uniques, gardez cela à l'esprit lors de la conception. <br><br>  Je voudrais également mentionner les fonctionnalités de npgsql dans une solution de cluster, ces problèmes ne se produisent pas sur un seul nœud, mais ils sont assez présents dans le multimaître. <br>  Dans certaines versions, vous pouvez rencontrer une erreur: <br><br><pre> <code class="plaintext hljs">Exception Details: Npgsql.PostgresException: 25001:  SET TRANSACTION ISOLATION LEVEL Description: An unhandled exception occurred during the execution of the current web request. Please review the stack trace for more information about the error and where it originated in the code.</code> </pre> <br>  Que peut-on faire?  N'utilisez simplement pas certaines versions.  Vous devez les connaître, car  l'erreur n'apparaît pas dans une version, et même après sa première correction, vous pouvez la rencontrer plus tard.  Vous devez également vous y préparer et il est préférable d'identifier tous les défauts du SGBD qui sont corrigés par le fabricant et de les couvrir avec des tests de régression distincts.  Faites confiance, pour ainsi dire, mais vérifiez. <br><br>  Si l'application utilise npgsql et bascule entre les nœuds en pensant qu'ils sont tous identiques, vous pouvez obtenir une erreur: <br><br><pre> <code class="plaintext hljs">EXCEPTION:Npgsql.PostgresException (0x80004005): XX000: cache lookup failed for type ...</code> </pre> <br>  Une telle erreur se produira du fait que la liaison <br><br><pre> <code class="plaintext hljs">(NpgsqlConnection.GlobalTypeMapper.MapComposite&lt;SomeType&gt;("some_composite_type");)</code> </pre> <br>  types composites au démarrage de l'application pour toutes les connexions.  En conséquence, nous obtenons l'identifiant de l'un des nœuds, et lorsqu'il est demandé sur un autre nœud, il ne correspond pas, à la suite de quoi une erreur est retournée, c'est-à-dire  un travail transparent avec des types composites dans un cluster pour certaines applications sera impossible sans réécritures supplémentaires côté application (si vous réussissez à le faire). <br><br>  Comme nous le savons tous, une évaluation générale de l'état du cluster est très importante pour les diagnostics et les mesures opérationnelles lorsque vous travaillez, dans le produit, vous pouvez trouver certaines fonctions qui devraient vous faciliter la vie, mais parfois elles peuvent ne pas produire du tout ce que vous et même le fabricant eux-mêmes à partir d'eux attendre. <br><br>  Par exemple: <br><br><pre> <code class="plaintext hljs">select mtm.collect_cluster_info();      : (1,Online,0,0,0,2,3,0,0,0,1,0,0,1,1,3,7,0,0,0,"2018-10-31 05:33:06") (2,Online,0,0,0,2,3,0,0,0,1,0,0,1,1,3,7,0,0,0,"2018-10-31 05:33:06") (3,Online,0,0,0,2,3,0,0,0,1,0,0,1,1,3,7,0,0,0,"2018-10-31 05:33:09")</code> </pre> <br>  Mais pourquoi le nombre 2 est-il partout dans le champ LiveNodes, bien que selon la description du travail du multimaître, il devrait correspondre au nombre AllNodes = 3?  Réponse: vous devez mettre à jour la version du SGBD. <br><br>  Et soyez prêt à collecter des journaux sur tous les nœuds, comme  généralement, vous verrez "l'erreur se trouve dans le journal d'un autre nœud".  TechSupport acceptera tous les défauts identifiés et vous informera que la prochaine version est prête, qui devra être installée tantôt avec le service arrêté, tantôt pendant longtemps (selon le volume de votre SGBD).  Il ne vaut pas la peine d'espérer que les problèmes de fonctionnement perturberont grandement le fournisseur, et la mise à jour en raison de défauts identifiés sera effectuée avec la participation des représentants du fournisseur, ou plutôt, il n'est même pas nécessaire d'impliquer les représentants du fournisseur, car au final, vous pouvez obtenir un cluster démonté sans sauvegarde sur le produit. <br><br>  En fait, dans la licence d'un produit commercial, le fabricant avertit honnêtement: «Ce logiciel est fourni« tel quel »et la société à responsabilité limitée Postgres Professional n'est pas tenue de fournir une assistance, une assistance, des mises à jour, des extensions ou des modifications.» <br><br>  Si vous n'avez pas deviné de quel type de produit nous parlons, alors toute cette expérience a été acquise grâce au fonctionnement annuel de la base Postgres Pro Enterprise.  Vous pouvez vous-même tirer une conclusion, une telle humidité que les champignons poussent. <br><br>  Mais ce serait la moitié du problème, si elle était effectuée en temps opportun et éliminait rapidement les problèmes qui se posaient. <br><br>  Mais cela ne se produit tout simplement pas.  Apparemment, les ressources du fabricant ne sont pas suffisantes pour corriger rapidement les bogues identifiés. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr481302/">https://habr.com/ru/post/fr481302/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr481286/index.html">Monte sur la table! Bureau de petites choses qui ne sont pas du tout petites</a></li>
+<li><a href="../fr481288/index.html">Redux Toolkit comme outil pour un développement efficace de Redux</a></li>
+<li><a href="../fr481290/index.html">COMMENT / Paramètres réseau et VLAN sur un serveur Hetzner et Mikrotik dédié</a></li>
+<li><a href="../fr481294/index.html">10 meilleurs outils d'automatisation de test de logiciels</a></li>
+<li><a href="../fr481296/index.html">Comment écrire du code qui sera réutilisé</a></li>
+<li><a href="../fr481304/index.html">Tri du drapeau américain</a></li>
+<li><a href="../fr481306/index.html">Présentation de werf 1.0 stable: qu'est-ce que GitOps a à voir avec lui, son statut et ses plans</a></li>
+<li><a href="../fr481312/index.html">Cadeaux perdus du Père Noël: annonce d'une quête informatique pour le 6 janvier</a></li>
+<li><a href="../fr481314/index.html">Plateforme DIY Crawler pour robots et divertissement</a></li>
+<li><a href="../fr481316/index.html">Rédaction d'un blog sur les microservices - Partie 4 Post Service</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

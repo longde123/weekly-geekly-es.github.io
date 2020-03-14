@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💡 📋 ⛸️ PostgreSQL Antipatterns: passage d'ensembles et de sélections à SQL 🦎 🤶🏾 👩🏽‍💻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="De temps en temps, le développeur doit passer un ensemble de paramètres à la demande ou même une sélection entière de "input". Des solutions très étra...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: passage d'ensembles et de sélections à SQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/481122/">  De temps en temps, le développeur doit <b>passer un ensemble de paramètres à la demande ou même une sélection entière de</b> "input".  Des solutions très étranges à ce problème se présentent parfois. <br><img src="https://habrastorage.org/webt/gy/db/kv/gydbkvfvb0m5yahydebhfhyadb4.png"><br>  Allons «du contraire» et voyons comment cela ne vaut pas la peine, pourquoi et comment vous pouvez faire mieux. <br><a name="habracut"></a><br><h2>  Insertion directe de valeurs dans le corps de la demande </h2><br>  Cela ressemble généralement à ceci: <br><br><pre><code class="plaintext hljs">query = "SELECT * FROM tbl WHERE id = " + value</code> </pre> <br>  ... ou alors: <br><br><pre> <code class="plaintext hljs">query = "SELECT * FROM tbl WHERE id = :param".format(param=value)</code> </pre> <br>  À propos de cette méthode, il est dit, écrit et <a href="https://xkcd.com/327/">même dessiné en</a> abondance: <br><br><img src="https://habrastorage.org/webt/ir/e8/73/ire873nizb3svo3sm7z6lemdoqk.png"><br><br>  Il s'agit presque toujours d'un <b>chemin direct vers l'injection SQL</b> et d'une charge supplémentaire sur la logique métier, qui est forcée de «coller» votre chaîne de requête. <br><br>  Une telle approche ne peut être partiellement justifiée que s'il est nécessaire d' <b>utiliser la sectionnement</b> dans les versions de PostgreSQL 10 et inférieures pour obtenir un plan plus efficace.  Dans ces versions, la liste des sections scannées est déterminée même sans tenir compte des paramètres transmis, uniquement sur la base du corps de la requête. <br><br><h2>  $ n arguments </h2><br>  L'utilisation d' <a href="https://postgrespro.ru/docs/postgresql/12/xfunc-sql">espaces réservés pour les</a> paramètres est bonne, elle vous permet d'utiliser des <a href="https://postgrespro.ru/docs/postgresql/12/sql-prepare">ÉTATS PRÉPARÉS</a> , ce qui réduit la charge à la fois sur la logique métier (une chaîne de requête est générée et transmise une seule fois) et sur le serveur de base de données (l'analyse et la planification pour chaque instance de la demande ne sont pas requises). <br><br><h4>  Nombre d'arguments variable </h4><br>  Des problèmes nous attendent lorsque nous voulons passer à l'avance un nombre inconnu d'arguments: <br><br><pre> <code class="sql hljs">... id IN ($1, $2, $3, ...) <span class="hljs-comment"><span class="hljs-comment">-- $1 : 2, $2 : 3, $3 : 5, ...</span></span></code> </pre> <br>  Si vous laissez la demande dans ce formulaire, alors même si cela nous évitera des injections potentielles, cela entraînera néanmoins la nécessité de coller / analyser la demande <b>pour chaque option à partir du nombre d'arguments</b> .  Déjà mieux que de le faire à chaque fois, mais vous pouvez vous en passer. <br><br>  Il suffit de passer un seul paramètre contenant la <b>représentation sérialisée du tableau</b> : <br><br><pre> <code class="sql hljs">... id = ANY($1::integer[]) <span class="hljs-comment"><span class="hljs-comment">-- $1 : '{2,3,5,8,13}'</span></span></code> </pre> <br>  La seule différence est la nécessité de convertir explicitement l'argument en le type de tableau souhaité.  Mais cela ne pose pas de problème, car nous savons déjà à l'avance où nous nous adressons. <br><br><h4>  Transfert d'échantillons (matrices) </h4><br>  Habituellement, ce sont toutes sortes d'options pour transférer des ensembles de données à insérer dans la base de données «en une seule demande»: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl(k, v) <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>,$<span class="hljs-number"><span class="hljs-number">2</span></span>),($<span class="hljs-number"><span class="hljs-number">3</span></span>,$<span class="hljs-number"><span class="hljs-number">4</span></span>),...</code> </pre> <br>  En plus des problèmes décrits ci-dessus avec le «re-collage» de la demande, cela peut également entraîner un <b>manque de mémoire</b> et un crash du serveur.  La raison est simple: PG réserve de la mémoire supplémentaire pour les arguments et le nombre d'enregistrements dans l'ensemble n'est limité que par la logique métier de la liste de souhaits appliquée.  Dans les cas particulièrement cliniques, il fallait voir des <i>arguments «numérotés» supérieurs à 9 000 $</i> - pas la peine de le faire. <br><br>  Nous réécrivons la demande, en appliquant la <b>sérialisation «à deux niveaux»</b> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>[<span class="hljs-number"><span class="hljs-number">1</span></span>]::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> k , <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>[<span class="hljs-number"><span class="hljs-number">2</span></span>]::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>[])::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>[] <span class="hljs-comment"><span class="hljs-comment">-- $1 : '{"{a,1}","{b,2}","{c,3}","{d,4}"}' ) T;</span></span></code> </pre><br>  Oui, dans le cas de valeurs "complexes" à l'intérieur du tableau, elles doivent être entourées de guillemets. <br>  Il est clair que vous pouvez ainsi "étendre" la sélection avec un nombre arbitraire de champs. <br><br><h4>  unnest, unnest, ... </h4><br>  Périodiquement, il existe des options de transmission au lieu d'un «tableau de tableaux» de plusieurs «tableaux de colonnes», que j'ai mentionné <a href="https://habr.com/ru/post/479920/">dans un article précédent</a> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>[]) k , <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>($<span class="hljs-number"><span class="hljs-number">2</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>[]) v;</code> </pre> <br>  Avec cette méthode, en faisant une erreur lors de la génération de listes de valeurs pour différentes colonnes, il est très simple d'obtenir <b>des résultats</b> complètement <b>inattendus</b> , qui dépendent également de la version du serveur: <br><br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">-- $1 : '{a,b,c}', $2 : '{1,2}' -- PostgreSQL 9.4 k | v ----- a | 1 b | 2 c | 1 a | 2 b | 1 c | 2 -- PostgreSQL 11 k | v ----- a | 1 b | 2 c |</span></span></code> </pre> <br><h2>  Json </h2><br>  À partir de la version 9.3, PostgreSQL a introduit des fonctions à part entière pour travailler avec le type json.  Par conséquent, si la définition des paramètres d'entrée dans votre navigateur a lieu, vous pouvez créer un <b>objet json pour la requête SQL</b> ici: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> k , <span class="hljs-keyword"><span class="hljs-keyword">value</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> json_each($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-keyword"><span class="hljs-keyword">json</span></span>); <span class="hljs-comment"><span class="hljs-comment">-- '{"a":1,"b":2,"c":3,"d":4}'</span></span></code> </pre> <br>  Pour les versions précédentes, la même méthode peut être utilisée pour <b>chacun (hstore)</b> , mais la "convolution" correcte avec des objets complexes s'échappant dans hstore peut provoquer des problèmes. <br><br><h4>  json_populate_recordset </h4><br>  Si vous savez à l'avance que les données du tableau json «d'entrée» iront pour remplir une sorte de table, vous pouvez économiser beaucoup en «déréférençant» les champs et en les convertissant en types nécessaires à l'aide de la fonction json_populate_recordset: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> json_populate_recordset( <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>::pg_class , $<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-keyword"><span class="hljs-keyword">json</span></span> <span class="hljs-comment"><span class="hljs-comment">-- $1 : '[{"relname":"pg_class","oid":1262},{"relname":"pg_namespace","oid":2615}]' );</span></span></code> </pre> <br><h4>  json_to_recordset </h4><br>  Et cette fonction «étend» simplement le tableau d'objets transférés dans la sélection, sans se fier au format de la table: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> json_to_recordset($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-keyword"><span class="hljs-keyword">json</span></span>) T(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); <span class="hljs-comment"><span class="hljs-comment">-- $1 : '[{"k":"a","v":1},{"k":"b","v":2}]' k | v ----- a | 1 b | 2</span></span></code> </pre> <br><h2>  TABLE TEMPORAIRE </h2><br>  Mais si la quantité de données dans l'échantillon transmis est très grande, il est difficile, et parfois impossible, de les jeter dans un paramètre sérialisé, car cela nécessite une <b>allocation</b> unique <b>d'une grande quantité de mémoire</b> .  Par exemple, vous devez collecter un grand paquet de données sur les événements d'un système externe pendant très, très longtemps, puis vous souhaitez le traiter une fois du côté de la base de données. <br><br>  Dans ce cas, la meilleure solution serait d'utiliser <a href="https://postgrespro.ru/docs/postgresql/12/sql-createtable">des tables temporaires</a> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TEMPORARY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); ... <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl(k, v) <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>, $<span class="hljs-number"><span class="hljs-number">2</span></span>); <span class="hljs-comment"><span class="hljs-comment">--  -  ... --   -      </span></span></code> </pre><br>  La méthode est bonne <b>pour la transmission rare de grandes quantités de</b> données. <br>  Du point de vue de la description de la structure de ses données, la table temporaire ne diffère de la table «normale» que par une fonction <i>dans la table système pg_class</i> , et dans <i>pg_type, pg_depend, pg_attribute, pg_attrdef, ...</i> - rien du tout. <br><br>  Par conséquent, dans les systèmes Web avec un grand nombre de connexions de courte durée pour chacun d'eux, une telle table générera à chaque fois de nouveaux enregistrements système, qui sont supprimés avec la connexion à la base de données fermée.  Par conséquent, l' <b>utilisation incontrôlée de TEMP TABLE entraîne le «gonflement» des tables dans pg_catalog</b> et ralentit de nombreuses opérations qui les utilisent. <br>  Bien sûr, cela peut être combattu à l'aide du <i>passage périodique VACUUM FULL</i> dans les tables du catalogue système. <br><br><h2>  Variables de session </h2><br>  Supposons que le traitement des données du cas précédent soit assez compliqué pour une seule requête SQL, mais vous voulez le faire assez souvent.  Autrement dit, nous voulons utiliser le traitement procédural dans le <a href="https://postgrespro.ru/docs/postgresql/12/sql-do">bloc DO</a> , mais l'utilisation du transfert de données via des tables temporaires sera trop coûteuse. <br><br>  Nous ne pourrons pas non plus utiliser les paramètres $ n pour le transfert vers le bloc anonyme.  Les variables de session et la fonction <b>current_setting</b> nous aideront à sortir de cette situation. <br><br>  Avant la version 9.2, il était nécessaire de préconfigurer un <a href="https://www.postgresql.org/docs/9.1/runtime-config-custom.html">espace</a> de <a href="https://www.postgresql.org/docs/9.1/runtime-config-custom.html">noms</a> <i>custom_variable_classes</i> pour «vos» variables de session.  Sur les versions actuelles, vous pouvez écrire quelque chose comme ceci: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> my.val = <span class="hljs-string"><span class="hljs-string">'{1,2,3}'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">DO</span></span> $$ <span class="hljs-keyword"><span class="hljs-keyword">DECLARE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FOR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>(current_setting(<span class="hljs-string"><span class="hljs-string">'my.val'</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>[])) <span class="hljs-keyword"><span class="hljs-keyword">LOOP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RAISE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOTICE</span></span> <span class="hljs-string"><span class="hljs-string">'id : %'</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LOOP</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span>; $$ LANGUAGE plpgsql; <span class="hljs-comment"><span class="hljs-comment">-- NOTICE: id : 1 -- NOTICE: id : 2 -- NOTICE: id : 3</span></span></code> </pre> <br>  D'autres langages de procédure pris en charge peuvent trouver d'autres solutions. <br><br>  <i>Connaissez-vous d'autres moyens?</i>  <i>Partagez dans les commentaires!</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr481122/">https://habr.com/ru/post/fr481122/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr481112/index.html">Que dira le «chewing-gum» âgé de 5700 ans de la personne qui l'a mâché?</a></li>
+<li><a href="../fr481114/index.html">Seccomp at Kubernetes: 7 choses que vous devez savoir depuis le début</a></li>
+<li><a href="../fr481116/index.html">Publier automatiquement des messages de la communauté VKontakte sur Discord</a></li>
+<li><a href="../fr481118/index.html">Père Noël anonyme 2019-2020: poste offrant des cadeaux du Nouvel An</a></li>
+<li><a href="../fr481120/index.html">Où et comment les serveurs Edge sont-ils appliqués?</a></li>
+<li><a href="../fr481124/index.html">Conseils pour écrire du code auto-documenté</a></li>
+<li><a href="../fr481126/index.html">Union des programmeurs? Ne le dis pas à mes pantoufles</a></li>
+<li><a href="../fr481130/index.html">TOP12 découvertes scientifiques interdisciplinaires 2019</a></li>
+<li><a href="../fr481134/index.html">Comment évaluer la capacité du service et ne pas tomber sous la charge</a></li>
+<li><a href="../fr481138/index.html">Ces personnes créent l'intelligence artificielle - 4 histoires de spécialistes de l'IA et du ML</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

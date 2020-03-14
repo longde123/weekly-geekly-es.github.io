@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🥋 🕞 👴🏽 Historique d'une seule enquête SQL 🏳️ ⬅️ 👩🏼‍🎓</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="En décembre dernier, j'ai reçu un rapport de bug intéressant de l'équipe d'assistance VWO. Le temps de chargement d'un des rapports analytiques pour u...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Historique d'une seule enquête SQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/455832/"><p>  En décembre dernier, j'ai reçu un rapport de bug intéressant de l'équipe d'assistance VWO.  Le temps de chargement d'un des rapports analytiques pour une grande entreprise cliente semble prohibitif.  Et puisque c'est mon domaine de responsabilité, je me suis immédiatement concentré sur la résolution du problème. </p><br><h2>  Contexte </h2><br><p>  Pour bien comprendre de quoi je parle, je vais vous parler un peu de VWO.  Il s'agit d'une plate-forme avec laquelle vous pouvez exécuter diverses campagnes ciblées sur vos sites: mener des expériences A / B, suivre les visiteurs et les conversions, analyser les entonnoirs de vente, afficher les cartes thermiques et lire les enregistrements des visites. </p><br><p>  Mais la chose la plus importante dans la plateforme est le reporting.  Toutes les fonctions ci-dessus sont interconnectées.  Et pour les entreprises clientes, un large éventail d'informations serait tout simplement inutile sans une plate-forme puissante les présentant sous la forme d'analyses. </p><br><p> En utilisant la plate-forme, vous pouvez effectuer une demande arbitraire sur un grand ensemble de données.  Voici un exemple simple: </p><br><pre>  Afficher tous les clics sur abc.com
+ DU &lt;date d1&gt; AU &lt;date d2&gt;
+ pour les personnes qui
+ Chrome utilisé OU
+ (étaient en Europe et utilisaient l'iPhone) </pre><br><p>  Faites attention aux opérateurs booléens.  Ils sont disponibles pour les clients dans l'interface de requête pour effectuer des requêtes arbitrairement complexes pour récupérer des échantillons. </p><br><h2>  Demande lente </h2><br><p>  Le client en question essayait de faire quelque chose qui devrait intuitivement fonctionner rapidement: </p><br><pre>  Afficher toutes les notes de session
+ pour les utilisateurs visitant n'importe quelle page
+ avec URL où il y a "/ jobs" </pre><br><p>  Il y avait beaucoup de trafic sur ce site, et nous avons stocké plus d'un million d'URL uniques juste pour cela.  Et ils voulaient trouver un modèle d'URL assez simple lié à leur modèle commercial. </p><br><a name="habracut"></a><h2>  Enquête préliminaire </h2><br><p>  Voyons ce qui se passe dans la base de données.  Voici la requête SQL lente d'origine: </p><br><pre><code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND sessions.referrer_id = recordings_urls.id AND ( urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[] ) AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ;</code> </pre> <br><p>  Et voici les horaires: </p><br><pre>  Temps prévu: 1,480 ms
+ Délai: 1431924.650 ms </pre><br><p>  La demande a contourné 150 000 lignes.  Le planificateur de requêtes a montré quelques détails intéressants, mais aucun goulot d'étranglement évident. </p><br><p>  Étudions davantage la requête.  Comme vous pouvez le voir, il crée trois tables <code>JOIN</code> : </p><br><ol><li>  <strong>sessions</strong> : pour afficher les informations de session: navigateur, agent utilisateur, pays, etc. </li><li>  <strong>Recording_data</strong> : URL enregistrées, pages, durée des visites </li><li>  <strong>URL</strong> : pour éviter la duplication d'URL extrêmement volumineuses, nous les stockons dans une table séparée. </li></ol><br><p>  Notez également que toutes nos tables sont déjà divisées par <code>account_id</code> .  Ainsi, une situation est exclue lorsque, en raison d'un compte particulièrement important, les autres ont des problèmes. </p><br><h2>  À la recherche de preuves </h2><br><p>  En y regardant de plus près, nous constatons que quelque chose dans une demande particulière n'est pas correct.  Cela vaut la peine de regarder cette ligne: </p><br><pre> <code class="plaintext hljs">urls &amp;&amp; array( select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%' )::text[]</code> </pre> <br><p>  La première pensée était que, peut-être en raison d' <code>ILIKE</code> dans toutes ces longues URL (nous avons plus de 1,4 million d'URL <strong>uniques</strong> collectées pour ce compte), les performances pourraient s'affaisser. </p><br><p>  Mais non - ce n'est pas le sujet! </p><br><pre> <code class="plaintext hljs">SELECT id FROM urls WHERE url ILIKE '%enterprise_customer.com/jobs%'; id -------- ... (198661 rows) Time: 5231.765 ms</code> </pre> <br><p>  La demande de recherche de modèle elle-même ne prend que 5 secondes.  La recherche d'un modèle sur un million d'URL uniques n'est clairement pas un problème. </p><br><p>  Le prochain suspect sur la liste est quelques <code>JOIN</code> .  Peut-être que leur surutilisation a conduit à un ralentissement?  <code>JOIN</code> généralement les candidats les plus évidents pour les problèmes de performances, mais je ne pensais pas que notre cas était typique. </p><br><pre> <code class="plaintext hljs">analytics_db=# SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data_0 as recording_data, acc_{account_id}.sessions_0 as sessions WHERE recording_data.usp_id = sessions.usp_id AND sessions.referrer_id = recordings_urls.id AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ; count ------- 8086 (1 row) Time: 147.851 ms</code> </pre> <br><p>  Et ce n'était pas non plus notre cas.  <code>JOIN</code> s'est avéré assez rapide. </p><br><h2>  Nous resserrons le cercle des suspects </h2><br><p>  J'étais prêt à commencer à modifier la requête pour obtenir toutes les améliorations de performances possibles.  Mon équipe et moi avons développé 2 idées principales: </p><br><ul><li>  <strong>Utilisez EXISTS pour l'URL de la sous-requête</strong> : nous voulions vérifier à nouveau s'il y avait des problèmes avec la sous-requête des URL.  Une façon d'y parvenir est d'utiliser simplement <code>EXISTS</code> .  <code>EXISTS</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">peut</a> grandement améliorer les performances car il se termine immédiatement dès qu'il trouve une seule ligne par condition. </li></ul><br><pre> <code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND (exists(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')) AND r_time &gt; to_timestamp(1547585600) AND r_time &lt; to_timestamp(1549177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ; count 32519 (1 row) Time: 1636.637 ms</code> </pre> <br><p>  Et bien oui.  La sous-requête, lorsqu'elle est enveloppée dans <code>EXISTS</code> , rend tout super rapide.  La prochaine question logique est pourquoi la requête avec JOINs et la sous-requête elle-même sont rapides individuellement, mais terriblement lentes ensemble? </p><br><ul><li>  <strong>Nous déplaçons la sous-requête vers le CTE</strong> : si la demande est rapide par elle-même, nous pouvons simplement calculer le résultat rapide en premier, puis le fournir à la demande principale </li></ul><br><pre> <code class="plaintext hljs">WITH matching_urls AS ( select id::text from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%' ) SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions, matching_urls WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND (urls &amp;&amp; array(SELECT id from matching_urls)::text[]) AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545107599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0;</code> </pre> <br><p>  Mais c'était encore très lent. </p><br><h2>  Trouvez le coupable </h2><br><p>  Pendant tout ce temps, une petite chose a clignoté devant mes yeux, dont j'ai constamment écarté.  Mais comme il ne restait plus rien, j'ai décidé de la regarder.  Je parle de l'opérateur <code>&amp;&amp;</code> .  Alors <code>EXISTS</code> améliorait simplement les performances, <code>&amp;&amp;</code> était le seul facteur commun restant dans toutes les versions de la requête lente. </p><br><p>  En regardant la <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">documentation</a> , nous voyons que <code>&amp;&amp;</code> utilisé lorsque vous avez besoin de trouver des éléments communs entre deux tableaux. </p><br><p>  Dans la demande d'origine, il s'agit de: </p><br><pre> <code class="plaintext hljs">AND ( urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[] )</code> </pre> <br><p>  Ce qui signifie que nous faisons une recherche de modèle pour nos URL, puis nous trouvons l'intersection avec toutes les URL avec des enregistrements partagés.  C'est un peu déroutant, car «urls» ici ne fait pas référence à une table contenant toutes les URL, mais à une colonne «urls» dans la table <code>recording_data</code> . </p><br><p>  Alors que les soupçons de <code>&amp;&amp;</code> , j'ai essayé de trouver une confirmation dans le plan de requête généré par <code>EXPLAIN ANALYZE</code> (j'avais déjà un plan enregistré, mais il est généralement plus pratique d'expérimenter SQL que d'essayer de comprendre l'opacité des planificateurs de requête). </p><br><pre> <code class="plaintext hljs">Filter: ((urls &amp;&amp; ($0)::text[]) AND (r_time &gt; '2018-12-17 12:17:23+00'::timestamp with time zone) AND (r_time &lt; '2018-12-18 23:59:59+00'::timestamp with time zone) AND (duration &gt;= '5'::double precision) AND (num_of_pages &gt; 0)) Rows Removed by Filter: 52710</code> </pre> <br><p>  Il y avait quelques lignes de filtres de <code>&amp;&amp;</code> uniquement.  Ce qui signifiait que cette opération était non seulement coûteuse, mais également effectuée plusieurs fois. </p><br><p>  J'ai vérifié cela en isolant la condition </p><br><pre> <code class="plaintext hljs">SELECT 1 FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data_30 as recording_data_30, acc_{account_id}.sessions_30 as sessions_30 WHERE urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[]</code> </pre> <br><p>  Cette demande était lente.  Comme les <code>JOIN</code> rapides et les sous-requêtes sont rapides, seul l'opérateur <code>&amp;&amp;</code> reste. </p><br><p>  Ce n'est qu'une opération clé.  Nous devons toujours rechercher partout dans le tableau principal des URL pour rechercher par modèle, et nous devons toujours trouver des intersections.  Nous ne pouvons pas rechercher directement les entrées d'URL, car ce ne sont que des identifiants qui pointent vers des <code>urls</code> . </p><br><h2>  Vers une solution </h2><br><p>  <code>&amp;&amp;</code> lent parce que les deux ensembles sont énormes.  L'opération sera relativement rapide si je remplace les <code>urls</code> par <code>{ "http://google.com/", "http://wingify.com/" }</code> . </p><br><p>  J'ai commencé à chercher un moyen de créer des intersections d'ensembles dans Postgres sans utiliser <code>&amp;&amp;</code> , mais sans grand succès. </p><br><p>  En fin de compte, nous avons décidé de résoudre simplement le problème de manière isolée: donnez-moi toutes les <code>urls</code> chaîne pour laquelle l'URL correspond au modèle.  Sans conditions supplémentaires, ce sera - </p><br><pre> <code class="plaintext hljs">SELECT urls.url FROM acc_{account_id}.urls as urls, (SELECT unnest(recording_data.urls) AS id) AS unrolled_urls WHERE urls.id = unrolled_urls.id AND urls.url ILIKE '%jobs%'</code> </pre> <br><p>  Au lieu de la syntaxe <code>JOIN</code> , j'ai simplement utilisé une sous-requête et développé le tableau <code>recording_data.urls</code> afin que la condition puisse être directement appliquée à <code>WHERE</code> . </p><br><p>  La chose la plus importante ici est que <code>&amp;&amp;</code> utilisé pour vérifier si une entrée donnée contient une URL appropriée.  En plissant les yeux, vous pouvez voir dans cette opération se déplacer à travers les éléments du tableau (ou des lignes du tableau) et s'arrêter lorsque la condition (correspondance) est remplie.  Ça ne ressemble à rien?  Ouais, <code>EXISTS</code> . </p><br><p>  Étant donné que <code>recording_data.urls</code> peut être référencé de l'extérieur du contexte de la sous-requête lorsque cela se produit, nous pouvons revenir à notre vieil ami <code>EXISTS</code> et les envelopper avec une sous-requête. </p><br><p>  En combinant tout ensemble, nous obtenons la requête optimisée finale: </p><br><pre> <code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 AND EXISTS( SELECT urls.url FROM acc_{account_id}.urls as urls, (SELECT unnest(urls) AS rec_url_id FROM acc_{account_id}.recording_data) AS unrolled_urls WHERE urls.id = unrolled_urls.rec_url_id AND urls.url ILIKE '%enterprise_customer.com/jobs%' );</code> </pre><br><p>  Et le <code>Time: 1898.717 ms</code> exécution final <code>Time: 1898.717 ms</code> Il est temps de célébrer?!? </p><br><p>  Pas si vite!  Vous devez d'abord vérifier l'exactitude.  J'étais extrêmement méfiant vis-à-vis de l'optimisation <code>EXISTS</code> , car elle change la logique à une fin antérieure.  Nous devons être sûrs que nous n'avons pas ajouté une erreur non évidente à la demande. </p><br><p>  Une vérification simple consistait à effectuer le <code>count(*)</code> sur les requêtes lentes et rapides pour un grand nombre d'ensembles de données différents.  Ensuite, pour un petit sous-ensemble de données, j'ai vérifié manuellement l'exactitude de tous les résultats. </p><br><p>  Tous les contrôles ont donné des résultats systématiquement positifs.  Nous l'avons réparé! </p><br><h2>  Leçons apprises </h2><br><p>  Il y a de nombreuses leçons à tirer de cette histoire: </p><br><ol><li>  Les plans de requête ne racontent pas toute l'histoire, mais peuvent donner des indices </li><li>  Les principaux suspects ne sont pas toujours les vrais coupables </li><li>  Les requêtes lentes peuvent être interrompues pour isoler les goulots d'étranglement </li><li>  Toutes les optimisations ne sont pas de nature réductrice </li><li>  Lorsque cela est possible, l'utilisation d' <code>EXIST</code> peut entraîner une forte augmentation de la productivité. </li></ol><br><h2>  Conclusion </h2><br><p>  Nous sommes passés d'un temps de demande de ~ 24 minutes à 2 secondes - une augmentation très sérieuse des performances!  Bien que cet article se soit avéré être volumineux, toutes les expériences que nous avons faites ont eu lieu le même jour, et selon les estimations, il a fallu de 1,5 à 2 heures pour les optimisations et les tests. </p><br><p>  SQL est un langage merveilleux, s'il n'en a pas peur, mais essayez d'apprendre et d'utiliser.  Ayant une bonne compréhension de la façon dont les requêtes SQL sont exécutées, de la façon dont la base de données génère des plans de requête, du fonctionnement des index et simplement de la taille des données que vous traitez, vous pouvez grandement réussir dans l'optimisation des requêtes.  Il est tout aussi important, cependant, de continuer à essayer différentes approches et de résoudre lentement le problème, en trouvant des goulots d'étranglement. </p><br><p>  La meilleure partie pour obtenir de tels résultats est une amélioration visible et sensible de la vitesse - lorsqu'un rapport qui n'avait même pas été téléchargé auparavant est maintenant chargé presque instantanément. </p><br><p>  <strong>Un merci spécial à</strong> mes coéquipiers <em>Aditya Misra</em> , <em>Aditya Gauru</em> et <em><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Varun Malhotra</a></em> pour le brainstorming et <em>Dinkar Pandir</em> pour avoir trouvé une erreur importante dans notre demande finale avant de finalement lui dire au revoir! </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr455832/">https://habr.com/ru/post/fr455832/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr455816/index.html">Comment créer une action sympa pour Google Assistant. Lifehacks de Just AI</a></li>
+<li><a href="../fr455820/index.html">Analyse des performances des machines virtuelles dans VMware vSphere. Partie 2: Mémoire</a></li>
+<li><a href="../fr455826/index.html">Arrosage automatique télécommandé</a></li>
+<li><a href="../fr455828/index.html">Les scientifiques ont découvert de nouvelles formes de synchronisation exotiques</a></li>
+<li><a href="../fr455830/index.html">Un regard sur Passer par les yeux d'un développeur .NET. Semaine # 1</a></li>
+<li><a href="../fr455834/index.html">Benchmarks pour les serveurs Linux: 5 outils ouverts</a></li>
+<li><a href="../fr455840/index.html">Comment travailler avec plusieurs requêtes. Composition, réducteur, FP</a></li>
+<li><a href="../fr455842/index.html">Répartissez une liste liée individuellement. Édition Swift</a></li>
+<li><a href="../fr455844/index.html">Création d'un analyseur Roslyn en utilisant les tests d'encapsulation comme exemple</a></li>
+<li><a href="../fr455846/index.html">Informatique distribuée dans Julia</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

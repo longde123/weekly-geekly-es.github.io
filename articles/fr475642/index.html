@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>ℹ️ 😊 👨🏻‍🌾 Mécanisme de tas uniquement de tuples dans PostgreSQL 🐔 ♂️ ◀️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Postgresql diffère des autres SGBD en ce sens que lors de l'opération UPDATE, les modifications apportées à la ligne existante ne se produisent pas et...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Mécanisme de tas uniquement de tuples dans PostgreSQL</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/475642/"><p>  Postgresql diffère des autres SGBD en ce sens que lors de l'opération UPDATE, les modifications apportées à la ligne existante ne se produisent pas et qu'une copie de la ligne est différente de l'original avec les valeurs des colonnes affectées par la mise à jour - elles sont anciennes dans l'original et modifiées dans la copie.  Cette approche, d'une part, vous permet d'éviter les verrous lors de l'exécution des demandes de lecture et d'écriture, et d'autre part, elle crée le besoin d'effacer constamment les anciennes versions de lignes que personne ne lira jamais.  En relation avec cette fonctionnalité architecturale, la question se pose souvent de ce qui se passera si vous avez besoin de stocker dans la base de données quelque chose comme l'heure du dernier accès aux données qui autrement ne change pas.  Répondra-t-il aux performances?  Conduira-t-il à une restructuration constante des indices? </p><br><p>  En bref, oui, Copy On Write n'ira nulle part, mais dans de nombreux cas, les index ne peuvent pas être reconstruits, grâce à HOT. </p><a name="habracut"></a><br><p>  Les tuples de segment de mémoire uniquement, également appelés HOT, sont une optimisation utilisée par Postgres pour réduire la quantité d'E / S requises pour les mises à jour.  En raison de MVCC, une mise à jour dans Postgres consiste à rechercher une ligne pour la mise à jour et à insérer de nouvelles versions de la ligne dans la base de données.  Le principal inconvénient de cette procédure est la nécessité de rajouter une ligne à chaque index. <br>  Cela nécessite beaucoup plus d'E / S car la ligne doit être réinsérée dans chaque index de la table.  Le besoin de réinsertion se pose car la position physique de la nouvelle version d'une ligne sur disque est différente de la position physique de l'ancienne version. </p><br><p>  Pour réduire la quantité d'E / S requises pour la MISE À JOUR, l'équipe Postgres a ajouté HOT à Postgres.  L'idée derrière HOT est relativement simple.  Lors de la mise à jour de la ligne, si possible, Postgres mettra une nouvelle copie de la ligne immédiatement après l'ancienne copie de la ligne.  De plus, dans l'ancienne copie de la chaîne, une étiquette spéciale est apposée afin que Postgres sache que la nouvelle copie de la chaîne se trouve immédiatement après l'ancienne.  Par conséquent, la mise à jour de tous les index n'est pas nécessaire. </p><br><p>  Lors du scan par index pour lequel passe une nouvelle copie de la chaîne, le filtre Postgres trouvera l'ancienne copie de la chaîne.  Puisqu'il y a une étiquette spéciale sur l'ancienne copie de la ligne, Postgres comprendra que la nouvelle copie de la ligne se trouve immédiatement après l'ancienne et trouvera la nouvelle version et l'utilisera.  Il s'avère que Postgres dans de tels cas peut se comporter comme si tous les index pointent vers une nouvelle copie de la chaîne, et ils n'ont pas besoin d'être reconstruits. </p><br><p>  Désormais, HOT n'est impliqué que lorsque seules les colonnes non indexables sont impliquées dans la mise à jour.  Si au moins une colonne participant à la mise à jour est incluse dans l'index, HOT ne peut pas être appliqué.  Dans ce cas, l'utilisation de HOT pose plusieurs problèmes.  Par exemple, lorsque l'index de la colonne à mettre à jour est indexé par une analyse et que l'ancienne copie de la ligne tombe dans le prédicat de l'analyse, mais pas la nouvelle.  Dans cette situation, Postgres essaiera d'utiliser l'index pour trouver rapidement toutes les lignes qui conviennent au prédicat de requête, et dans le cas des colonnes qui ont été mises à jour à l'aide de HOT, il produira une nouvelle copie de la ligne qui ne correspond pas au prédicat de requête.  En raison de cette limitation (que HOT ne fonctionne pas lorsque des colonnes indexables sont incluses dans la mise à jour), Postgres peut garantir que lorsqu'il essaie de trouver des lignes qui conviennent au prédicat par lequel l'index est transmis, alors si le prédicat correspond à l'ancienne version de la ligne, puis à la nouvelle version de la ligne lui convient aussi et vice versa. </p><br><p>  Actuellement en cours de développement est une extension HOT appelée WARM, qui fonctionne également lors de la mise à jour des colonnes sur lesquelles les index sont créés.  L'idée derrière WARM est de mettre une nouvelle ligne immédiatement après l'ancienne et de mettre à jour la ligne pour les index qui ont changé de colonne.  Cela complique grandement la situation décrite, car maintenant Postgres a besoin d'un moyen de déterminer en quelque sorte si la ligne passe le filtre pour l'index ou non. </p><br><p>  <strong>PS</strong> Dans l'article original, le mécanisme HOT est décrit, mais nous avons ici à l'esprit le mécanisme dans lequel seuls les tuples sont impliqués, et le terme lui-même a une signification distincte. </p><br><p>  Le tuple Heap only n'est qu'une nouvelle version de la ligne.  Aussi étrange que cela puisse paraître, un segment de mémoire est une table, et un segment de mémoire signifie uniquement que cette ligne ne peut être trouvée que par la chaîne qui provient de l'ancienne version de la ligne appelée racine. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr475642/">https://habr.com/ru/post/fr475642/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr475624/index.html">PHP-Watcher: un outil qui simplifie le développement d'applications à longue durée de vie</a></li>
+<li><a href="../fr475626/index.html">Les autotests peuvent-ils remplacer une personne à la recherche de vulnérabilités: entretien avec Alexandra Svatikova</a></li>
+<li><a href="../fr475630/index.html">Knative - une plate-forme basée sur k8s en tant que service avec prise en charge sans serveur</a></li>
+<li><a href="../fr475636/index.html">Incrémenter les éléments vectoriels</a></li>
+<li><a href="../fr475640/index.html">Si vous créez quelque chose, évitez le calendrier du responsable.</a></li>
+<li><a href="../fr475646/index.html">Yuri Ryabtsev: «La première interception d'un missile balistique est un événement à peu près égal au vol de Gagarine»</a></li>
+<li><a href="../fr475652/index.html">Comment nous avons développé une application mobile sur l'OS Aurora (Sailfish Mobile OS RUS)</a></li>
+<li><a href="../fr475654/index.html">«Le premier mois, trois hommes en bonne santé avaient peur d'allumer la turbine» - comment Alexei Statsenko construit un jetpack à partir de zéro</a></li>
+<li><a href="../fr475656/index.html">Un examen de l'activité des virus pour les appareils mobiles en octobre 2019</a></li>
+<li><a href="../fr475658/index.html">Pourquoi aller à DevOpsDays? Et pourquoi n'est-ce pas une autre conférence DevOps</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

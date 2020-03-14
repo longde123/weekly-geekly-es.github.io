@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎓 🤾🏿 💤 Base de données Messenger (partie 2): nous partitionnons le «profit» 🆓 ⏱️ ✅</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nous avons réussi à concevoir la structure de notre base de données PostgreSQL pour stocker la correspondance, un an s'est écoulé, les utilisateurs la...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Base de données Messenger (partie 2): nous partitionnons le «profit»</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/483170/">  Nous avons réussi à concevoir la structure de notre base de données PostgreSQL pour stocker la correspondance, un an s'est écoulé, les utilisateurs la remplissent activement, elle a maintenant des <b>millions d'enregistrements</b> , et ... quelque chose a commencé à ralentir. <br><br><ul><li>  <a href="https://habr.com/ru/post/483176/">Partie 1: concevoir le châssis de base</a> </li><li>  Partie 2: partitionner le "gain" </li></ul><br><img src="https://habrastorage.org/webt/st/wy/ue/stwyue6afucreci1rnctyj7ents.png"><br>  Le fait est <b>qu'avec la croissance du volume de la table, la «profondeur» des indices croît également</b> - quoique logarithmiquement.  Mais au fil du temps, cela oblige le serveur à <i>traiter de nombreuses pages de données</i> pour effectuer les mêmes tâches de lecture / écriture qu'au début. <br><br>  C'est là que le <b>partitionnement</b> vient à la rescousse. <br><a name="habracut"></a><br>  Je note qu'il ne s'agira pas de partage, c'est-à-dire de la distribution de données entre différentes bases de données ou serveurs.  Car, même en divisant les données sur <b>plusieurs</b> serveurs, vous ne pouvez pas vous débarrasser du problème de «gonflement» des index au fil du temps.  Il est clair que si vous pouvez vous permettre de mettre en service un nouveau serveur chaque jour, vos problèmes ne se situeront plus dans le plan d'une base de données spécifique. <br><br>  Nous ne considérerons pas des scripts spécifiques pour implémenter le partitionnement «dans le matériel», mais l'approche elle-même - quoi et comment «couper en tranches», et à quoi conduit un tel désir. <br><br><h2>  Concept </h2><br>  Encore une fois, nous définissons notre objectif: nous voulons nous assurer qu'aujourd'hui, demain et après un an, le nombre de données PostgreSQL lues lors d'une opération de lecture / écriture reste à peu près le même. <br><br>  Pour toute <b>donnée chronologiquement accumulée</b> (messages, documents, logs, archives, ...), le choix naturel comme clé de partition est la <b>date / heure de l'événement</b> .  Dans notre cas, un tel événement est le <u>moment où le message a été envoyé</u> . <br><br>  Notez que les utilisateurs <b>ne travaillent</b> presque toujours <b>qu'avec les "dernières"</b> données - ils lisent les derniers messages, analysent les derniers journaux ... Non, bien sûr, ils peuvent remonter dans le temps, ne le font que très rarement. <br><br>  De ces limites, il devient évident que les <b>sections «quotidiennes»</b> seront la meilleure solution pour les messages - après tout, notre utilisateur lira presque toujours ce qui lui est arrivé «aujourd'hui» ou «hier». <br><br>  Si nous écrivons et lisons presque seulement une section pendant la journée, cela nous donne <b>une utilisation</b> encore <b>plus efficace de la mémoire et du disque</b> - puisque tous les indices de section s'intègrent facilement dans la RAM, contrairement aux sections "grandes et en gras" de la table entière. <br><br><h2>  étape par étape </h2><br>  En général, tout ce qui précède ressemble à un bénéfice solide.  Et c'est réalisable, mais pour cela, nous devrons faire des efforts - parce que la <u>décision de partitionner l'une des entités conduit à la nécessité de «couper» et de lui associer</u> . <br><br><h4>  Message, ses propriétés et projections </h4><br>  Puisque nous avons décidé de couper les messages par dates, il est également raisonnable de diviser les entités-propriétés (fichiers joints, listes de diffusion), ainsi que <b>par la date du message</b> , selon elles. <br><br>  Étant donné que l'une de nos tâches typiques consiste simplement à afficher les registres de messages (non lus, entrants, tous), il est également logique de les «attirer» dans le partitionnement par date de message. <br><br><img src="https://habrastorage.org/webt/28/r5/cb/28r5cbnrcrp7yz_nbpwnou2vvxw.png"><br><blockquote>  Ajoutez la clé de partition (date du message) à toutes les tables: destinataires, fichier, registres.  Vous ne pouvez pas ajouter au message lui-même, mais utilisez le DateTime existant. </blockquote><br><h4>  Thèmes </h4><br>  Comme le sujet est un en plusieurs messages, il ne sera pas possible de le «couper» dans le même modèle, il faut compter sur autre chose.  Dans notre cas, la <b>date du premier message en correspondance</b> est idéale - c'est-à-dire le moment de la création du sujet lui-même. <br><br><img src="https://habrastorage.org/webt/ho/jh/a6/hojha6iwdworvrxx8kv-d30xdlm.png"><br><blockquote>  Ajoutez la clé de partition (date du sujet) à toutes les tables: sujet, participant. </blockquote><br>  Mais maintenant, nous avons deux problèmes à la fois: <br><br><ul><li>  dans quelle section rechercher des articles sur le sujet? </li><li>  dans quelle section rechercher un sujet dans un message? </li></ul><br>  Vous pouvez bien sûr continuer à chercher dans toutes les sections, mais ce sera très triste et annulera tous nos gains.  Par conséquent, afin de savoir exactement où chercher, nous allons créer des liens / pointeurs logiques vers les sections: <br><br><ul><li>  dans le message, ajoutez un <b>champ avec la date du sujet</b> </li><li>  ajouter au sujet un <b>ensemble de dates de message pour</b> cette correspondance (vous pouvez utiliser un tableau séparé ou vous pouvez utiliser un tableau de dates) </li></ul><br><img src="https://habrastorage.org/webt/0r/hk/f_/0rhkf_nfc0y4rfn24_3byaeeu_c.png"><br><br>  Puisqu'il y aura peu de modifications à la liste des dates de message pour chaque correspondance individuelle (après tout, presque tous les messages tombent en 1-2 jours adjacents), je m'attarderai sur cette option. <br><br>  Total, la structure de notre base a pris la forme suivante, en tenant compte du partitionnement: <br><br><div class="spoiler">  <b class="spoiler_title">Tables: RU, si vous n'aimez pas le cyrillique, il vaut mieux ne pas regarder les noms des tables / champs</b> <div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--     CREATE TABLE "_YYYYMMDD"( "" uuid PRIMARY KEY , "" uuid , "" date , "" uuid , "" --    timestamp , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" uuid , PRIMARY KEY("", "") ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" uuid , "BLOB" uuid , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" smallint , "" timestamp , "" uuid , PRIMARY KEY("", "", "") ); CREATE INDEX ON "_YYYYMMDD"("", "", "" DESC); --     CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" uuid , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" uuid , PRIMARY KEY("", "") ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" date );</span></span></code> </pre> <br></div></div><br><h2>  Économisez un joli sou </h2><br>  Eh bien, si nous n'utilisons pas l' <a href="https://postgrespro.ru/docs/postgresql/10/ddl-partitioning">option de partitionnement classique</a> basée sur la distribution des valeurs de champ (via les déclencheurs et l'héritage ou PARTITION BY), mais «manuellement» au niveau de l'application, nous pouvons voir que la valeur de la clé de partitionnement est déjà stockée dans le nom de la table elle-même. <br><br>  Par conséquent, si vous êtes tellement <b>préoccupé par la quantité de données stockées</b> , vous pouvez vous débarrasser de ces champs "supplémentaires" et vous référer à des tableaux spécifiques.  Certes, tous les échantillons de plusieurs sections dans ce cas devront être soumis à la candidature. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr483170/">https://habr.com/ru/post/fr483170/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr483154/index.html">J'ai dépensé 40 000 $ et j'ai ruiné une excellente idée pour une startup</a></li>
+<li><a href="../fr483156/index.html">Mettez le chat sur ses pieds</a></li>
+<li><a href="../fr483160/index.html">Espace 2020: Mars, constellations de satellites et nouvelles fusées</a></li>
+<li><a href="../fr483166/index.html">Détection automatique de l'encodage de texte</a></li>
+<li><a href="../fr483168/index.html">Comment faire un bot qui transforme une photo en bande dessinée. Deuxième partie Formation modèle</a></li>
+<li><a href="../fr483172/index.html">Comment localiser une application ou un jeu? Dix principales sources d'apprentissage en ligne gratuites</a></li>
+<li><a href="../fr483174/index.html">Enregistrez et transférez le son d'un appareil à l'autre à l'aide de la connectivité Multipeer</a></li>
+<li><a href="../fr483176/index.html">Base de données Messenger (partie 1): nous concevons le cadre de base</a></li>
+<li><a href="../fr483178/index.html">Voici une mise à jour sur la version Flutter 1.9 couplée à la programmation Dart 2.5</a></li>
+<li><a href="../fr483182/index.html">Cinq façons intéressantes d'utiliser Array.reduce () (et une façon ennuyeuse)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

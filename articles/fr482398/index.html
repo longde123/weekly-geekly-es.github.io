@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧙🏻 🔼 🚡 Réplication logique de PostgreSQL vers Erlang 👨‍❤️‍💋‍👨 🛩️ 🚕</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Un schéma assez typique lors du développement d'un système, lorsque la logique de traitement principale est concentrée dans l'application (dans notre ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Réplication logique de PostgreSQL vers Erlang</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/482398/"><p> Un schéma assez typique lors du développement d'un système, lorsque la logique de traitement principale est concentrée dans l'application (dans notre cas, Erlang), et que les données de cette application (paramètres, profils utilisateur, etc.) se trouvent dans la base de données (PostgreSQL).  L'application Erlang met en cache les paramètres dans ETS pour accélérer le traitement et réduire la charge sur la base de données en rejetant les requêtes persistantes.  Dans ce cas, la modification de ces données se produit via un service distinct (éventuellement externe). </p><br><p>  Dans de telles situations, le défi se pose de maintenir à jour les données mises en cache.  Il existe différentes approches pour résoudre ce problème.  L'un d'eux est la réplication logique PostgreSQL.  À ce sujet et sera discuté ci-dessous. </p><a name="habracut"></a><br><h1>  Protocole de réplication logique de flux </h1><br><p>  <a href="https://www.postgresql.org/docs/10/logical-replication.html">La réplication logique</a> utilise le protocole de réplication en continu PostgreSQL pour recevoir les modifications de données dans les tables PostgreSQL en lisant les journaux WAL, en filtrant les tables dont vous avez besoin et en envoyant ces modifications à l'abonné.  Ce mécanisme est similaire à celui utilisé pour la réplication physique pour créer une base de données de secours. </p><br><p>  La réplication logique offre les avantages suivants: </p><br><ul><li>  recevoir les modifications sans délai en temps réel; </li><li>  filtrage des modifications par tables et opérations (INSERT / DELETE / UPDATE); </li><li>  exhaustivité et intégrité des données reçues par l'abonné.  L'abonné reçoit les modifications dans le même ordre que celles survenues dans la base de données; </li><li>  pas de perte de données en cas d'arrêt temporaire de l'abonné.  PostgreSQL se souvient où la réplication s'est arrêtée; </li></ul><br><h1>  Préparation de la base de données </h1><br><p>  Pour travailler avec la réplication logique, vous avez besoin d'un plugin qui décode les enregistrements WAL du serveur dans un format plus pratique. <br>  Avant PostgreSQL 10, vous pouvez utiliser le <a href="https://2ndquadrant.com/en/resources/pglogical">plugin</a> / extension <a href="https://2ndquadrant.com/en/resources/pglogical">pglogical_output</a> . <br>  À partir du <a href="https://www.postgresql.org/docs/10/static/protocol-logicalrep-message-formats.html">plugin pgoutput</a> PostgreSQL 10. <br>  Cet article couvrira le plugin pgoutput. </p><br><p>  Côté PostgreSQL, vous devez effectuer les étapes suivantes: </p><br><ul><li><p>  Définissez les paramètres pour prendre en charge la réplication logique dans <br>  <a href="https://www.postgresql.org/docs/10/static/logical-replication-config.html">postgresql.conf</a> </p><br><pre><code class="plaintext hljs">wal_level = 'logical' max_replication_slots = 5 max_wal_senders = 5</code> </pre> <br></li><li><p>  Créez un rôle à utiliser pour la réplication.  Le rôle doit avoir l' <code>SUPERUSER</code> <code>REPLICATION</code> ou <code>SUPERUSER</code> . </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">USER</span></span> epgl_test <span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REPLICATION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PASSWORD</span></span> <span class="hljs-string"><span class="hljs-string">'epgl_test'</span></span>;</code> </pre> <br></li><li><p>  Autoriser l'accès à ce rôle dans pg_hba.conf avec <code>database = replication</code> </p><br><pre> <code class="plaintext hljs">host replication epgl_test 127.0.0.1/32 trust</code> </pre> <br></li><li><p>  Créez une <a href="https://www.postgresql.org/docs/10/sql-createpublication.html">publication</a> .  Lors de la création d'une publication, nous indiquons les tableaux que nous prévoyons de recevoir dans l'application Erlang </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> PUBLICATION epgl_test <span class="hljs-keyword"><span class="hljs-keyword">FOR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> public.test_table1, public.test_table3; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> PUBLICATION epgl_test <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> public.test_table2; <span class="hljs-comment"><span class="hljs-comment">--      </span></span></code> </pre> <br></li></ul><br><h1>  Partie Erlang </h1><br><p>  Il n'y a pas si longtemps, la prise en charge <a href="https://www.postgresql.org/docs/10/protocol-replication.html">du protocole de réplication en continu a</a> été ajoutée à la populaire bibliothèque Erlang pour travailler avec PostgreSQL <a href="">EPGSQL</a> .  Sur la base de cette bibliothèque, nous allons construire la logique de réception des modifications dans Erlang. <br>  Étant donné que le format des données directement dans le message <code>XlogData</code> du protocole dépend du plug-in utilisé pour l'emplacement de réplication, la bibliothèque <code>EPGSQL</code> décode pas les données, mais appelle la méthode de rappel ou envoie le message au processus de manière asynchrone. </p><br><h2>  Connexion DB </h2><br><p>  Une connexion de réplication spéciale à la base de données doit être créée, pour cela, vous devez passer l'indicateur de <code>replication</code> . <br>  Dans une connexion à une base de données de réplication, seules les commandes de réplication peuvent être exécutées (par exemple, DROP_REPLICATION_SLOT, CREATE_REPLICATION_SLOT). <br>  Vous ne pouvez pas exécuter une demande régulière via cette connexion. </p><br><h2>  Créer un emplacement de réplication </h2><br><p>  L'emplacement de réplication est utilisé pour suivre la position actuelle du journal WAL transféré. <br>  Lors de la création d'un emplacement de réplication, un plug-in de décodage est spécifié. </p><br><p>  PostgreSQL 10 introduit la possibilité de créer des emplacements de réplication temporaires qui sont automatiquement supprimés lorsque la connexion de réplication est fermée. </p><br><p>  Si l'application lit l'état initial des tables à chaque démarrage, je recommande d'utiliser des emplacements de réplication temporaires, auquel cas vous n'aurez pas à vous soucier de supprimer les emplacements de réplication créés (DROP_REPLICATION_SLOT).  La suppression des emplacements de réplication anciens / inutilisés est extrêmement importante car PostgreSQL ne supprime pas les journaux WAL jusqu'à ce que les abonnés de tous les emplacements de réplication reçoivent la modification.  S'il reste un emplacement de réplication inactif, les journaux WAL commenceront à s'accumuler et tôt ou tard le système de fichiers débordera. </p><br><h2>  Obtention de l'état initial des tables </h2><br><p>  Lors de la création d'un emplacement de réplication (voir l'étape précédente), un instantané est automatiquement créé qui montre l'état de la base de données au moment où l'emplacement a été créé.  Cet instantané peut être utilisé pour charger l'état initial des tables, qui était au début de la réplication. </p><br><p>  L'instantané n'est disponible que jusqu'à la <code>CREATE_REPLICATION_SLOT</code> la connexion de réplication dans laquelle la commande <code>CREATE_REPLICATION_SLOT</code> été exécutée. </p><br><p>  Pour charger les données initiales, une nouvelle connexion régulière / sans réplication à la base de données doit être créée, car SELECT ne peut pas être effectué sur la connexion de réplication.  Dans cette connexion, définissez le snapshot <code>SET TRANSACTION SNAPSHOT SnapshotName</code> et extrayez les données nécessaires. </p><br><h2>  Lancer la réplication </h2><br><p>  Nous commençons la réplication pour l'emplacement de réplication créé.  Lors du démarrage de la réplication, nous transmettons des paramètres supplémentaires pour le plugin, pour pgoutput c'est le nom de la publication créée. </p><br><p>  Toutes les étapes ensemble </p><br><pre> <code class="erlang hljs"><span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start_replication</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> -&gt;</span></span> <span class="hljs-comment"><span class="hljs-comment">%%    {ok, ReplConn} = epgsql:connect(Host, User, Password, [{database, DBName}, {port, Port}, {replication, "database"}]), %%    {ok, _, [{_, _, SnapshotName}|_]} = epgsql:squery(ReplConn, "CREATE_REPLICATION_SLOT epgl_repl_slot TEMPORARY LOGICAL pgoutput"). %%     {ok, NormalConn} = epgsql:connect(Host, User, Password, [{database, DBName}, {port, Port}]), {ok, _, _} = epgsql:squery(NormalConn, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ"), {ok, _, _} = epgsql:squery(NormalConn, ["SET TRANSACTION SNAPSHOT '", SnapshotName, "'"]), %% select/load data epgsql:equery(NormalConn,... epgsql:close(NormalConn), %%   ReplSlot = "epgl_repl_slot", Callback = ?MODULE, CbInitState = #{}, WALPosition = "0/0", PluginOpts = "proto_version '1', publication_names '\"epgl_test\"'", ok = epgsql:start_replication(ReplConn, ReplSlot, Callback, CbInitState, WALPosition, PluginOpts). handle_x_log_data(StartLSN, EndLSN, Data, CbState) -&gt; io:format("~p~n", [{StartLSN, EndLSN, Data}]), {ok, EndLSN, EndLSN, CbState}.</span></span></code> </pre> <br><p>  Il existe deux options pour interagir avec la bibliothèque <code>EPGSQL</code> : </p><br><ul><li><p>  Synchrone.  Le nom du module est transmis en tant que rappel.  La bibliothèque des données reçues appellera la fonction <code>CallbackModule:handle_x_log_data</code> .  La fonction doit renvoyer LastFlushedLSN, LastAppliedLSN, qui est envoyé dans la réponse PostgreSQL pour suivre la position actuelle de l'emplacement de réplication.  Dans nos projets, nous utilisons uniquement cette option; </p><br></li><li><p>  Asynchrone.  Le rappel est le pid du processus, qui recevra les messages de la forme <code>{epgsql, self(), {x_log_data, StartLSN, EndLSN, WALRecord}}</code> .  Après le traitement, le processus doit signaler le LSN traité via un appel <code>epgsql:standby_status_update(Conn, FlushedLSN, AppliedLSN)</code> ; </p><br></li></ul><br><h1>  Au lieu d'une conclusion </h1><br><p>  De plus, pour utiliser l'approche décrite, il est nécessaire d'implémenter le décodage des messages du <a href="https://www.postgresql.org/docs/10/static/protocol-logicalrep-message-formats.html">format de plug-in de</a> slot de réplication dans des structures plus familières à Erlang.  Ou utilisez la bibliothèque avec <a href="https://github.com/SifoxDevTeam/epgl">GitHub</a> , qui implémente le décodage pour deux plug-ins et simplifie l'exécution des commandes de réplication. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr482398/">https://habr.com/ru/post/fr482398/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr482384/index.html">Mon projet non réalisé. Réseau de 200 routeurs MikroTik</a></li>
+<li><a href="../fr482386/index.html">Visual Studio pour Mac: prenez le contrôle de votre IDE avec les raccourcis clavier</a></li>
+<li><a href="../fr482390/index.html">Tutoriel du tutoriel Ember.js. Application Super Rentals. Partie 1.2</a></li>
+<li><a href="../fr482392/index.html">Astuces ELF dans Go</a></li>
+<li><a href="../fr482396/index.html">Comment choisir des cours commerciaux d'enseignement des métiers de l'informatique</a></li>
+<li><a href="../fr482400/index.html">Une sélection de faits statistiques amusants # 2</a></li>
+<li><a href="../fr482402/index.html">Modèle d'usine. Exemple d'application dans Unity</a></li>
+<li><a href="../fr482404/index.html">Mnémoniques: explorer des méthodes pour augmenter la mémoire cérébrale</a></li>
+<li><a href="../fr482406/index.html">Meilleurs livres DLC pour la série de science-fiction moderne</a></li>
+<li><a href="../fr482410/index.html">Contemplation de la grande ressemblance fractale</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

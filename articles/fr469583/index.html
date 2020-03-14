@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😬 🏝️ 🤝 OpenVPN et Active Directory (Kerberos sans certificats utilisateur) 🧑🏿‍🤝‍🧑🏾 🙋🏽 👖</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="De nombreux guides ont été écrits sur OpenVPN, y compris l'autorisation via Active Directory. La plupart d'entre eux se résument à l'utilisation de LD...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>OpenVPN et Active Directory (Kerberos sans certificats utilisateur)</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/469583/">  De nombreux guides ont été écrits sur OpenVPN, y compris l'autorisation via Active Directory.  La plupart d'entre eux se résument à l'utilisation de LDAP; je n'ai trouvé aucune approche utilisant Kerberos, qui est écrite dans un article à part entière.  Cependant, quelque chose de nouveau ne sera pas inventé ici, je viens de compiler ce qui a déjà été fait avant moi, PAM fonctionne bien avec Kerberos et OpenVPN a un plugin PAM natif.  J'ai également décidé d'abandonner les certificats et les conseils des utilisateurs, où ils recommandent simplement que tous les utilisateurs émettent un certificat, ils ne me convenaient pas, alors une autre solution a été trouvée qui fonctionnait sur tous les clients. <br><br><img src="https://habrastorage.org/webt/p3/4c/z3/p34cz3ohasstjrgwkx2zlamhiu8.png"><br><a name="habracut"></a><br><h3>  Un peu sur NSS </h3><br>  Dans mon cas, j'ai utilisé Centos 7 en conjonction avec sssd.  Cependant, rien n'empêche d'utiliser winbind.  L'essentiel est d'avoir une voiture dans le domaine et un ticket Kerberos.  Je n'écrirai pas comment cela se fait, car  Je ne dirai rien de nouveau, il y a beaucoup de bons manuels sur le réseau. <br><br>  Il sera nécessaire de modifier les paramètres de <code>/etc/nsswitch.conf</code> si cela n'a pas été fait auparavant.  Selon le module utilisé, vous devez saisir respectivement <abbr title="Exactement sss">sss</abbr> ou winbind au lieu de module_name.  Les descriptions des paramètres peuvent être lues à l'aide de <code>man nsswitch.conf</code> . <br><br>  Les paramètres suivants devraient être suffisants: <br><br><pre> <code class="xml hljs">passwd: files module_name shadow: files module_name group: files module_name</code> </pre> <br>  Dans le cas de sssd, nous n'oublions pas, entre autres, que dans <code>/etc/sssd/sssd.conf</code> dans le bloc [sssd], nss doit être mentionné: <br><br><pre> <code class="xml hljs">services = nss, pam</code> </pre> <br>  Quant à winbind, j'ai du mal à dire quelque chose, je ne l'ai pas utilisé. <br><br>  Le but ultime est d'obtenir le bon résultat de getent.  Vérifiez que la machine peut recevoir des informations sur les utilisateurs et les groupes du domaine: <br><br><pre> <code class="bash hljs">&gt; getent passwd kanlas kanlas:*:14123583:1257570:Kanlas Kanlasovich:/home/kanlas@example.com:/bin/bash &gt; getent group VPN vpn:*:13821391:kanlas,igor,marina</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Remarque</b> <div class="spoiler_text">  Si vous avez utilisé sssd et que les données utilisateur sont obtenues uniquement avec le nom complet (c'est-à-dire kanlas@example.com), ajoutez le paramètre <code>use_fully_qualified_names = False</code> dans sssd.conf dans le bloc de domaine <br></div></div><br><h3>  Configurer PAM </h3><br>  Vous devez maintenant créer votre propre module PAM.  Afin de ne pas utiliser le système access.conf, nous allons créer un fichier séparé d'où le groupe d'accès sera lu.  Je ne suis pas si bon en modules PAM, donc je ne peux pas dire si toutes les lignes sont nécessaires dans l'exemple ci-dessous.  En général, nous ne sommes intéressés que par le <code>account required pam_listfile.so onerr=fail item=group sense=allow file=/etc/openvpn/auth/access-groups</code> ligne <code>account required pam_listfile.so onerr=fail item=group sense=allow file=/etc/openvpn/auth/access-groups</code> . <br><br>  L'option la plus simple consiste à prendre, par exemple, le module de connexion et à y ajouter la ligne souhaitée.  Ce qui a été fait. <br><br>  Nous obtenons: <br><br><pre> <code class="xml hljs">#%PAM-1.0 auth [user_unknown=ignore success=ok ignore=ignore default=bad] pam_securetty.so auth substack system-auth auth include postlogin account required pam_listfile.so onerr=fail item=group sense=allow file=/etc/openvpn/auth/access-groups account include system-auth password include system-auth session required pam_selinux.so close session required pam_loginuid.so session optional pam_console.so session required pam_selinux.so open session required pam_namespace.so session optional pam_keyinit.so force revoke session include system-auth session include postlogin -session optional pam_ck_connector.so</code> </pre> <br>  Nous l'avons mis dans <code>/etc/pam.d</code> , en le nommant à notre discrétion. <br><br>  Dans <code>/etc/openvpn/auth/access-groups</code> , spécifié dans le module, le groupe d'accès sera écrit ici, vous pouvez spécifier votre chemin si vous le souhaitez.  Vous devrez spécifier le nom du groupe (Common Name) avec le domaine.  Dans mon cas, j'ai écrit <i>VPN@example.com</i> là-bas. <br><br>  Il reste à expliquer à OpenVPN qu'il doit utiliser PAM.  Nous mettons les lignes suivantes dans la configuration du serveur: <br><br><pre> <code class="xml hljs">plugin /usr/lib64/openvpn/plugins/openvpn-plugin-auth-pam.so __pam username-as-common-name</code> </pre> <br>  <i><b>Différentes distributions peuvent avoir des chemins différents!</b></i>  <i><b>Recherchez un fichier par chemin ou utilisez find.</b></i> <br><br>  L'utilisation du paramètre username-as-common-name est due au fait qu'autrement, après que le client a authentifié l'utilisateur-pass, le <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">nom spécifié dans le certificat sera envoyé au serveur.</a> <br><br>  Dans la configuration client, ajoutez la ligne <br><br><pre> <code class="xml hljs">auth-user-pass</code> </pre> <br>  Une fois cette configuration terminée, vous pouvez tester. <br><br><h3>  Nous supprimons le certificat utilisateur </h3><br>  Nous avons maintenant une autorisation via le domaine et le certificat utilisateur est inutile, l'abandonner semble être une décision logique.  Mais les clients mobiles ont des problèmes avec cela, n'acceptant tout simplement pas une telle configuration, et les ordinateurs de bureau, bien qu'ils fonctionnent, maudissent malicieusement.  Tout d'abord, nous allons reconfigurer le serveur afin qu'il ne nécessite plus de certificat. <br><br><pre> <code class="xml hljs">verify-client-cert none</code> </pre> <br>  Ensuite, nous ajoutons à la configuration du client <br><br><pre> <code class="xml hljs">setenv CLIENT_CERT 0</code> </pre> <br>  Voilà, maintenant les clients ne jureront pas sur un certificat.  C'est drôle que cette option soit cachée dans la section des <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">questions et réponses pour iOS</a> .  Je n'ai pas testé sur iOS, mais Android, ainsi que MacOS ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">client bêta</a> ) et Windows acceptent ces paramètres en un clin d'œil.  Seul un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">client OpenVPN tiers</a> sur Android ne peut pas encore le faire (au moment de la rédaction de cet article, il pouvait déjà le corriger). </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr469583/">https://habr.com/ru/post/fr469583/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr469569/index.html">Arend - Langage de type dépendant basé sur HoTT (partie 1)</a></li>
+<li><a href="../fr469573/index.html">Linux Piter 2019: ce qui attend les invités pour une conférence Linux à grande échelle et pourquoi ne pas la manquer</a></li>
+<li><a href="../fr469575/index.html">Comment reprogrammer le mode veille: 30 jours tous les matins, je fais briller une lumière verte brillante dans mes yeux</a></li>
+<li><a href="../fr469577/index.html">Forensics de disque, forensics de mémoire et forensics de log. Cadre de volatilité et autopsie. Résolution de problèmes avec r0ot-mi. Partie 1</a></li>
+<li><a href="../fr469581/index.html">Analyse de l'effet Picabu</a></li>
+<li><a href="../fr469587/index.html">Les preuves du capitaine recommandent ... ou 100 500 fois les textes corrects</a></li>
+<li><a href="../fr469589/index.html">Semaine de sécurité 40: vulnérabilité Apple BootROM dans Mobile</a></li>
+<li><a href="../fr469591/index.html">Psychologie des jeux de société: jeu et tempérament</a></li>
+<li><a href="../fr469593/index.html">Architecture de l'espace de travail numérique Citrix Cloud</a></li>
+<li><a href="../fr469599/index.html">Débriefing du développement du moteur 2D sur WinForms</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

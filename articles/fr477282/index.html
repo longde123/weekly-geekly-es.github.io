@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏿‍💻 🚶 🕙 Profiling Go code de projet et résolution des problèmes d'allocation de mémoire 💇🏼 👦🏽 🖐🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Peut-être que chaque programmeur connaît les mots de Kent Beck: "Faites-le fonctionner, faites-le bien, faites-le vite." Vous devez d'abord faire fonc...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Profiling Go code de projet et résolution des problèmes d'allocation de mémoire</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ruvds/blog/477282/">  Peut-être que chaque programmeur connaît les mots de Kent Beck: "Faites-le fonctionner, faites-le bien, faites-le vite."  Vous devez d'abord faire fonctionner le programme, puis vous devez le faire fonctionner correctement, et seulement ensuite vous pouvez procéder à l'optimisation. <br><br><img src="https://habrastorage.org/webt/nz/-z/sh/nz-zsh2ilh_sy0-ib_6ydrcs9p0.png"><br><br>  L'auteur de l'article, dont nous publions la traduction, dit qu'il a récemment décidé de reprendre le profilage de son projet open-source <a href="https://github.com/markphelps/flipt">Flipt</a> .  Il voulait trouver dans le projet du code qui pourrait être optimisé sans effort et accélérer ainsi le programme.  Lors du profilage, il a découvert des problèmes inattendus dans un projet open source populaire utilisé par Flipt pour organiser le routage et la prise en charge du middleware.  En conséquence, il a été possible de réduire de 100 fois la quantité de mémoire allouée par l'application pendant le fonctionnement.  Ceci, à son tour, a entraîné une réduction du nombre d'opérations de collecte des ordures et amélioré la performance globale du projet.  Voici comment c'était. <br><a name="habracut"></a><br><h2>  <font color="#3AC1EF">Génération de trafic élevé</font> </h2><br>  Avant de pouvoir commencer le profilage, je savais que je devais d'abord générer une grande quantité de trafic entrant dans l'application, ce qui m'aiderait à voir certains modèles de son comportement.  Ici, j'ai immédiatement rencontré un problème, car je n'ai rien qui puisse utiliser Flipt en production et obtenir du trafic qui me permet d'évaluer le travail du projet sous charge.  En conséquence, j'ai trouvé un excellent outil pour les projets de test de charge.  Voici <a href="https://github.com/tsenart/vegeta">Vegeta</a> .  Les auteurs du projet disent que Vegeta est un outil HTTP universel pour les tests de charge.  Ce projet est né de la nécessité de charger des services HTTP avec un grand nombre de requêtes venant de services avec une fréquence donnée. <br><br>  Le projet Vegeta s'est avéré être exactement l'outil dont j'avais besoin, car il m'a permis de créer un flux continu de demandes vers l'application.  Avec ces requêtes, vous pouvez "shell" l'application autant que nécessaire afin de trouver des indicateurs tels que l'allocation / l'utilisation de la mémoire sur le tas, les fonctionnalités des goroutines, le temps passé sur la collecte des ordures. <br><br>  Après avoir mené quelques expériences, je suis passé à la configuration suivante du lancement de Vegeta: <br><br><pre><code class="plaintext hljs">echo 'POST http://localhost:8080/api/v1/evaluate' | vegeta attack -rate 1000 -duration 1m -body evaluate.json</code> </pre> <br>  Cette commande lance <a href="https://github.com/tsenart/vegeta">Vegeta</a> en mode d' <code>attack</code> , envoyant des requêtes HTTP <a href="https://flipt.dev/architecture/">Flipt API</a> POST <a href="https://flipt.dev/architecture/">REST</a> à une vitesse de 1000 requêtes par seconde (et cela, certes, est une charge sérieuse) pendant une minute.  Les données JSON envoyées par Flipt ne sont pas particulièrement importantes.  Ils ne sont nécessaires que pour la formation correcte de l'organisme demandeur.  Une telle demande a été reçue par le serveur Flipt, qui a pu effectuer la procédure de <a href="https://flipt.dev/concepts/">vérification de</a> la demande. <br><br>  Veuillez noter que j'ai d'abord décidé de tester le <code>/evaluate</code> Flipt <code>/evaluate</code> .  Le fait est qu'il exécute la plupart du code qui implémente la logique du projet et effectue des calculs de serveur "complexes".  Je pensais que l'analyse des résultats de ce point final me donnerait les données les plus précieuses sur les domaines de l'application qui pourraient être améliorés. <br><br><h2>  <font color="#3AC1EF">Mesures</font> </h2><br>  Maintenant que j'avais un outil pour générer une quantité de trafic suffisamment importante, je devais trouver un moyen de mesurer l'impact de ce trafic sur une application en cours d'exécution.  Heureusement, Go dispose d'un assez bon ensemble d'outils standard qui peuvent mesurer les performances du programme.  Il s'agit du paquet <a href="https://golang.org/pkg/runtime/pprof/">pprof</a> . <br><br>  Je n'entrerai pas dans les détails de l'utilisation de pprof.  Je ne pense pas que je le ferai mieux que Julia Evans, qui a écrit <a href="https://jvns.ca/blog/2017/09/24/profiling-go-with-pprof/">ce</a> merveilleux article sur le profilage des programmes Go avec pprof (si vous ne l’avez pas lu, je vous recommande vraiment de le consulter). <br><br>  Étant donné que le routeur HTTP dans Flipt est implémenté à l'aide de <a href="https://github.com/go-chi/chi/">go-chi / chi</a> , il n'a pas été difficile pour moi d'activer pprof à l'aide du gestionnaire intermédiaire Chi <a href="">approprié</a> . <br><br>  Donc, dans une fenêtre, Flipt a fonctionné pour moi, et Vegeta, remplissant Flipt de demandes, a travaillé dans une autre fenêtre.  J'ai lancé la troisième fenêtre de terminal afin de collecter et d'examiner les données de profilage de tas: <br><br><pre> <code class="plaintext hljs">pprof -http=localhost:9090 localhost:8080/debug/pprof/heap</code> </pre> <br>  Il utilise l'outil Google pprof, qui peut visualiser les données de profilage directement dans le navigateur. <br><br>  J'ai d'abord vérifié les <code>inuse_space</code> <code>inuse_objects</code> et <code>inuse_space</code> afin de comprendre ce qui se passe sur le tas.  Cependant, je n'ai rien trouvé de remarquable.  Mais quand j'ai décidé de jeter un œil aux <code>alloc_space</code> <code>alloc_objects</code> et <code>alloc_space</code> , quelque chose m'a alerté. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/12b/e26/640/12be2664018d279c2fcbc0fe4a0fcf2c.png"></div><br>  <i><font color="#999999">Analyse des résultats du profilage ( <a href="">original</a> )</font></i> <br><br>  Il y avait un sentiment que quelque chose appelé <code>flate.NewWriter</code> alloué 19370 Mo de mémoire pendant une minute.  Et cela, soit dit en passant, représente plus de 19 gigaoctets!  Ici, évidemment, quelque chose d'étrange se passait.  Mais quoi exactement?  Si vous regardez attentivement l'original du diagramme ci-dessus, il s'avère que <code>flate.NewWriter</code> est appelé à partir de <code>gzip.(*Writer).Write</code> , qui, à son tour, est appelé à partir du <code>middleware.(*compressResponseWriter).Write</code> .  J'ai rapidement réalisé que ce qui se passait n'avait rien à voir avec le code Flipt.  Le problème était quelque part dans le code du middleware <a href="https://github.com/go-chi/chi">Chi</a> utilisé pour compresser les réponses de l'API. <br><br><pre> <code class="plaintext hljs">//   r.Use(middleware.Compress(gzip.DefaultCompression))</code> </pre> <br>  J'ai commenté la ligne ci-dessus et relancé les tests.  Comme prévu, un grand nombre d'opérations d'allocation de mémoire ont disparu. <br><br>  Avant de commencer à trouver une solution à ce problème, je voulais examiner ces opérations d'allocation de mémoire de l'autre côté et comprendre comment elles affectent les performances.  En particulier, j'étais intéressé par leur impact sur le temps nécessaire au programme pour collecter les ordures.  Je me suis souvenu que Go a toujours un outil de suivi qui vous permet d'analyser les programmes pendant leur exécution et de collecter des informations à leur sujet pendant certaines périodes.  Les données collectées par trace incluent des indicateurs importants tels que l'utilisation du tas, le nombre de goroutines en cours d'exécution, des informations sur les requêtes réseau et système et, ce qui était particulièrement précieux pour moi, des informations sur le temps passé dans le garbage collector. <br><br>  Pour collecter efficacement des informations sur un programme en cours d'exécution, je devais réduire le nombre de requêtes par seconde envoyées à l'application en utilisant Vegeta, car le serveur me donnait régulièrement du <code>socket: too many open files</code> erreurs de <code>socket: too many open files</code> .  J'ai supposé que c'était parce que <code>ulimit</code> était réglé trop bas sur mon ordinateur, mais je ne voulais pas y entrer. <br><br>  J'ai donc redémarré Vegeta avec cette commande: <br><br><pre> <code class="plaintext hljs">echo 'POST http://localhost:8080/api/v1/evaluate' | vegeta attack -rate 100 -duration 2m -body evaluate.json</code> </pre> <br>  Par conséquent, si nous comparons cela avec le scénario précédent, seulement un dixième des demandes ont été envoyées au serveur, mais cela a été fait pour une période de temps plus longue.  Cela m'a permis de collecter des données de haute qualité sur le travail du programme. <br><br>  Dans une autre fenêtre de terminal, j'ai exécuté cette commande: <br><br><pre> <code class="plaintext hljs">wget 'http://localhost:8080/debug/pprof/trace?seconds=60' -O profile/trace</code> </pre> <br>  En conséquence, j'avais à ma disposition un fichier contenant des données de trace collectées en 60 secondes.  Vous pouvez examiner ce fichier à l'aide de la commande suivante: <br><br><pre> <code class="plaintext hljs">go tool trace profile/trace</code> </pre> <br>  L'exécution de cette commande a conduit à la découverte des informations collectées dans le navigateur.  Ils ont été présentés sous une forme graphique pratique pour étude. <br><br>  Des détails sur la <code>go tool trace</code> peuvent être trouvés dans <a href="https://making.pusher.com/go-tool-trace/">ce</a> bon article. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/6fd/490/4da/6fd4904daee72efc1d0bc86b71450cc9.png"></div><br>  <i><font color="#999999">Résultats de trace de flipt.</font></i>  <i><font color="#999999">Un graphique en dents de scie de l'allocation de mémoire sur le tas est clairement visible ( <a href="">original</a> )</font></i> <br><br>  Sur ce graphique, il est facile de voir que la quantité de mémoire allouée sur le tas a tendance à augmenter assez rapidement.  Dans ce cas, après la croissance devrait être une forte baisse.  Les emplacements où la mémoire allouée tombe sont des opérations de récupération de place.  Ici, vous pouvez voir les colonnes bleues prononcées dans la zone GC, représentant le temps passé sur la collecte des ordures. <br><br>  Maintenant, j'ai rassemblé toutes les preuves du «crime» dont j'ai besoin et je pourrais commencer à chercher une solution au problème d'allocation de mémoire. <br><br><h2>  <font color="#3AC1EF">Résolution de problèmes</font> </h2><br>  Afin de découvrir la raison pour laquelle appeler <code>flate.NewWriter</code> conduit à autant d'opérations d'allocation de mémoire, j'ai dû regarder le code source de <a href="https://github.com/go-chi/chi/">Chi</a> .  Afin de savoir quelle version de Chi j'utilise, j'ai exécuté la commande suivante: <br><br><pre> <code class="plaintext hljs">go list -m all | grep chi github.com/go-chi/chi v3.3.4+incompatible</code> </pre> <br>  Ayant atteint le code source <a href="">chi / middleware / compress.go @ v3.3.4</a> , j'ai pu trouver la méthode suivante: <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">encoderDeflate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(w http.ResponseWriter, level </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">io</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Writer</span></span></span></span> {    dw, err := flate.NewWriter(w, level)    <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> {        <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">nil</span></span>    }    <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> dw }</code> </pre> <br>  Dans d'autres recherches, j'ai découvert que la méthode <code>flate.NewWriter</code> , via un gestionnaire intermédiaire, était appelée pour chaque réponse.  Cela correspondait à l'énorme quantité d'opérations d'allocation de mémoire que j'ai vu plus tôt, chargeant l'API avec mille requêtes par seconde. <br><br>  Je ne voulais pas refuser de compresser les réponses de l'API ou chercher un nouveau routeur HTTP et une nouvelle bibliothèque de support de middleware.  Par conséquent, j'ai tout d'abord décidé de savoir s'il était possible de faire face à mon problème simplement en mettant à jour Chi. <br><br>  J'ai exécuté <code>go get -u -v "github.com/go-chi/chi"</code> , mis à niveau vers Chi 4.0.2, mais le code du middleware pour la compression des données semblait, comme il me semblait, le même qu'auparavant.  Lorsque j'ai relancé les tests, le problème n'a pas disparu. <br><br>  Avant de mettre fin à ce problème, j'ai décidé de rechercher des problèmes ou des messages PR dans le référentiel Chi qui mentionnent quelque chose comme «middleware de compression».  Je suis tombé sur un PR avec le titre suivant: "Réécriture de la bibliothèque de compression middleware".  L'auteur de ce PR a déclaré ce qui suit: "De plus, sync.Pool est utilisé pour les encodeurs, qui a une méthode de réinitialisation (io.Writer), ce qui réduit la charge de la mémoire." <br><br>  Ça y est!  Heureusement, ce PR a été ajouté à la branche principale, mais comme aucune nouvelle version de Chi n'a été créée, j'ai dû mettre à jour comme ceci: <br><br><pre> <code class="plaintext hljs">go get -u -v "github.com/go-chi/chi@master"</code> </pre> <br>  Cette mise à jour, qui m'a beaucoup plu, était rétrocompatible, son utilisation n'a pas nécessité de modification du code de mon application. <br><br><h2>  <font color="#3AC1EF">Résultats</font> </h2><br>  J'ai exécuté à nouveau les tests de charge et le profilage.  Cela m'a permis de vérifier que la mise à jour Chi a résolu le problème. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1ff/600/1df/1ff6001df0eccef0aa5b9c11b80a5dc8.png"></div><br>  <i><font color="#999999">Maintenant, flate.NewWriter utilise un centième de la quantité de mémoire allouée précédemment ( <a href="">originale</a> )</font></i> <br><br>  En regardant à nouveau les résultats de la trace, j'ai vu que la taille du tas augmente maintenant beaucoup plus lentement.  De plus, le temps requis pour la collecte des ordures a diminué. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/348/584/1fb/3485841fb721f8d31ff3a1bca04bea24.png"></div><br>  <i><font color="#999999">Au revoir - «scie» ( <a href="">original</a> )</font></i> <br><br>  Après un certain temps, j'ai <a href="https://github.com/markphelps/flipt/pull/170">mis à jour</a> le référentiel Flipt, ayant plus confiance qu'auparavant que mon projet sera capable de faire face de manière adéquate à la charge élevée. <br><br><h2>  <font color="#3AC1EF">Résumé</font> </h2><br>  Voici les conclusions que j'ai tirées après avoir réussi à trouver et à résoudre les problèmes ci-dessus: <br><br><ol><li>  Vous ne devez pas vous fier à l'hypothèse que les bibliothèques open source (même les plus populaires) ont été optimisées ou qu'elles n'ont pas de problèmes évidents. </li><li>  Un problème innocent peut entraîner des conséquences graves, des manifestations de l '"effet domino", notamment sous forte charge. </li><li>  Si possible, vous devez utiliser <a href="https://golang.org/pkg/sync/">sync.Pool</a> . </li><li>  Il est utile de garder à portée de main les outils de test des projets en charge et de profilage. </li><li>  Go Toolkit et Open Source - Super! </li></ol><br>  <b>Chers lecteurs!</b>  Comment recherchez-vous les performances de vos projets Go? <br><br><div style="text-align:center;"> <a href="https://ruvds.com/vps_start/"><img src="https://habrastorage.org/webt/-o/2e/tu/-o2etuqogwhmdnmysb9_vivc9v4.png"></a> </div><br> <a href="https://ruvds.com/ru-rub/"><img src="https://habrastorage.org/files/1ba/550/d25/1ba550d25e8846ce8805de564da6aa63.png"></a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr477282/">https://habr.com/ru/post/fr477282/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr477268/index.html">Optimisation de la solution de recherche sur github</a></li>
+<li><a href="../fr477272/index.html">Première introduction à AssemblyScript</a></li>
+<li><a href="../fr477274/index.html">Comment se débarrasser du code CSS inutilisé? Partie 1</a></li>
+<li><a href="../fr477276/index.html">Comment se débarrasser du code CSS inutilisé? 2e partie</a></li>
+<li><a href="../fr477278/index.html">Tests frontaux</a></li>
+<li><a href="../fr477284/index.html">Pourquoi JavaScript est-il requis en mode strict?</a></li>
+<li><a href="../fr477286/index.html">Axios ou Fetch: quoi utiliser en 2019?</a></li>
+<li><a href="../fr477288/index.html">John Lewis à la conférence Undoing Aging 2018</a></li>
+<li><a href="../fr477290/index.html">Événements numériques à Moscou du 25 novembre au 1er décembre</a></li>
+<li><a href="../fr477292/index.html">Événements numériques à Saint-Pétersbourg du 25 novembre au 1er décembre</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

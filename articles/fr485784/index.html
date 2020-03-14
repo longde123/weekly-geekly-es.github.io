@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💇🏻 👴 👨🏾‍✈️ Faire fonctionner n'importe quel processus avec NTFS transactionnel: ma première étape pour créer un sandbox pour Windows 🎎 👩🏿‍🤝‍👩🏻 🙆🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Il existe un module dans le noyau Windows chargé de prendre en charge le regroupement des opérations sur les fichiers dans une entité appelée transact...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Faire fonctionner n'importe quel processus avec NTFS transactionnel: ma première étape pour créer un sandbox pour Windows</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/485784/"><p><img src="https://habrastorage.org/webt/p0/-s/fi/p0-sfitxnzzpywfqxuc4arx1fps.png" align="right" alt="TransactionMaster">  Il existe un module dans le noyau Windows chargé de prendre en charge le regroupement des opérations sur les fichiers dans une entité appelée <strong>transaction</strong> .  Les actions sur cette entité sont isolées et atomiques: elle peut être <em>appliquée</em> en la rendant permanente ou <em>annulée</em> .  Très pratique lors de l'installation de programmes, d'accord?  Nous passons toujours d'un état convenu à un autre, et en cas de problème, toutes les modifications sont annulées. </p><br><p> Depuis que j'ai appris le support d'une telle fonctionnalité, j'ai toujours voulu regarder le monde de l'intérieur de ces transactions.  Et vous savez quoi: j'ai trouvé une méthode simple et vraiment merveilleuse pour faire fonctionner n'importe quel processus dans une transaction de fichier, <del>  mais les marges du livre sont trop étroites pour lui </del>  .  Dans la plupart des cas, cela ne nécessite même pas de privilèges administratifs. </p><br><p>  Voyons comment cela fonctionne, expérimentons mon programme et comprenons ce que sont les bacs à sable. </p><a name="habracut"></a><br><h2 id="repozitoriy">  Dépôt </h2><br><p>  Pour ceux qui sont impatients d'essayer: <a href="https://github.com/diversenok/TransactionMaster">TransactionMaster sur GitHub</a> . </p><br><h2 id="teoriya">  Théorie </h2><br><p>  La prise en charge de NTFS transactionnel, ou <strong>TxF</strong> , est apparue dans Windows Vista, et a permis de simplifier considérablement le code responsable de la récupération des erreurs dans le processus de mise à jour du logiciel et du système d'exploitation lui-même.  En fait, la tâche de restauration a été transférée au noyau du système d'exploitation, qui a commencé à appliquer la <a href="https://ru.wikipedia.org/wiki/ACID">sémantique <abbr title="Atomicité, cohérence, isolement, durabilité">ACID</abbr></a> complète aux opérations de fichiers - il suffit de demander. </p><br><p> Pour prendre en charge cette technologie, de nouvelles fonctions API ont été ajoutées qui dupliquaient les fonctionnalités existantes, ajoutant un nouveau paramètre - une transaction.  La transaction elle-même est devenue l'un des nombreux objets du noyau dans le système d'exploitation, avec les fichiers, les processus et les objets de synchronisation.  Dans le cas le plus simple, la séquence d'actions lorsque vous travaillez avec des transactions consiste à créer un objet de transaction en appelant <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/ktmw32/nf-ktmw32-createtransaction"><code>CreateTransaction</code></a> , à travailler avec des fichiers (à l'aide de fonctions telles que <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/winbase/nf-winbase-createfiletransactedw"><code>CreateFileTransacted</code></a> , <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/winbase/nf-winbase-movefiletransactedw"><code>MoveFileTransacted</code></a> , <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/winbase/nf-winbase-deletefiletransactedw"><code>DeleteFileTransacted</code></a> et similaires), et à appliquer / <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/winbase/nf-winbase-deletefiletransactedw"><code>DeleteFileTransacted</code></a> la transaction à l'aide de <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/ktmw32/nf-ktmw32-committransaction"><code>CommitTransaction</code></a> / <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/ktmw32/nf-ktmw32-rollbacktransaction"><code>RollbackTransaction</code></a> . </p><br><p>  Voyons maintenant l'architecture de ces fonctionnalités.  Nous savons que la couche d'API documentée, provenant de bibliothèques telles que <code>kernel32.dll</code> , ne transfère pas directement le contrôle au noyau du système d'exploitation, mais fait référence à la couche d'abstraction sous-jacente en mode utilisateur - <code>ntdll.dll</code> , qui effectue déjà un appel système.  Et là, une surprise nous attend: <u>il n'y a tout simplement pas de duplication de fonctions pour travailler avec des fichiers dans le cadre de transactions dans <strong>ntdll</strong> , comme dans le noyau</u> . </p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ke/ql/5q/keql5q2xtkbwehzymrrnivsniq8.png" alt="Couches API"></div><br><p>  Néanmoins, les prototypes de ces fonctions de l'API native n'ont pas changé depuis des temps immémoriaux, ce qui signifie qu'ils apprendront ailleurs dans le contexte de quelle transaction effectuer l'opération.  Mais d’où?  La réponse est que chaque thread a un champ spécial dans lequel le handle de la transaction en cours est stocké.  La zone de mémoire où elle se trouve est appelée <abbr title="Bloquer l'environnement fileté">TEB</abbr> , le bloc d'environnement de flux.  Parmi les choses connues, le <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror">dernier code d'erreur</a> et l' <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadid">identifiant de flux y</a> sont également stockés. </p><br><p>  Ainsi, les fonctions avec le suffixe <code>*Transacted</code> définissent le champ de la transaction en cours, appellent une fonction similaire sans suffixe, puis restaurent la valeur précédente.  Ils le font en utilisant une paire de fonctions <a href=""><code>RtlGetCurrentTransaction</code></a> / <a href=""><code>RtlSetCurrentTransaction</code></a> de <code>ntdll</code> .  Le code des fonctions elles-mêmes est très simple, à l'exception du cas avec <abbr title="Windows sur Windows 64 bits">WoW64</abbr> , qui sera <abbr title="Windows sur Windows 64 bits">discuté</abbr> ci <abbr title="Windows sur Windows 64 bits">-</abbr> dessous. </p><br><p>  Qu'est-ce que tout cela signifie pour nous?  <strong>En modifiant une variable dans la mémoire de processus, nous pouvons contrôler dans le contexte de quelle transaction elle travaille avec le système de fichiers.</strong>  Vous n'avez pas besoin de définir d'interruptions ni d'appels de fonction d'interception, remettez simplement le descripteur de transaction au processus cible et corrigez quelques octets dans sa mémoire pour chacun des threads.  Cela semble élémentaire, faisons-le! </p><br><h2 id="podvodnye-kamni">  Pièges </h2><br><p>  Les toutes premières expériences ont montré que l'idée est réalisable: <a href="https://farmanager.com/">Far Manager</a> , que j'utilise à la place de Windows Explorer, survit parfaitement à la substitution des transactions à la volée, et permet de regarder le monde dans son contexte.  Mais il y avait aussi des programmes qui créent constamment de nouveaux threads pour les opérations de fichiers.  Et dans le scénario d'origine, c'est une lacune, car il n'est pas très pratique de suivre la création de threads dans un autre processus (sans parler du fait que le «retard» est critique ici).  Un exemple d'application de la deuxième classe est le <a href="https://github.com/microsoft/winfile">WinFile</a> récemment porté. </p><br><h3 id="otslezhivayuschaya-dll">  DLL de suivi </h3><br><p>  Heureusement, le suivi synchrone de la création de threads et de la configuration ultérieure des transactions pour eux est complètement élémentaire depuis le processus cible.  Il suffit d'y incorporer une DLL, et le chargeur de module appellera son point d'entrée avec le paramètre <a href="https://docs.microsoft.com/ru-ru/windows/win32/dlls/dllmain"><code>DLL_THREAD_ATTACH</code></a> chaque <b>*</b> fois lors de la création d'un nouveau thread.  En implémentant cette fonctionnalité, j'ai corrigé la compatibilité avec une douzaine de programmes supplémentaires. </p><br><p>  <strong>*</strong> Techniquement, un appel ne fonctionne pas toujours, et ce comportement peut parfois être observé dans l'interface de mon programme.  Pour la plupart, les exceptions sont les threads du pool de travail du chargeur de module lui-même.  Le fait est que les bibliothèques DLL sont notifiées sous le verrou du chargeur de démarrage, et cela signifie: vous ne pouvez pas charger de nouveaux modules pour le moment.  Et les threads du chargeur, comme vous le savez, font exactement cela, parallélisant l'accès au système de fichiers.  Une exception est prévue pour de tels cas: si vous spécifiez <a href=""><code>THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH</code></a> comme indicateur lors de l'appel de <a href=""><code>NtCreateThreadEx</code></a> , vous pouvez éviter d'attacher un nouveau thread aux DLL existantes et, respectivement, des blocages.  C'est ce qui se passe ici. </p><br><h3 id="zapuskaem-provodnik">  Lancer l'explorateur </h3><br><p>  Il reste la troisième, dernière catégorie de programmes qui se bloquent toujours en essayant de les faire fonctionner dans une transaction.  L'un de ces programmes est l'Explorateur Windows.  Je ne peux pas diagnostiquer avec précision le problème, mais l'application est compliquée et la commutation à chaud à l'intérieur de la transaction ne l'affecte pas beaucoup.  La raison en est peut-être qu'il contient de nombreux descripteurs de fichiers ouverts, dont certains cessent d'être valides dans le nouveau contexte.  Ou peut-être que c'est autre chose.  Dans de telles situations, le redémarrage du processus est utile pour qu'il fonctionne dès le début de la transaction.  Ensuite, aucune incohérence ne devrait survenir. </p><br><p>  Et par conséquent, j'ai ajouté la possibilité de démarrer de nouveaux processus au programme, pour lesquels la transaction et le suivi des nouveaux flux sont configurés avant d'atteindre le point d'entrée, tandis que le processus est suspendu.  Et vous savez quoi, ça a marché!  Certes, étant donné qu'Explorer utilise activement des objets COM en dehors du processus, l'aperçu se rompt lors du déplacement de fichiers.  Mais sinon, tout est stable. </p><br><h3 id="chto-tam-s-wow64">  Quoi de neuf avec WoW64? </h3><br><p>  Ce sous-système de lancement de programmes 32 bits sur des systèmes 64 bits est un outil extrêmement pratique, mais la nécessité de prendre en compte ses fonctionnalités complique souvent la programmation du système.  J'ai mentionné ci-dessus que le comportement de <code>Rtl[Get/Set]CurrentTransaction</code> nettement différent dans le cas de processus similaires.  La raison en est que les threads des processus WoW64 ont jusqu'à deux blocs d'environnement.  Ils ont différentes tailles de pointeur, et il est souhaitable de les maintenir dans un état cohérent, bien que, dans le cas des transactions, le TEB 64 bits soit prioritaire.  Lorsque nous établissons des transactions à distance, nous devons reproduire le comportement de ces fonctions.  Ce n'est pas difficile, mais vous ne devez pas l'oublier, et les détails peuvent être trouvés <a href="">ici</a> .  Enfin, les processus WoW64 ont besoin d'une copie supplémentaire de 32 bits de notre DLL de suivi. </p><br><h3 id="nereshyonnye-problemy">  Problèmes non résolus </h3><br><p>  Forcé de pleurer - le tout premier scénario qui me vient à l'esprit, à savoir le lancement des programmes d'installation dans ce mode - n'est pas encore opérationnel.  Premièrement, il n'est pas configuré pour capturer les processus enfants dans la même transaction.  Il y a plusieurs solutions ici, j'y travaille.  Mais si l'application crée plusieurs processus, il est encore trop tôt pour l'utiliser en combinaison avec des transactions. </p><br><p>  Deuxièmement, le cas des fichiers exécutables qui n'existent pas en dehors de la transaction mérite une attention particulière.  Je me souviens qu'il y avait une sorte de virus qui trompait les antivirus naïfs de cette façon: il a été décompressé dans une transaction, s'est lancé lui-même, puis a annulé la transaction.  Il y a un processus, mais il n'y a pas de fichier exécutable.  L'antivirus pourrait décider qu'il n'y a rien à analyser et ignorer la menace.  Nous devons également travailler sur des solutions créatives, car, pour une raison quelconque, <a href=""><code>NtCreateUserProcess</code></a> (et, par conséquent, <a href="https://docs.microsoft.com/ru-ru/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw"><code>CreateProcess</code></a> ) ignore la transaction en cours.  Bien sûr, <a href=""><code>NtCreateProcessEx</code></a> reste toujours, mais on s'attend à beaucoup de problèmes pour résoudre les problèmes de compatibilité.  Je penserai à quelque chose. </p><br><h2 id="prichyom-tut-pesochnicy">  Et où sont les bacs à sable? </h2><br><p>  Jetez un oeil à l'image.  Ici, trois programmes différents affichent le contenu du même dossier à partir de trois transactions différentes.  Cool, non? </p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/9f/ml/ds/9fmldsooc30vlqq7plchzoxystc.png" alt="Un regard de l'intérieur de la transaction"></div><br><p>  Et pourtant, mon programme n'est en aucun cas un bac à sable, il manque un détail important - <strong>la frontière de sécurité</strong> .  Bien sûr, cela n'empêche pas certaines entreprises de vendre des objets similaires sous le couvert de bacs à sable à part entière, dommage pour eux, que puis-je dire.  Et, malgré le fait que cela semble complètement impossible, comment pouvons-nous empêcher un programme de changer une variable dans notre mémoire même si nous sommes même un débogueur?  - J'ai une délicieuse astuce en magasin qui me permettra de terminer ce que j'ai commencé et de créer le premier bac à sable que je connais, qui ne nécessitera pas de pilote, mais virtualisera le système de fichiers.  D'ici là, attendez les mises à jour, utilisez <a href="https://sandboxie.com/">Sandboxie</a> et <a href="https://docs.microsoft.com/ru-ru/windows/win32/secauthz/appcontainer-isolation">testez la</a> technologie <a href="https://docs.microsoft.com/ru-ru/windows/win32/secauthz/appcontainer-isolation">AppContainer</a> .  Merci de votre attention. </p><br><p>  Référentiel de projet sur GitHub: <strong><a href="https://github.com/diversenok/TransactionMaster">TransactionMaster</a></strong> . <br>  <a href="https://habr.com/en/post/485788/">Le même article en anglais</a> . </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr485784/">https://habr.com/ru/post/fr485784/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr485768/index.html">Tendances Web 2020 à essayer</a></li>
+<li><a href="../fr485770/index.html">Polémique incorrecte</a></li>
+<li><a href="../fr485772/index.html">Du bureau au centre de données virtuel - comment nous sommes passés à la virtualisation</a></li>
+<li><a href="../fr485776/index.html">Tout au long de la géographie: navigation et tâches géodésiques dans différentes langues</a></li>
+<li><a href="../fr485780/index.html">Robots, résonateurs à quartz, microcontrôleurs ... que fait Epson?</a></li>
+<li><a href="../fr485786/index.html">Devoirs arithmétiques</a></li>
+<li><a href="../fr485790/index.html">Entretiens: attentes vs réalité</a></li>
+<li><a href="../fr485792/index.html">Ivan Lilekvist et Kim Dotkom, une grande interview: l'histoire de Megaupload, l'extradition vers les États-Unis, la liberté, le bitcoin. 2e partie</a></li>
+<li><a href="../fr485796/index.html">Résoudre l'insoluble</a></li>
+<li><a href="../fr485800/index.html">Numérisation vs Automatisation</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤴🏻 🉐 🕗 Comment nous avons résolu le problème de mémoire dans PostgreSQL sans ajouter d'octet ☸️ 🍎 ✋🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Une courte histoire sur la demande "lourde" et une solution élégante au problème 
+
+
+ Récemment, la nuit, des alertes ont commencé à nous réveiller: il...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Comment nous avons résolu le problème de mémoire dans PostgreSQL sans ajouter d'octet</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/437730/"><p><img src="https://habrastorage.org/webt/bd/vf/bj/bdvfbjzxvmt2ijnwu5zjqnz3e1e.jpeg"></p><br><p>  Une courte histoire sur la demande "lourde" et une solution élégante au problème </p><br><p>  Récemment, la nuit, des alertes ont commencé à nous réveiller: il n'y avait pas assez d'espace disque.  Nous avons rapidement compris que le problème venait des tâches ETL. </p><br><p>  La tâche ETL a été effectuée dans une table où les enregistrements binaires et les vidages sont stockés.  Chaque nuit, cette tâche consistait à supprimer les vidages en double et à libérer de l'espace. </p><a name="habracut"></a><br><p>  Pour rechercher des vidages en double, nous avons utilisé cette requête: </p><br><pre><code class="plaintext hljs">id, MIN(id) OVER (PARTITION BY blob ORDER BY id) FROM dumps</code> </pre> <br><p>  La requête combine les mêmes vidages par le champ BLOB.  En utilisant la fonction de fenêtre, nous obtenons l'identifiant de la première apparition de chaque vidage.  Ensuite, avec cette demande, nous supprimons tous les vidages en double. </p><br><p>  La demande a été exécutée pendant un certain temps et, comme le montrent les journaux, a consommé beaucoup de mémoire.  Le graphique montre comment il a marqué l'espace disque libre chaque nuit: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/v2/sn/ye/v2snyevasqsmvjjzpc7lbjs4mpe.png"></a> </p><br><p>  Au fil du temps, la demande a nécessité plus de mémoire, les échecs se sont aggravés.  Et, jetant un coup d'œil au plan d'exécution, nous avons immédiatement vu où tout allait: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Sort (cost=69547.50..70790.83 rows=497332 width=36) (actual time=107.607..127.485 rows=39160) Sort Key: blob, id Sort Method: external merge Disk: 30456kB Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Seq Scan on dumps (cost=0..8889.32 rows=497332 width=36) (actual time=0.022..8.747 rows=39160) Buffers: shared hit=3916 Execution time: 159.960 ms</code> </pre> <br><p>  <strong>Le tri prend beaucoup de mémoire.</strong>  En termes d'exécution, le tri nécessite environ 30 Mo de mémoire à partir d'un ensemble de données de test. </p><br><h3 id="pochemu-tak">  Pourquoi </h3><br><p>  PostgreSQL alloue de la mémoire pour le hachage et le tri.  La quantité de mémoire est contrôlée par le paramètre <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><code>work_mem</code></a> .  La taille par défaut de work_mem est de 4 Mo.  Si plus de 4 Mo sont nécessaires pour le hachage ou le tri, PostgreSQL consomme temporairement de l'espace disque. </p><br><p>  Notre requête consomme clairement plus de 4 Mo, la base de données utilise donc beaucoup de mémoire.  Nous avons décidé: nous ne nous précipiterons pas et n'avons pas augmenté le paramètre ni étendu le stockage.  Il est préférable de rechercher une autre façon de <strong>réduire la mémoire pour le tri</strong> . </p><br><h3 id="ekonomnaya-sortirovka">  Tri économique </h3><br><p>  "La quantité de tri consommée dépend de la taille de l'ensemble de données et de la clé de tri. Vous ne pouvez pas réduire l'ensemble de données, mais la <strong>taille de la clé est possible</strong> . </p><br><p>  Pour le point de référence, nous prenons la taille moyenne de la clé de tri: </p><br><pre> <code class="plaintext hljs"> avg ---------- 780</code> </pre> <br><p>  Chaque clé pèse 780. Pour réduire la clé binaire, elle peut être hachée.  Dans PostgreSQL, il y a <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">md5</a> pour cela (oui, pas de sécurité, mais pour notre objectif, cela fera l'affaire).  Voyons combien pèse le BLOB avec md5: </p><br><pre> <code class="plaintext hljs"> avg ----------- 36</code> </pre> <br><p>  La taille de la clé hachée via md5 est de 36 octets.  <strong>Une clé hachée ne pèse que 4% de l'option d'origine</strong> . </p><br><p>  Ensuite, nous avons lancé la demande d'origine avec une clé hachée: </p><br><pre> <code class="plaintext hljs"> id, MIN(id) OVER ( PARTITION BY md5(array_to_string(blob, '') ) ORDER BY id) FROM dumps;</code> </pre> <br><p>  Et le plan de mise en œuvre: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916 -&gt; Sort (cost=7490.74..7588.64 rows=39160 width=36) (actual time=349.383..353.045 rows=39160) Sort Key: (md5(array_to_string(blob, ''::text))), id Sort Method: quicksort Memory: 4005kB Buffers: shared hit=3916 -&gt; Seq Scan on dumps (cost=0..4503.40 rows=39160 width=36) (actual time=0.055..292.070 rows=39160) Buffers: shared hit=3916 Execution time: 374.125 ms</code> </pre> <br><p>  Avec une clé hachée, la demande ne consomme que 4 mégaoctets supplémentaires, soit un peu plus de 10% des 30 Mo précédents.  <strong>Ainsi, la taille de la clé de tri affecte considérablement la quantité de mémoire consommée par le tri</strong> . </p><br><h3 id="dalshe--bolshe">  Plus plus </h3><br><p>  Dans cet exemple, nous avons haché le BLOB à l'aide de <code>md5</code> .  Les hachages créés avec MD5 doivent peser 16 octets.  Et nous en avons plus: </p><br><pre> <code class="plaintext hljs">md5_size ------------- 32</code> </pre> <br><p>  Notre hachage était exactement deux fois plus grand, car <code>md5</code> produit un hachage sous forme de texte hexadécimal. </p><br><p>  Dans PostgreSQL, vous pouvez utiliser MD5 pour le hachage avec l'extension <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><code>pgcrypto</code></a> .  <code>pgcrypto</code> crée MD5 de type <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><code>bytea</code> (en binaire)</a> : </p><br><pre> <code class="plaintext hljs">select pg_column_size( digest('foo', 'md5') ) as crypto_md5_size crypto_md5_size --------------- 20</code> </pre> <br><p>  Le hachage fait toujours 4 octets de plus qu'il ne devrait l'être.  C'est juste que le type <code>bytea</code> utilise ces 4 octets pour stocker la longueur de la valeur, mais nous ne la laisserons pas comme ça. </p><br><p>  Il s'avère que le type <code>uuid</code> dans PostgreSQL pèse exactement 16 octets et prend en charge toute valeur arbitraire, donc nous nous débarrassons des quatre octets restants: </p><br><pre> <code class="plaintext hljs">uuid_size --------------- 16</code> </pre> <br><p>  C’est tout.  32 octets avec <code>md5</code> transforment en 16 avec <code>uuid</code> . </p><br><p>  J'ai vérifié les effets du changement en prenant un ensemble de données plus grand.  Les données elles-mêmes ne peuvent pas être affichées, mais je partagerai les résultats: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/rt/g4/v6/rtg4v65zaqxezkmjkh9cspgh2bo.jpeg"></a> </p><br><p>  Comme vous pouvez le voir sur le tableau, la demande problématique d'origine pesait 300 Mo (et nous a réveillés au milieu de la nuit).  Avec la clé <code>uuid</code> , le tri ne prenait que 7 Mo. </p><br><h3 id="soobrazheniya-vdogonku">  Considérations de suivi </h3><br><p>  Une requête avec une clé de tri de mémoire hachée consomme moins, mais elle fonctionne beaucoup plus lentement: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/b0/cv/vp/b0cvvpozbm_myvxy0-esybfu7gi.jpeg"></a> </p><br><p>  Le hachage utilise plus de CPU, donc une demande avec un hachage est plus lente.  Mais nous avons essayé de résoudre le problème d'espace disque, de plus, la tâche est effectuée la nuit, donc le temps n'est pas un problème.  Nous avons compromis pour économiser de la mémoire. </p><br><p>  Ceci est un excellent exemple du fait que vous <strong>n'avez pas toujours besoin d'accélérer les requêtes de base de données</strong> .  Il est préférable d'utiliser ce qui est équilibré et de tirer le maximum d'un minimum de ressources. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr437730/">https://habr.com/ru/post/fr437730/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr437716/index.html">Trois façons relativement honnêtes de créer un projet Flutter</a></li>
+<li><a href="../fr437720/index.html">La lutte pour des solutions de qualité à Erlang / Elixir</a></li>
+<li><a href="../fr437722/index.html">Conséquences cosmiques du démantèlement américain</a></li>
+<li><a href="../fr437724/index.html">OpenSceneGraph: Animation procédurale des attributs de géométrie et d'état</a></li>
+<li><a href="../fr437726/index.html">Sérialisation de Kotlin avec Kotlinx.</a></li>
+<li><a href="../fr437732/index.html">Présentation de l'imprimante MakeX M-One Pro 70 DLP</a></li>
+<li><a href="../fr437734/index.html">Configuration de l'IPTV depuis Rostelecom sur les routeurs MikroTik</a></li>
+<li><a href="../fr437736/index.html">Comment nous avons automatisé le lancement des tests Selenium via Moon et OpenShift</a></li>
+<li><a href="../fr437738/index.html">Notes d'un phytochimiste. La pomme de terre. Deuxième partie Une histoire sur la graisse de pomme de terre ou «Raw Food Eater Day»</a></li>
+<li><a href="../fr437740/index.html">Haxe: le grand secret du développement multiplateforme</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

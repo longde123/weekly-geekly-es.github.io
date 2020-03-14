@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👐🏾 📬 🦕 Équilibrage de charge dans Zimbra Open-Source Edition avec HAProxy ⌛️ 🥄 ⚛️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="L'une des principales tâches de la construction d'infrastructures Zimbra OSE à grande échelle est un équilibrage de charge compétent. Outre le fait qu...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Équilibrage de charge dans Zimbra Open-Source Edition avec HAProxy</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/zimbra/blog/479536/">  L'une des principales tâches de la construction d'infrastructures Zimbra OSE à grande échelle est un équilibrage de charge compétent.  Outre le fait qu'il augmente la tolérance aux pannes du service, sans équilibrage de charge, il est impossible de fournir la même réactivité du service à tous les utilisateurs.  Afin de résoudre ce problème, des équilibreurs de charge sont utilisés - des solutions logicielles et matérielles qui redistribuent les demandes entre les serveurs.  Parmi eux, il y en a quelques-uns plutôt primitifs, comme RoundRobin, qui envoie simplement chaque prochaine requête au serveur suivant dans la liste, et il y en a d'autres plus avancés, par exemple, HAProxy, qui est largement utilisé dans les infrastructures informatiques très chargées en raison d'un certain nombre d'avantages importants.  Voyons comment les équilibreurs de charge HAProxy et Zimbra OSE peuvent fonctionner ensemble. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e98/93d/7d9/e9893d7d9f995c2a24dce02df7fa5d51.png" alt="image"><a name="habracut"></a><br><br>  Ainsi, selon les conditions de la tâche, nous avons reçu l'infrastructure Zimbra OSE, dans laquelle il y a deux Zimbra Proxy, deux serveurs LDAP et LDAP Replica, quatre magasins de messagerie avec 1000 boîtes aux lettres sur chacun et trois MTA.  Étant donné que nous avons affaire à un serveur de messagerie, il recevra trois types de trafic qui doivent être équilibrés: HTTP pour télécharger le client Web, ainsi que POP et SMTP pour envoyer des e-mails.  Dans le même temps, le trafic HTTP ira aux serveurs proxy Zimbra avec les adresses IP 192.168.0.57 et 192.168.0.58, et le trafic SMTP ira aux serveurs MTA avec les adresses IP 192.168.0.77 et 192.168.0.78. <br><br>  Comme déjà mentionné, pour assurer une distribution uniforme des demandes entre les serveurs, nous utiliserons l'équilibreur de charge HAProxy, qui fonctionnera sur le nœud d'entrée de l'infrastructure Zimbra exécutant Ubuntu 18.04.  L'installation de haproxy sur ce système d'exploitation se fait à l'aide de la commande <b>sudo apt-get install haproxy</b> .  Après cela, dans le <b>fichier / etc / default / haproxy,</b> remplacez le paramètre <b>ENABLED</b> <b>= 0</b> par <b>ENABLED = 1</b> .  Maintenant, pour vous assurer que haproxy fonctionne, entrez simplement la <b>commande service haproxy</b> .  Dans le cas où ce service fonctionne, il apparaîtra clairement à la sortie de la commande. <br><br>  L'un des principaux inconvénients de HAProxy est qu'il ne transmet pas par défaut l'adresse IP du client connecté, la remplaçant par la sienne.  Cela peut conduire à des situations où les e-mails envoyés par des attaquants ne peuvent pas être identifiés par leur adresse IP pour l'ajouter à la liste noire.  Cependant, ce problème peut être résolu.  Pour ce faire, éditez le fichier <b>/opt/zimbra/common/conf/master.cf.in</b> sur les serveurs avec Postfix et ajoutez-y les lignes suivantes: <br><br><pre><code class="plaintext hljs">26 inet n - n - 1 postscreen -o postscreen_upstream_proxy_protocol=haproxy 466 inet n - n - - smtpd %%uncomment SERVICE:opendkim%% -o content_filter=scan:[%%zimbraLocalBindAddress%%]:10030 -o smtpd_tls_wrappermode=yes -o smtpd_sasl_auth_enable=yes -o smtpd_client_restrictions= -o smtpd_data_restrictions= -o smtpd_helo_restrictions= -o smtpd_recipient_restrictions= -o smtpd_relay_restrictions=permit_sasl_authenticated,reject -o syslog_name=postfix/smtps -o milter_macro_daemon_name=ORIGINATING -o smtpd_upstream_proxy_protocol=haproxy %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_filter=[%%zimbraLocalBindAddress%%]:10027 %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_options=speed_adjust 588 inet n - n - - smtpd %%uncomment SERVICE:opendkim%% -o content_filter=scan:[%%zimbraLocalBindAddress%%]:10030 -o smtpd_etrn_restrictions=reject -o smtpd_sasl_auth_enable=%%zimbraMtaSaslAuthEnable%% -o smtpd_tls_security_level=%%zimbraMtaTlsSecurityLevel%% -o smtpd_client_restrictions=permit_sasl_authenticated,reject -o smtpd_data_restrictions= -o smtpd_helo_restrictions= -o smtpd_recipient_restrictions= -o smtpd_relay_restrictions=permit_sasl_authenticated,reject -o syslog_name=postfix/submission -o milter_macro_daemon_name=ORIGINATING -o smtpd_upstream_proxy_protocol=haproxy %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_filter=[%%zimbraLocalBindAddress%%]:10027 %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_options=speed_adjust</code> </pre> <br>  Pour cette raison, nous ouvrirons les ports 26, 466 et 588, qui recevront le trafic entrant de HAProxy.  Une fois les fichiers enregistrés, vous devez redémarrer Postfix sur tous les serveurs à l'aide de la commande zmmtactl restart. <br><br>  Après cela, commençons à configurer HAProxy.  Pour ce faire, créez d'abord une copie de sauvegarde du fichier avec les paramètres <b>cp /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.bak</b> .  Ensuite, ouvrez le fichier source <b>/etc/haproxy/haproxy.cfg</b> dans un éditeur de texte et commencez à lui ajouter progressivement les paramètres nécessaires.  Le premier bloc sera l'ajout d'un serveur qui supprime les journaux, la définition du nombre maximal autorisé de connexions simultanées, ainsi que la spécification du nom et du groupe de l'utilisateur auquel le processus exécutable appartiendra. <br><br><pre> <code class="plaintext hljs">global user daemon group daemon daemon log 127.0.0.1 daemon maxconn 5000 chroot /var/lib/haproxy</code> </pre> <br>  Le chiffre de 5000 connexions simultanées est apparu pour une raison.  Puisqu'il y a 4000 boîtes aux lettres dans notre infrastructure, il est nécessaire de prévoir la probabilité que toutes iront à leur courrier professionnel en même temps.  De plus, vous devez laisser une petite marge au cas où leur nombre augmenterait. <br><br>  Ajoutez maintenant un bloc avec les paramètres par défaut: <br><br><pre> <code class="plaintext hljs">defaults timeout client 1m log global mode tcp timeout server 1m timeout connect 5s</code> </pre> <br>  Dans ce bloc, le délai maximal pour le client et le serveur est défini afin de rompre la connexion à son expiration, et le mode HAProxy est également défini.  Dans notre cas, l'équilibreur de charge fonctionne en mode TCP, c'est-à-dire qu'il transmet simplement les paquets TCP sans analyser leur contenu. <br><br>  Ensuite, nous ajouterons des règles pour les connexions sur différents ports.  Par exemple, si le port 25 est utilisé pour les connexions SMTP et le transfert de courrier, il est logique de rediriger les connexions vers les MTA disponibles dans notre infrastructure.  Si la connexion est sur le port 80, il s'agit d'une demande http qui doit être transmise au proxy Zimbra. <br><br>  <b>Règle pour le port 25:</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-25 bind *:27 default_backend backend-smtp-25 backend backend-smtp-25 server mta1 192.168.0.77:26 send-proxy server mta2 192.168.0.78:26 send-proxy</code> </pre> <br>  <b>Règle pour le port 465:</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-465 bind *:467 default_backend backend-smtp-465 backend backend-smtp-465 server mta1 192.168.0.77:466 send-proxy server mta2 192.168.0.78:466 send-proxy</code> </pre> <br>  <b>Règle pour le port 587:</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-587 bind *:589 default_backend backend-smtp-587 backend backend-smtp-587 server mail1 192.168.0.77:588 send-proxy server mail2 192.168.0.78:588 send-proxy</code> </pre> <br>  <b>Règle pour le port 80:</b> <br><br><pre> <code class="plaintext hljs">frontend http-80 bind *:80 default_backend http-80 backend http-80 mode tcp server zproxy1 192.168.0.57:80 check server zproxy2 192.168.0.58:80 check</code> </pre> <br>  <b>Règle pour le port 443:</b> <br><br><pre> <code class="plaintext hljs">frontend https bind *:443 default_backend https-443 backend https-443 mode tcp server zproxy1 192.168.0.57:80 check server zproxy2 192.168.0.58:80 check</code> </pre> <br>  Veuillez noter que dans les règles d'envoi de paquets TCP au MTA, le paramètre <b>send-proxy</b> se trouve à côté de leurs adresses.  Ceci est nécessaire pour que, conformément aux modifications que nous avons apportées précédemment aux paramètres de Postfix, l'adresse IP d'origine de son expéditeur soit envoyée avec les paquets TCP. <br><br>  Maintenant que toutes les modifications nécessaires ont été apportées à HAProxy, vous pouvez redémarrer le service à l'aide de la <b>commande service haproxy restart</b> et commencer à l'utiliser. <br><br>  Pour toutes questions relatives à la Suite Zextras, vous pouvez contacter la représentante de Zextras, Ekaterina Triandafilidi, par e-mail katerina@zextras.com </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr479536/">https://habr.com/ru/post/fr479536/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr479518/index.html">La communication au sein d'une équipe à distance est notre expérience</a></li>
+<li><a href="../fr479522/index.html">Editeur Peter. Soldes d'hiver</a></li>
+<li><a href="../fr479524/index.html">Service pour Active Restore ou l'histoire d'un projet industriel à Innopolis</a></li>
+<li><a href="../fr479530/index.html">Système de coordonnées ultrasonique 2.0</a></li>
+<li><a href="../fr479534/index.html">Kubernetes 1.17 - Comment mettre à niveau et ne pas dépenser tout le budget d'erreur</a></li>
+<li><a href="../fr479538/index.html">La technologie entraîne le déclin de l'humanité. Il est temps de changer quelque chose</a></li>
+<li><a href="../fr479540/index.html">Utilisation de passwordstore.org - Gestionnaire de mots de passe de style KISS</a></li>
+<li><a href="../fr479542/index.html">Comment écrire votre propre translittérateur</a></li>
+<li><a href="../fr479548/index.html">Le chemin des stages aux performances à HighLoad 2019</a></li>
+<li><a href="../fr479550/index.html">MVC dans Unity avec des objets scriptables. 3e partie</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

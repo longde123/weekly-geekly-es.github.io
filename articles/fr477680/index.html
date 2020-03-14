@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦒 🤸🏼 🗜️ Nos mains ne sont pas pour l'ennui: restaurer le cluster Rook dans les K8 😚 🙍🏻 🌆</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nous avons déjà expliqué comment / pourquoi nous aimons Rook: dans une large mesure, il simplifie l'utilisation du stockage dans les clusters Kubernet...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Nos mains ne sont pas pour l'ennui: restaurer le cluster Rook dans les K8</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/477680/"><img src="https://habrastorage.org/webt/x_/rb/jm/x_rbjmnxk6egjidxf_fvk1otkqe.png"><br><br>  Nous avons <a href="https://habr.com/ru/company/flant/blog/451818/">déjà expliqué</a> comment / pourquoi nous aimons Rook: dans une large mesure, il simplifie l'utilisation du stockage dans les clusters Kubernetes.  Cependant, avec cette simplicité, certaines difficultés surviennent.  Nous espérons que le nouveau matériel aidera à mieux comprendre ces difficultés avant même qu'elles ne se manifestent. <br><br>  Et pour le lire c'était plus intéressant, on commence par les <i>conséquences d'un</i> problème hypothétique dans le cluster. <a name="habracut"></a><br><br><h2>  "Tout est parti!" </h2><br>  Imaginez que vous ayez une fois configuré et lancé Rook dans votre cluster K8s, il était satisfait de son travail, mais à un moment «merveilleux», les événements suivants se produisent: <br><br><ul><li>  Les nouveaux pods ne peuvent pas monter de RBD Ceph. </li><li>  Les commandes comme <code>lsblk</code> et <code>df</code> ne fonctionnent pas sur les hôtes Kubernetes.  Cela signifie automatiquement «quelque chose ne va pas» avec les images RBD montées sur le nœud.  Je ne peux pas les lire, ce qui indique l'inaccessibilité des moniteurs ... </li><li>  Oui, il n'y a aucun moniteur opérationnel dans le cluster.  De plus - il n'y a même pas de pods avec OSD, ni de pods de MGR. </li></ul><br>  Quand a été lancé le pod <code>rook-ceph-operator</code> ?  Il n'y a pas si longtemps qu'il était déployé.  Pourquoi?  L'opérateur tour a décidé de créer un nouveau cluster ... Comment pouvons-nous maintenant restaurer le cluster et les données qu'il contient? <br><br>  Pour commencer, allons <s>plus</s> loin, après avoir mené une enquête approfondie sur les «internes» de Rook et une restauration étape par étape de ses composants.  Bien sûr, il existe une méthode correcte <s>plus courte</s> : utiliser les sauvegardes.  Comme vous le savez, les administrateurs sont divisés en deux types: ceux qui ne font pas de sauvegardes et ceux qui les font déjà ... Mais plus à ce sujet après l'enquête. <br><br><h2>  Un peu de pratique ou un long chemin </h2><br><h3>  Jetez un œil et restaurez les moniteurs </h3><br>  Alors, regardons la liste des ConfigMaps: il y a <code>rook-ceph-config</code> et <code>rook-config-override</code> nécessaires pour la sauvegarde.  Ils apparaissent lors du déploiement réussi du cluster. <br><br>  <i><b>NB</b> : Dans les nouvelles versions, après l'adoption de <a href="https://github.com/rook/rook/pull/3573">ce PR</a> , ConfigMaps a cessé d'être un indicateur de la réussite d'un déploiement de cluster.</i> <br><br>  Pour effectuer d'autres actions, nous avons besoin d'un redémarrage matériel de tous les serveurs qui ont monté des images RBD ( <code>ls /dev/rbd*</code> ).  Cela doit être fait via sysrq (ou "à pied" jusqu'au centre de données).  Cette exigence est causée par la tâche de déconnecter les RBD montés, pour laquelle un redémarrage régulier ne fonctionnera pas (il tentera sans succès de les démonter normalement). <br><br>  Le théâtre commence par un cintre et le cluster Ceph commence par des moniteurs.  Regardons-les. <br><br>  Rook monte les entités suivantes dans le module moniteur: <br><br><pre> <code class="plaintext hljs">Volumes: rook-ceph-config: Type: ConfigMap (a volume populated by a ConfigMap) Name: rook-ceph-config rook-ceph-mons-keyring: Type: Secret (a volume populated by a Secret) SecretName: rook-ceph-mons-keyring rook-ceph-log: Type: HostPath (bare host directory volume) Path: /var/lib/rook/kube-rook/log ceph-daemon-data: Type: HostPath (bare host directory volume) Path: /var/lib/rook/mon-a/data Mounts: /etc/ceph from rook-ceph-config (ro) /etc/ceph/keyring-store/ from rook-ceph-mons-keyring (ro) /var/lib/ceph/mon/ceph-a from ceph-daemon-data (rw) /var/log/ceph from rook-ceph-log (rw)</code> </pre> <br>  Voyons quel est le secret de <code>rook-ceph-mons-keyring</code> : <br><br><pre> <code class="plaintext hljs">kind: Secret data: keyring: LongBase64EncodedString=</code> </pre> <br>  Nous décodons et obtenons le trousseau de clés habituel avec des droits pour l'administrateur et les moniteurs: <br><br><pre> <code class="plaintext hljs">[mon.] key = AQAhT19dlUz0LhBBINv5M5G4YyBswyU43RsLxA== caps mon = "allow *" [client.admin] key = AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br>  N'oubliez pas.  Regardez maintenant le trousseau de clés dans le trousseau secret <code>rook-ceph-admin-keyring</code> : <br><br><pre> <code class="plaintext hljs">kind: Secret data: keyring: anotherBase64EncodedString=</code> </pre> <br>  Qu'y a-t-il dedans? <br><br><pre> <code class="plaintext hljs">[client.admin] key = AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br>  Le même.  Voyons plus ... Voici, par exemple, le secret de <code>rook-ceph-mgr-a-keyring</code> : <br><br><pre> <code class="plaintext hljs">[mgr.a] key = AQBZR19dbVeaIhBBXFYyxGyusGf8x1bNQunuew== caps mon = "allow *" caps mds = "allow *" caps osd = "allow *"</code> </pre> <br>  En fin de compte, nous trouvons quelques secrets de plus dans ConfigMap <code>rook-ceph-mon</code> : <br><br><pre> <code class="plaintext hljs">kind: Secret data: admin-secret: AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== cluster-name: a3ViZS1yb29r fsid: ZmZiYjliZDMtODRkOS00ZDk1LTczNTItYWY4MzZhOGJkNDJhCg== mon-secret: AQAhT19dlUz0LhBBINv5M5G4YyBswyU43RsLxA==</code> </pre> <br>  Et voici la liste initiale avec porte-clés, d'où viennent tous les secrets décrits ci-dessus. <br><br>  Comme vous le savez (voir <code>dataDirHostPath</code> dans la <a href="https://rook.github.io/docs/rook/master/ceph-cluster-crd.html">documentation</a> ), Rook stocke ces données à deux endroits.  Par conséquent, allons aux nœuds pour examiner le trousseau de clés se trouvant dans les répertoires montés dans des pods avec des moniteurs et OSD.  Pour ce faire, recherchez les nœuds <code>/var/lib/rook/mon-a/data/keyring</code> et voyez: <br><br><pre> <code class="plaintext hljs"># cat /var/lib/rook/mon-a/data/keyring [mon.] key = AXAbS19d8NNUXOBB+XyYwXqXI1asIzGcGlzMGg== caps mon = "allow *"</code> </pre> <br>  <b>Soudain, le</b> secret s'est avéré différent - pas comme dans ConfigMap. <br><br>  Et le trousseau d'admin?  Nous l'avons également: <br><br><pre> <code class="plaintext hljs"># cat /var/lib/rook/kube-rook/client.admin.keyring [client.admin] key = AXAbR19d8GGSMUBN+FyYwEqGI1aZizGcJlHMLgx= caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br>  Voici le problème.  Il y a eu un échec: le cluster a été recréé ... mais en réalité non. <br><br>  Il devient clair que le trousseau de clés nouvellement généré est stocké dans des secrets, et ils <b>ne</b> sont <b>pas</b> de notre ancien cluster.  Par conséquent: <br><br><ul><li>  nous prenons le trousseau de clés du moniteur à partir du fichier <code>/var/lib/rook/mon-a/data/keyring</code> (ou de la sauvegarde); </li><li>  changer le trousseau de clés dans le trousseau de clés secret <code>rook-ceph-mons-keyring</code> ; </li><li>  enregistrer le trousseau de clés de l'administrateur et du moniteur dans ConfigMap'e <code>rook-ceph-mon</code> ; </li><li>  supprimer les contrôleurs de pod avec des moniteurs. </li></ul><br>  Le miracle ne prendra pas longtemps: des moniteurs apparaîtront et démarreront.  Hourra, un début! <br><br><h3>  Restaurer l'OSD </h3><br>  Nous allons dans l' <code>rook-operator</code> pod: appeler <code>ceph mon dump</code> montre que tous les moniteurs sont en place, et <code>ceph -s</code> qu'ils sont dans un quorum.  Cependant, si vous regardez l'arborescence OSD (arborescence <code>ceph osd tree</code> ), vous verrez quelque chose d'étrange: l'OSD a commencé à apparaître, mais ils sont vides.  Il s'avère qu'ils doivent également être en quelque sorte restaurés.  Mais comment? <br><br>  Pendant ce temps, <code>rook-ceph-config</code> et <code>rook-config-override</code> , ainsi que de nombreux autres ConfigMap avec des noms comme <code>rook-ceph-osd-$nodename-config</code> , sont apparus dans ConfigMap si nécessaire.  Regardons-les: <br><br><pre> <code class="plaintext hljs">kind: ConfigMap data: osd-dirs: '{"/mnt/osd1":16,"/mnt/osd2":18}'</code> </pre> <br>  Tout va mal, tout est mélangé! <br><br>  Redimensionnez le module opérateur à zéro, supprimez les modules de déploiement générés de l'OSD et corrigez ces cartes de configuration.  Mais où obtenir la <b>bonne</b> carte OSD par nœuds? <br><br><ul><li>  Essayons de fouiller à nouveau dans les répertoires <code>/mnt/osd[1-2]</code> sur les nœuds - dans l'espoir que nous pourrons y attraper quelque chose. </li><li>  Il existe 2 sous-répertoires dans le répertoire <code>/mnt/osd1</code> : <code>osd0</code> et <code>osd16</code> .  Le dernier est juste cet ID qui est spécifié dans ConfigMap (16)? </li><li>  Vérifions <code>osd0</code> taille et voyons que <code>osd0</code> beaucoup plus grand que <code>osd16</code> . </li></ul><br>  Nous concluons que <code>osd0</code> est l'OSD requis, qui a été spécifié comme <code>/mnt/osd1</code> dans ConfigMap (car nous utilisons <a href="https://github.com/rook/rook/issues/3379">osd basé sur un répertoire</a> .) <br><br>  Étape par étape, nous vérifions tous les nœuds et modifions ConfigMap.  Après toutes les instructions, vous pouvez exécuter le pod de l'opérateur Rook et lire ses journaux.  Et tout est merveilleux en eux: <br><br><ul><li>  Je suis un opérateur de cluster; </li><li>  J'ai trouvé des disques sur des nœuds; </li><li>  J'ai trouvé des moniteurs; </li><li>  les moniteurs sont devenus amis, c'est-à-dire  formé un quorum; </li><li>  exécution de déploiements OSD ... </li></ul><br>  Revenons au pod de l'opérateur Rook et vérifions la vivacité du cluster ... oui, nous avons fait une petite erreur avec les conclusions sur les noms OSD sur certains nœuds!  Peu importe: ils ont à nouveau corrigé les ConfigMaps, supprimé les répertoires supplémentaires des nouveaux OSD et sont arrivés à l'état tant attendu de <code>HEALTH_OK</code> ! <br><br>  Vérifiez les images dans la piscine: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># rbd ls -p kube pvc-9cfa2a98-b878-437e-8d57-acb26c7118fb pvc-9fcc4308-0343-434c-a65f-9fd181ab103e pvc-a6466fea-bded-4ac7-8935-7c347cff0d43 pvc-b284d098-f0fc-420c-8ef1-7d60e330af67 pvc-b6d02124-143d-4ce3-810f-3326cfa180ae pvc-c0800871-0749-40ab-8545-b900b83eeee9 pvc-c274dbe9-1566-4a33-bada-aabeb4c76c32 …</span></span></code> </pre> <br>  Tout est en place - le cluster est enregistré! <br><br><h2>  Je suis <s>paresseux à</s> faire des sauvegardes ou la voie rapide </h2><br>  Si des sauvegardes ont été effectuées pour Rook, la procédure de récupération devient beaucoup plus simple et se résume à ce qui suit: <br><br><ol><li>  Évoluer vers un déploiement nul de l'opérateur Rook; </li><li>  Nous supprimons tous les déploiements à l'exception de l'opérateur Rook; </li><li>  Nous restaurons tous les secrets et ConfigMaps à partir de la sauvegarde; </li><li>  Restaurez le contenu des <code>/var/lib/rook/mon-*</code> sur les nœuds; </li><li>  Restaurer (si soudainement perdu) CRD <code>CephCluster</code> , <code>CephFilesystem</code> , <code>CephBlockPool</code> , <code>CephNFS</code> , <code>CephObjectStore</code> ; </li><li>  Redimensionnez le déploiement de l'opérateur Rook à 1. </li></ol><br><h2>  Conseils utiles </h2><br>  Faites des sauvegardes! <br><br>  Et pour éviter les situations où vous devez vous remettre d'eux: <br><br><ol><li>  Avant de travailler à grande échelle avec le cluster, consistant en des redémarrages du serveur, mettez à l'échelle l'opérateur Rook à zéro afin qu'il n'en fasse pas trop. </li><li>  Sur les moniteurs, <a href="">ajoutez</a> à l'avance <a href="">nodeAffinity</a> . </li><li>  Faites attention à <code>ROOK_MON_HEALTHCHECK_INTERVAL</code> <a href="">les délais d'attente</a> <code>ROOK_MON_HEALTHCHECK_INTERVAL</code> et <code>ROOK_MON_OUT_TIMEOUT</code> . </li></ol><br><h2>  Au lieu d'une conclusion </h2><br>  Il ne sert à rien de prétendre que Rook, étant une «couche» supplémentaire (dans le schéma général d'organisation du stockage dans Kubernetes), autant simplifie, il ajoute également de nouvelles difficultés et des problèmes potentiels dans l'infrastructure.  La chose reste «petite»: faire un choix équilibré et éclairé entre ces risques d'une part et les avantages que la solution apporte dans votre cas particulier, d'autre part. <br><br>  Par ailleurs, la section «Adopter un cluster Rook Ceph existant dans un nouveau cluster Kubernetes» a récemment <a href="https://github.com/rook/rook/commit/b651239d3f9a793c95b5c06668b7f28771254082">été ajoutée à la</a> documentation Rook.  Il décrit plus en détail ce qui doit être fait pour déplacer les données existantes vers un nouveau cluster Kubernetes ou pour restaurer un cluster qui s'est effondré pour une raison ou une autre. <br><br><h2>  PS </h2><br>  Lisez aussi dans notre blog: <br><br><ul><li>  " <a href="https://habr.com/ru/company/flant/blog/451818/">Tour ou pas Tour - c'est la question</a> "; </li><li>  « <a href="https://habr.com/ru/company/flant/blog/348044/">Rook est un entrepôt de données« libre-service »pour Kubernetes</a> »; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/474208/">Longhorn, le stockage distribué de Rancher pour K8, transféré à CNCF</a> ." </li><li>  « <a href="https://habr.com/ru/company/flant/blog/329666/">Création d'un stockage persistant avec provisioning dans Kubernetes basé sur Ceph</a> .» </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr477680/">https://habr.com/ru/post/fr477680/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr477668/index.html">29 novembre, 18 h - devleads-mitap</a></li>
+<li><a href="../fr477670/index.html">Ce qui donne l'automatisation des tests</a></li>
+<li><a href="../fr477672/index.html">Droits et obligations des membres de l'équipe: aspects juridiques et culturels</a></li>
+<li><a href="../fr477674/index.html">AI signifie amour?</a></li>
+<li><a href="../fr477678/index.html">Perspectives pour la télévision numérique en Russie</a></li>
+<li><a href="../fr477682/index.html">Services hérités dans votre infrastructure</a></li>
+<li><a href="../fr477684/index.html">Angular: le meilleur compagnon de construction pour les applications interactives</a></li>
+<li><a href="../fr477686/index.html">Notre à la conférence AI Journey</a></li>
+<li><a href="../fr477688/index.html">Récapitulatif des événements informatiques de décembre</a></li>
+<li><a href="../fr477692/index.html">Expérience avec ZGC et Shenandoah GC en production</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

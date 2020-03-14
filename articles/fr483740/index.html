@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎭 🚶🏻 🎹 Configuration du routage dynamique (en particulier BGP) sur le tunnel OpenVPN sous Linux (et probablement * BSD) 🎤 🌀 ⛺️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Pourquoi et de quoi parle cet article? 
+
+
+ Si vous google sur le sujet "openvpn bgp", vous pouvez trouver plusieurs articles intéressants et utiles d'...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Configuration du routage dynamique (en particulier BGP) sur le tunnel OpenVPN sous Linux (et probablement * BSD)</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/483740/"><h4>  Pourquoi et de quoi parle cet article? </h4><br><p>  Si vous google sur le sujet "openvpn bgp", vous pouvez trouver plusieurs articles intéressants et utiles d'un point de vue pratique (par exemple, <a href="https://habr.com/ru/post/348360/">une</a> ou <a href="https://habr.com/ru/post/354282/">deux fois</a> ).  Mais en commençant à résoudre le problème dans le titre, pour de nombreuses raisons, je n'ai même pas pris la peine de le rechercher sur Google.  L'idée est née d'une manière ou d'une autre au cours d'un long travail avec OpenVPN en général (dans le cadre de tâches assez typiques, avec un ensemble fixe de réseaux des deux côtés), en travaillant avec la mise en œuvre d'OpenVPN sur le système RouterOS de MikroTik et en connectant les systèmes Linux et RouterOS entre eux.  En fait, dans le processus de réalisation des raisons pour écrire notre propre implémentation d'OpenVPN dans RouterOS, la «perspicacité» est venue sur la façon dont ce problème peut être résolu dans le cadre de l'édition OpenVPN à personnel complet.  Ensuite, un court contrôle expérimental a montré la pleine capacité de travail de l'idée et le lancement de cette solution en fonctionnement «industriel». </p><br><p> Gardant à l'esprit que cette situation est assez typique pour différentes applications et que la solution décrite ci-dessous n'a pas encore été présentée, j'ai décidé de partager l'idée avec la communauté. </p><br><a name="habracut"></a><br><h4>  L'essence du problème ("qui est à blâmer?") </h4><br><p>  Quelle est la différence entre la version régulière d'OpenVPN et celle qui est implémentée dans RouterOS?  Il y a probablement quelques différences, mais dans cet article, nous ne considérerons qu'une seule chose: l'OpenVPN normal dans les systèmes autres que RouterOS (et peut-être certains autres) est une moissonneuse-batteuse qui contient la partie transport (c'est-à-dire la transmission de paquets elle-même, elle est également en train de transmettre, c'est aussi un plan de données ) et le routage (c'est-à-dire l'échange d'informations sur les itinéraires, c'est le routage, c'est aussi un plan de contrôle), et dans RouterOS, le service OpenVPN n'est responsable que <b>de la</b> partie <b>transport</b> , et le routage est géré par un processus système différent, ce qui permet, d'une part, de ne pas dupliquer la fonctionnalité du routage sous  (et de plus, ne conservez pas plusieurs tables de routage identiques dans différents services et synchronisez-les constamment les unes avec les autres), et d'autre part, permet un transfert transparent des tables de route sur ces véhicules et changez les tables de route des deux côtés à la volée. </p><br><p>  De plus, l'implémentation régulière d'OpenVPN présente un autre inconvénient: le transfert de routes ne se produit que dans une seule direction (du serveur au client) et uniquement au moment de l'établissement d'une session (c'est-à-dire l'élévation du tunnel).  Il n'y a aucun moyen régulier d'ajouter un itinéraire à la table de routage OpenVPN interne lors de vos déplacements pendant le fonctionnement du tunnel, ainsi que de transférer des itinéraires d'un côté à l'autre.  De plus, il n'est même pas possible d'obtenir la table de routage elle-même. </p><br><h4>  Solution au problème («Que faire») </h4><br><p>  En analysant mes scripts qui automatisent l'attribution des routes à différents clients, j'ai remarqué qu'OpenVPN a deux options différentes qui spécifient les routes: </p><br><ul><li> <code><b>i</b> route</code> - définit les routes <b>à</b> l' <b>intérieur de</b> la table de routage du processus OpenVPN. </li><li>  <code>route</code> - définit les routes que le processus OpenVPN transmet à la table de routage système (c'est-à-dire qu'il ajoute des routes à la table via son interface de tunnel lors de la connexion et les supprime lorsqu'il est déconnecté). </li></ul><br><p>  La question évidente s'est posée: que se passera-t-il si la <code><b>i</b> route</code> ajoutée avec la route 0.0.0.0/0 des deux côtés, puis les routes nécessaires (y compris celles qui apparaissent ou disparaissent dynamiquement) sont ajoutées ou supprimées sur l'interface du tunnel elle-même à l'aide d'un service de routage ( en déroute, zèbre / quagga, oiseau, etc.)? </p><br><p>  L'expérience a montré qu'un tel schéma fonctionne vraiment avec un léger inconvénient de restriction: un seul client peut être connecté à un tunnel de serveur.  Le reste du circuit s'est avéré être pleinement opérationnel. </p><br><p>  Le schéma fonctionne en mode TLS sur TCP, c'est-à-dire que pour la configuration, vous devez d'abord générer des clés et des certificats SSL. </p><br><p>  Ci-dessous, je donne un exemple de configuration OpenVPN pour le côté serveur et client. </p><br><p>  Configuration côté serveur (une pour chaque client). </p><br><p>  Fichier <code>server_dyn_rt.conf</code> (côté serveur) </p><br><pre> <code class="plaintext hljs">daemon compress ping-timer-rem persist-tun persist-key tls-server proto tcp-server topology net30 mode server script-security 3 keepalive 15 45 tun-mtu 1500 remote-cert-tls client verify-x509-name &lt;CLIENT_DISTINGUISHED_NAME&gt; name auth &lt;TLS_AUTH_ALGORITHM&gt; cipher &lt;CIPHER_ALGORITHM&gt; local &lt;SERVER_PUBLIC_IP&gt; lport &lt;SERVER_PUBLIC_PORT&gt; dev-type tun dev &lt;TUNNEL_INTERFACE_NAME&gt; ifconfig &lt;TUNNEL_SERVER_SIDE_IP&gt; &lt;TUNNEL_CLIENT_SIDE_IP&gt; client-connect client_connect.sh push "route-gateway &lt;TUNNEL_SERVER_SIDE_IP&gt;" push "topology net30" push&amp;nbsp"persist-tun" push&amp;nbsp"persist-key" &lt;dh&gt; ... Diffie-Hellman data &lt;&lt;/dh&gt; &lt;ca&gt; ... Certificate Authority certificate data &lt;/ca&gt; &lt;cert&gt; ... Server certificate data &lt;/cert&gt; &lt;key&gt; ... Server Private Key data &lt;/key&gt;</code> </pre><br><p>  Fichier <code>client_connect.sh</code> (côté serveur) </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/sh echo 'ifconfig-push TUNNEL_CLIENT_SIDE_IP TUNNEL_SERVER_SIDE_IP' &gt;&gt; ${1} echo 'push "iroute 0.0.0.0 0.0.0.0"' &gt;&gt; ${1} echo 'iroute 0.0.0.0 0.0.0.0' &gt;&gt; ${1} exit 0</span></span></code> </pre><br><p>  Fichier <code>client_dyn_rt.conf</code> (côté client) </p><br><pre> <code class="plaintext hljs">daemon compress tls-client auth &lt;TLS_AUTH_ALGORITHM&gt; cipher &lt;CIPHER_ALGORITHM&gt; client dev-type tun dev &lt;TUNNEL_INTERFACE_NAME&gt; script-security 3 remote-cert-tls server verify-x509-name &lt;SERVER_DISTINGUISHED_NAME&gt; name remote &lt;SERVER_PUBLIC_IP&gt; &lt;SERVER_PUBLIC_PORT&gt; tcp &lt;ca&gt; ... Certificate Authority certificate data &lt;/ca&gt; &lt;cert&gt; ... Client certificate data &lt;/cert&gt; &lt;key&gt; ... Client Private Key data &lt;/key&gt;</code> </pre><br><p>  Je ne cite pas les paramètres des paquets et des protocoles de routage soit à cause de la variété des paquets, soit à cause de la variété des paramètres eux-mêmes (en fait, comme source d'exemples de configuration, vous pouvez utiliser le deuxième des articles, dont les liens sont donnés au début de l'article).  Je veux juste noter que le paramètre ci-dessus vous permet d'utiliser en particulier BGP (que j'aime personnellement à la fois en raison de sa "contrôlabilité" et de la possibilité de transmettre des routes de divers protocoles au cours d'une même session).  Dans le cas de BGP, l'adresse &lt;TUNNEL_CLIENT_SIDE_IP&gt; doit être utilisée comme adresse du voisin côté "serveur", et l'adresse &lt;TUNNEL_SERVER_SIDE_IP&gt; ou les adresses "internes" des parties respectives doivent être utilisées côté client, mais vous devez ensuite ajouter les routes correspondantes à la configuration. serveur et / ou client. </p><br><br><h4>  Avantages et inconvénients de la solution ci-dessus </h4><br><p>  <b>Inconvénients:</b> <br><br></p><ol><li>  Il doit y avoir exactement un client par serveur, donc pour plusieurs clients, vous devrez garder plusieurs processus OpenVPN actifs.  En conséquence - un certain dépassement de mémoire et tout cela. </li><li>  Vous ne pouvez pas utiliser le mode de clé pré-partagée dans OpenVPN, car dans ce mode, le transfert dynamique des paramètres du serveur vers le client (push / pull) est interdit.  Pour cette raison, une configuration plus complexe est requise, y compris la génération d'un ensemble de clés et de certificats, ainsi qu'un script pour générer une pièce de configuration côté client d'un serveur (qui, cependant, peut être remplacé par un répertoire de fichiers statiques en remplaçant l'option <code>client-connect /path/to/script</code> par l'option <code>client-connect-dir /path/to/config/dir</code> , ce qui augmente le niveau de sécurité côté serveur. </li></ol><br><p>  <b>Avantages:</b> <br><br></p><ol><li>  Contrairement aux protocoles tels que GRE / IPIP, les tunnels OpenVPN peuvent avoir une MTU de 1500 octets (car le processus OpenVPN masque toute la fragmentation / défragmentation sous le capot, envoyant des paquets complets à l'interface du tunnel).  Cela facilite la configuration de toutes sortes de tunnels secondaires sur le tunnel OpenVPN. </li><li>  Le tunnel OpenVPN prend en charge simultanément la transmission d'IPv4 et d'IPv6, ce qui réduit le nombre de tunnels entre des paires de nœuds, le coût de leur configuration et de leur administration, ainsi que la transmission de routes IPv6 dans la même session BGP que les routes IPv4. </li><li>  Tous les avantages du protocole OpenVPN, tels que la facilité de mise en place d'un équipement réseau intermédiaire (ou son absence totale), la possibilité de masquer le trafic sous HTTPS, la présence d'une implémentation pour la plupart des plateformes et cetera, et cetera. </li></ol><br><p>  J'espère que quelqu'un trouvera le guide ci-dessus utile. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr483740/">https://habr.com/ru/post/fr483740/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr483726/index.html">JavaScript et HTML vanille. Aucun cadre. Pas de bibliothèques. Pas de problème</a></li>
+<li><a href="../fr483730/index.html">Programmers Union 2: les pantoufles ont cessé de rire et sont devenues réfléchies</a></li>
+<li><a href="../fr483732/index.html">Lire le firmware sécurisé du flash STM32F1xx à l'aide de ChipWhisperer</a></li>
+<li><a href="../fr483734/index.html">Quel prix payons-nous pour utiliser async / attendre dans JS / C # / Rust</a></li>
+<li><a href="../fr483736/index.html">Recherche d'image inversée: un guide de l'agence de détective Bellingcat</a></li>
+<li><a href="../fr483742/index.html">Rechercher des bugs comme mode de vie</a></li>
+<li><a href="../fr483744/index.html">Vente du Nouvel An</a></li>
+<li><a href="../fr483746/index.html">Station Gateway: passage à la ligne lunaire, accès à la station martienne</a></li>
+<li><a href="../fr483748/index.html">La négligence des utilisateurs de PayPal leur permettant de voler leur compte et leur argent [Corrigé]</a></li>
+<li><a href="../fr483750/index.html">Traduction du livre d'Andrew Un, Passion for Machine Learning, Chapitres 30 - 32</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👂🏿 👨🏿‍🤝‍👨🏽 🆒 Pro Demand Planning, Holt-Winters et XGboost 👸🏿 👨‍🍳 👩🏼‍🤝‍👨🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Habr, bonjour! 
+
+ Le site contient de nombreux articles sur la prévision des ventes de diverses catégories de produits de grande consommation, tandis ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Pro Demand Planning, Holt-Winters et XGboost</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/479308/">  Habr, bonjour! <br><br>  Le site contient de nombreux articles sur la prévision des ventes de diverses catégories de produits de grande consommation, tandis que d'autres catégories de produits ne sont pas si populaires.  De plus, le commerce de détail est généralement étudié avec une prévision de plusieurs jours à l'avance, mais pas un distributeur avec une prévision de 2 mois à l'avance - bien que ce dernier s'intéresse plus souvent à une prévision qualitative que même un détaillant.  En tant que défi supplémentaire, il convient de considérer le conservatisme d'une partie importante des distributeurs dans le sens du choix des technologies de prévision.  Il est assez facile d'imaginer la pratique de la prévision des ventes intermédiaires de l'entreprise: collecte des ventes à partir des données de base SAP + dans l'outil Excel créé par l'homme, l'automatisation dans ces cas est limitée par une méthode de prévision assez simple, qui ne va pas loin de la tendance moyenne / linéaire avec la science des fusées sous la forme de HoltWinters. <br><br>  Il se trouve que, en service, je suis tombé sur un fabricant d'une marque de cosmétiques décoratifs bon marché (environ 500 SKU) et j'ai vu les tristes conséquences des prévisions prudentes sous la forme de KPI bas.  Il a fallu apporter de petits changements au système de planification, y compris le processus de prévision, puis je parlerai de mes recherches. <br><a name="habracut"></a><br><h3>  Status Quo Ante Bellum </h3><br>  Le principal casse-tête de la marque depuis plusieurs années a été le niveau de service extrêmement bas ( <i>CSS = Shipped / Ordered</i> ), nettement inférieur à la moyenne de l'entreprise, aggravé par les prévisions basées sur les ventes moyennes ( <i>Forecast = Average sales</i> ).  Le cercle vicieux: le client commande des volumes, ne reçoit pas toutes les quantités et la prochaine fois vient avec une demande accrue, et nous ne planifions l'avenir qu'en fonction du besoin satisfait. <br><br>  Sur cette base, il a été décidé de ne pas prévoir les ventes, mais les commandes effacées des répétitions (c'est-à-dire si le client veut 100 pièces et commandes chaque semaine, nous supposons que la demande par mois est de 100 pièces, pas 400), alors ici d'autres ventes, nous appellerons les commandes débarrassées des doublons.  Après avoir amélioré le niveau de service, la différence entre les termes est nivelée.  L'entreprise utilise la formule ( <i>précision des prévisions = (1 - somme des modules des écarts entre les faits et les prévisions) / prévisions</i> ) pour estimer la précision des prévisions dans l'entreprise, et nous l'utiliserons.  Un point important: la prévision dans ce cas est une prévision avec un décalage de 2, c'est-à-dire  si nous évaluons l'exactitude en octobre, nous comparons les ventes d'octobre avec les prévisions faites en août.  On pense qu'un résultat supérieur à 35% peut être interprété comme satisfaisant.  Soit dit en passant, il convient de noter ici que nous ne nous attendions pas, en fait, à une augmentation de la précision au début - nous nous attendions à une augmentation du niveau de service et nous évaluerons les résultats sur la base de la qualité des expéditions de marchandises aux clients. <br><br>  Je n'ai pas eu à transpirer beaucoup sur l'échantillon pour la formation - bien que la société ne dispose pas d'un DWH analytique, mais il y a un téléchargement de commandes par mois, qu'un petit cycle Python a collecté et effacé.  De même, nous avons obtenu des données de base.  Les événements et les promotions devaient être ignorés dans les calculs en raison d'un bruit excessif (nous avions peur d'ajouter plus de bruit que d'informations utiles), car le plus grand détaillant effectuait périodiquement des promotions sans accord ni préavis, estimait le volume des événements, etc. <br><br>  Comme modèle, nous avons décidé d'utiliser 3 branches - naïve, lissage exponentiel et apprentissage machine. <br><br><h3>  Prévision naïve </h3><br>  La principale raison pour laquelle les prévisions naïves sont toujours utilisées est la facilité d'interprétation pour les humains.  En effet, s'il est habituel pour une entreprise d'analyser chaque code en détail, en utilisant la méthodologie 5 Why, alors la prévision moyenne s'ajuste parfaitement.  Le client commande-t-il en moyenne 10 pièces par mois?  Il est logique qu'il commandera 10 pièces le mois prochain.  Le résultat n'est pas ce que nous attendions et le client a commandé 50 pièces?  Probablement, le client ne sait tout simplement pas comment prédire / la commande automatique est cassée / le robot est furieux, etc., vous devez implémenter Joint Forecasting et échanger des fichiers afin de soulager le stress et d'améliorer la précision des prévisions (bien sûr, une blague, mais avec une certaine vérité). <br><br>  Pour ajouter un peu de pertinence aux méthodes, nous avons suggéré que la saisonnalité des marchandises est identique à la saisonnalité de la catégorie (le package statmodels a été utilisé pour identifier la saisonnalité, la photo montre 3 résultats principaux). <br><br><img src="https://habrastorage.org/getpro/habr/post_images/f31/5d1/a69/f315d1a692d08a1ea53b3b83fd839eba.png" alt="image"><br><br>  Nous avons retenu 4 méthodes: la moyenne et la médiane pour l'ensemble de l'historique des ventes (précision 0,32 et 0,30 respectivement) et les 6 derniers points (0,36 et 0,26).  0,36 sera notre référence - à l'avenir, nous devons obtenir de meilleurs résultats. <br><br><h3>  Prévision ESM </h3><br>  Le lissage exponentiel est souvent le rêve ultime de la planification de la demande et il est facile de comprendre pourquoi.  Les estimations de la précision du front montrent les résultats les moins comparables pour ESM et ML en termes de précision, elles sont incluses dans tous les systèmes de prévision industrielle (JDA, Oracle RDF, etc.), le calcul est plus rapide et plus facile à interpréter - c'est pourquoi les classiques sont plus vivants que tous les êtres vivants.  En revanche, le résultat peut ne pas être entièrement honnête en raison d'une préparation insuffisante des fonctionnalités. <br><br>  Pour les prévisions, nous avons utilisé le même package statmodels.  Pour commencer, nous avons pris la classe Holt pour l'ensemble de l'historique des ventes avec une saisonnalité de groupe effacée et pour les 6 derniers points (précision 0,34 et 0,37). <br><br>  Ensuite, nous avons divisé SKU en 2 groupes - les produits avec une longue histoire ont été prédits par la classe HoltWinters, et pour une courte histoire, nous avons laissé Holt à 6 points.  Le résultat était bien meilleur - 0,44, cela s'explique facilement.  Si au niveau supérieur, il semble que tous les produits soient des frères jumeaux, alors, en descendant dans la sous-catégorie, nous pouvons voir les différences. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/5dc/f82/5d0/5dcf825d060be8999bc8b4aec199324f.png" alt="image"><br><br><h3>  ML Forecasting </h3><br>  Le principal inconvénient des méthodes standard est le manque de profondeur des calculs, car  nous n'utilisons pas toutes les informations disponibles.  Par exemple, l'historique des événements: généralement, dans l'approche classique, nous devons soustraire les tuyaux qui se sont produits de l'historique, faire une prévision de base et ajouter les tuyaux prévus avec le calendrier approprié.  Dans le cas d'un enregistrement des événements insuffisamment précis, le résultat peut être décevant (dans le cas de Holt-Winters, nous avons réussi à obtenir une précision de 5 pp).  De nombreuses raisons peuvent être présentées - par exemple, les catégories KAM sous-estiment les volumes afin de montrer un excès de satisfaction et de recevoir des bonus.  Si nous passons de l'approche ( <i>Forecast = Baseline + Pipes</i> ) à une prévision basée sur des fonctionnalités, nous pourrons ajouter une partie des informations à notre disposition.  Pour ce faire, nous avons compilé une liste de 50 fonctionnalités (prix, données de base, ventes, clients fractionnés, etc.).  De la bibliothèque Sklearn, nous avons pris la base Lasso / Ridge / KNN Regressor, qui donne souvent une victoire rapide, mais dans notre cas, seul KNN était satisfait d'une précision de 0,44.  Une forêt aléatoire a de bonnes performances dans de petits échantillons, dans notre cas, la précision est de 0,48.  Eh bien, bien sûr, nous n'avons pas oublié Xgboost, qui après un peu de validation croisée a produit le meilleur résultat - 0,51.  Voici un graphique avec la précision de chaque modèle <br><br><img src="https://habrastorage.org/getpro/habr/post_images/83a/fbf/2bb/83afbf2bb6c89ddb0bb16ea900bb6c5b.png" alt="image"><br><br><h3>  Préoccupations </h3><br>  Que peuvent être les conservateurs concernant l'utilisation du ML dans la prévision des ventes?  Par exemple, la rétroaction: un certain nombre de détaillants ecom et hors ligne utilisent des réseaux de neurones et une augmentation du gradient et vous font périodiquement peur avec des commandes folles.  Oui, bien sûr, si le détaillant mesurera l'exactitude des prévisions, le résultat peut être optimiste, mais il s'agit dans une certaine mesure d'une prophétie auto-réalisatrice: s'il y a une erreur, la vente / le vendredi noir / l'anniversaire du réseau est activé, etc. <br><br>  Par conséquent, il est important pour nous de montrer que le résultat de Xgboost est non seulement plus précis, mais aussi plus stable (et non la roulette aléatoire, comme un planeur non préparé peut sembler).  Pour ce faire, nous avons comparé la distribution des distributions d'erreur HoltWinters et Xgboost et veillé à ce que les résultats de ces derniers aient un centre plus dense autour de zéro et à queue claire <br><br><img src="https://habrastorage.org/getpro/habr/post_images/622/6b4/b9e/6226b4b9ee71a1edf023f28aab80f628.png" alt="image"><br><br><img src="https://habrastorage.org/getpro/habr/post_images/68b/6c4/62c/68b6c462c43a9d240b5ab42acbf4eb45.png" alt="image"><br><br><h3>  Résultats intermédiaires </h3><br>  Depuis le début de la rédaction de l'article / prévisions de première exécution, 2 autres marques de cosmétiques décoratifs ont été transférées vers Xgboost, en raison de résultats positifs.  Fin novembre, l'augmentation moyenne du niveau de service était de + 16%, soit  le niveau moyen de l'entreprise a été atteint <br><br><div class="scrollable-table"><table><tbody><tr><th>  Marque </th><th>  Novembre SL FY19 </th><th>  Novembre SL FY20 </th><th>  SL Delta </th></tr><tr><td>  Marque1 </td><td>  73% </td><td>  89% </td><td>  16% </td></tr><tr><td>  Marque2 </td><td>  80% </td><td>  85% </td><td>  5% </td></tr><tr><td>  Marque3 </td><td>  63% </td><td>  93% </td><td>  30% </td></tr><tr><td>  Total </td><td>  73% </td><td>  89% </td><td>  16% </td></tr></tbody></table></div></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr479308/">https://habr.com/ru/post/fr479308/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr479298/index.html">Antipatterns PostgreSQL: CTE x CTE</a></li>
+<li><a href="../fr479300/index.html">Écologie et centres de données. Comme en Russie et à l'étranger, les «données vertes»</a></li>
+<li><a href="../fr479302/index.html">Unity Shader Graph Basics</a></li>
+<li><a href="../fr479304/index.html">Conteneurs éphémères Kubernetes Premiers pas</a></li>
+<li><a href="../fr479306/index.html">PHP Digest n ° 169 (26 novembre - 9 décembre 2019)</a></li>
+<li><a href="../fr479310/index.html">Comment programmer 1C pour devenir développeur Java</a></li>
+<li><a href="../fr479312/index.html">Création d'un serveur incrémentiel pour iOS Team</a></li>
+<li><a href="../fr479316/index.html">Bus d'intégration pour Bank SOYUZ (AO): conception et auto-test</a></li>
+<li><a href="../fr479318/index.html">CLion 2019.3 est arrivé! Amélioration de la vitesse de l'éditeur et des nouvelles fonctionnalités les plus attendues</a></li>
+<li><a href="../fr479320/index.html">Numéro 28: Formation informatique - problèmes et défis actuels des grandes entreprises</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

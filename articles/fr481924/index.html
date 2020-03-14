@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⚰️ 👨🏾‍🚒 🏺 Apache Spark, évaluation paresseuse et requêtes SQL multi-pages 🧦 👃🏻 🌃</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Le fameux: spark fonctionne avec des dataframes, qui sont des algorithmes de transformation. L'algorithme est lancé au tout dernier moment afin de "do...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Apache Spark, évaluation paresseuse et requêtes SQL multi-pages</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/alfastrah/blog/481924/"><p>  Le fameux: spark fonctionne avec des dataframes, qui sont des algorithmes de transformation.  L'algorithme est lancé au tout dernier moment afin de "donner plus d'espace" à l'optimisation et grâce à l'optimisation de l'exécuter le plus efficacement possible. </p><br><p>  Sous la coupe, nous analyserons comment décomposer une requête SQL de plusieurs pages en atomes (sans perte d'efficacité) et comment réduire considérablement le temps d'exécution du pipeline ETL à cause de cela. </p><a name="habracut"></a><br><h1 id="lazy-evaluation">  Évaluation paresseuse </h1><br><p>  L'évaluation paresseuse est une caractéristique fonctionnelle intéressante de spark: les transformations ne sont exécutées que lorsque les actions sont terminées.  Comment ça marche (grosso modo): les algorithmes de construction des trames de données précédant l'action sont «collés ensemble», l'optimiseur construit l'algorithme final le plus efficace de son point de vue, qui démarre et donne le résultat (celui qui a été demandé par l'action). </p><br><p>  Ce qui est intéressant ici dans le cadre de notre présentation: toute requête complexe peut être décomposée en «atomes» sans perte d'efficacité.  Analysons un peu plus loin. </p><br><h1 id="mnogostranichnyy-sql">  SQL multipage </h1><br><p>  Il existe de nombreuses raisons pour lesquelles nous écrivons des requêtes SQL «multi-pages», l'une des principales réticences, probablement, à créer des objets intermédiaires (réticence renforcée par des exigences d'efficacité).  Ce qui suit est un exemple de requête relativement complexe (bien sûr, c'est même très simple, mais pour les besoins d'une présentation plus approfondie, nous en aurons assez). </p><br><pre><code class="python hljs">qSel = <span class="hljs-string"><span class="hljs-string">""" select con.contract_id as con_contract_id, con.begin_date as con_begin_date, con.product_id as con_product_id, cst.contract_status_type_id as cst_status_type_id, sbj.subject_id as sbj_subject_id, sbj.subject_name as sbj_subject_name, pp.birth_date as pp_birth_date from kasko.contract con join kasko.contract_status cst on cst.contract_status_id = con.contract_status_id join kasko.subject sbj on sbj.subject_id = con.owner_subject_id left join kasko.physical_person pp on pp.subject_id = con.owner_subject_id """</span></span> dfSel = sp.sql(qSel)</code> </pre> <br><p>  Que voyons-nous: </p><br><ul><li>  les données sont sélectionnées à partir de plusieurs tableaux </li><li>  différents types de jointure sont utilisés </li><li>  les colonnes sélectionnables sont distribuées par partie sélectionnée, partie jointe (et où partie, mais ici elle n'est pas ici - je l'ai supprimée pour plus de simplicité) </li></ul><br><p>  Cette requête peut être décomposée en requêtes simples (par exemple, combinez d'abord les tables contract et contract_status, enregistrez le résultat dans une table temporaire, puis combinez-le avec le sujet, enregistrez également le résultat dans une table temporaire, etc.).  Certes, lorsque nous créons des requêtes vraiment complexes, nous le faisons, juste après - après le débogage - nous collectons tout cela dans un bloc de plusieurs pages. </p><br><p>  Qu'est-ce qui est mauvais ici?  Rien, en fait, tout le monde travaille comme ça et y est habitué. </p><br><p>  Mais il y a des inconvénients - ou plutôt ce qu'il faut améliorer - lisez la suite. </p><br><h1 id="tot-zhe-zapros-v-spark">  La même requête dans spark </h1><br><p>  Lorsque vous utilisez spark pour la transformation, bien sûr, vous pouvez simplement prendre et exécuter cette demande (et ce sera bien, en fait, nous l'exécuterons aussi), mais vous pouvez aller dans l'autre sens, essayons-le. </p><br><p>  Décomposons cette requête «complexe» en «atomes» - des trames de données élémentaires.  Nous en obtiendrons autant que le nombre de tables impliquées dans la requête (dans ce cas, 4). </p><br><p>  Les voici - des «atomes»: </p><br><pre> <code class="python hljs">dfCon = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select contract_id as con_contract_id, begin_date as con_begin_date, product_id as con_product_id, owner_subject_id as con_owner_subject_id, contract_status_id as con_contract_status_id from kasko.contract"""</span></span>) dfCStat = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select contract_status_id as cst_status_id, contract_status_type_id as cst_status_type_id from kasko.contract_status"""</span></span>) dfSubj = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select subject_id as sbj_subject_id, subject_type_id as sbj_subject_type_id, subject_name as sbj_subject_name from kasko.subject"""</span></span>) dfPPers = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select subject_id as pp_subject_id, birth_date as pp_birth_date from kasko.physical_person"""</span></span>)</code> </pre> <br><p>  Spark vous permet de les joindre en utilisant des expressions séparées des «atomes» réels, faisons ceci: </p><br><pre> <code class="python hljs">con_stat = f.col(<span class="hljs-string"><span class="hljs-string">"cst_status_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"con_contract_status_id"</span></span>) con_subj_own = f.col(<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"sbj_subject_id"</span></span>) con_ppers_own = f.col(<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"pp_subject_id"</span></span>)</code> </pre> <br><p>  Ensuite, notre «requête complexe» ressemblera à ceci: </p><br><pre> <code class="python hljs">dfAtom = dfCon.join(dfCStat,con_stat, <span class="hljs-string"><span class="hljs-string">"inner"</span></span>)\ .join(dfSubj,con_subj_own,<span class="hljs-string"><span class="hljs-string">"inner"</span></span>) \ .join(dfPPers,con_ppers_own, <span class="hljs-string"><span class="hljs-string">"left"</span></span>) \ .drop(<span class="hljs-string"><span class="hljs-string">"con_contract_status_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"sbj_subject_type_id"</span></span>, <span class="hljs-string"><span class="hljs-string">"pp_subject_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"cst_status_id"</span></span>)</code> </pre> <br><p>  Qu'est-ce qui est bon ici?  À première vue, ce n’est rien, bien au contraire: par un SQL «complexe», vous pouvez comprendre ce qui se passe, par notre requête «atomique», il est plus difficile à comprendre, vous devez regarder les «atomes» et les expressions. </p><br><p>  Assurons-nous d'abord que ces requêtes sont équivalentes - dans le livre jupyter par <a href="https://github.com/korolmi/dataeng/tree/master/data_doc">référence,</a> j'ai donné des plans pour répondre aux deux requêtes (les curieux peuvent trouver 10 différences, mais l'essence - l'équivalence - est évidente).  Bien sûr, ce n'est pas un miracle, il devrait en être ainsi (voir ci-dessus pour une évaluation et une optimisation paresseuses). </p><br><p>  Ce que nous avons en fin de compte - la demande «multi-page» et la demande «atomique» fonctionnent avec la même efficacité (c'est important, sans que ces considérations supplémentaires perdent partiellement leur sens). </p><br><p>  Eh bien, trouvons maintenant le bon dans la manière «atomique» de construire des requêtes. </p><br><p>  Ce qui est un «atome» (trame de données élémentaires) est notre connaissance d'un sous-ensemble du domaine (partie de la table relationnelle).  En isolant de tels «atomes», nous sélectionnons automatiquement (et, surtout, de façon algorithmique et reproductible) une partie importante de ce qui est sans limites pour nous appelé le «modèle de données physiques». </p><br><p>  Quelle est l'expression que nous avons utilisée lors de l'adhésion?  Il s'agit également de connaissances sur le domaine - c'est ainsi (comme indiqué dans l'expression) que les entités du domaine (tableaux de la base de données) sont interconnectées. </p><br><p>  Je répète - c'est important - cette «connaissance» (atomes et expressions) est matérialisée dans le code exécutable (pas dans le diagramme ou la description verbale), c'est le code qui est exécuté chaque fois que le pipeline ETL est exécuté (l'exemple est pris, en passant, de la vie réelle). </p><br><p>  Le code exécutable - comme nous le savons par un codeur propre - est l'un des deux artefacts objectivement existants qui prétendent être le "titre" de la documentation.  Autrement dit, l'utilisation des «atomes» nous permet de faire un pas en avant dans un processus aussi important que la documentation des données. </p><br><p>  Que peut-on trouver d'autre dans «l'atomicité»? </p><br><h1 id="optimizaciya-konveyerov">  Optimisation des convoyeurs </h1><br><p>  Dans la vraie vie, un ingénieur de données - en passant, je ne me suis pas présenté - un pipeline ETL se compose de dizaines de transformations similaires à celles ci-dessus.  Les tableaux y sont très souvent répétés (je les ai en quelque sorte calculés dans Excel - certains tableaux sont utilisés dans 40% des requêtes). </p><br><p>  Que se passe-t-il en termes d'efficacité?  Mess - le même tableau est lu plusieurs fois depuis la source ... </p><br><p>  Comment l'améliorer?  Spark a un mécanisme de mise en cache des trames de données - nous pouvons spécifier explicitement quelles trames de données et combien nous voulons conserver dans le cache. </p><br><p>  Ce que nous devons faire pour cela est de sélectionner des tables en double et de créer des requêtes de manière à minimiser la taille totale du cache (car toutes les tables, par définition, n'y rentreront pas, alors il y a des données volumineuses). </p><br><p>  Cela peut-il être fait à l'aide de requêtes SSQ de plusieurs pages?  Oui, mais ... un peu compliqué (nous n'avons pas vraiment de trames de données là-bas, seulement des tables, ils peuvent également être mis en cache - la communauté spark travaille sur cela). </p><br><p>  Cela peut-il être fait en utilisant des requêtes atomiques?  Oui!  Et ce n'est pas difficile, il suffit de généraliser les «atomes» - ajoutez-y les colonnes utilisées dans toutes les requêtes de notre pipeline.  Si vous y réfléchissez, c'est «correct» du point de vue de la documentation: si une colonne est utilisée dans une requête (même si dans la partie where), elle fait partie des données du domaine qui nous intéresse. </p><br><p>  Et puis tout est simple - nous mettons en cache les atomes répétitifs (trames de données), nous construisons la chaîne de transformations de sorte que l'intersection des trames de données mises en cache soit minimale (ce n'est pas trivial, mais algorithmisable, soit dit en passant). </p><br><p>  Et nous obtenons le convoyeur le plus efficace complètement «gratuit».  Et en plus de cela, un artefact utile et important est la «préparation» pour la documentation des données sur le sujet. </p><br><h1 id="robotizaciya-i-avtomatizaciya">  Robotisation et automatisation </h1><br><p>  Les atomes sont plus sensibles au traitement automatique que les «grands et puissants SQL» - leur structure est simple et claire, spark fait de l'analyse syntaxique pour nous (pour cela, merci à lui), il construit également des plans de requête, analysant que vous pouvez réorganiser automatiquement la séquence de traitement des requêtes. </p><br><p>  Ici, vous pouvez jouer quelque chose. </p><br><h1 id="v-zaklyuchenie">  En conclusion </h1><br><p>  Je suis peut-être trop optimiste - il me semble que ce chemin (atomisation de requête) fonctionne plus que d'essayer de décrire une source de données après coup.  De plus - à propos, à quoi servent les «additifs» - nous obtenons une augmentation de l’efficacité.  Pourquoi est-ce que je considère que l'approche atomique "fonctionne"?  Cela fait partie du processus normal, ce qui signifie que les artefacts décrits ont une réelle chance d'être pertinents à long terme. </p><br><p>  J'ai probablement raté quelque chose - aider à trouver (dans les commentaires)? </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr481924/">https://habr.com/ru/post/fr481924/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr481910/index.html">Écriture de VerticalSwipeBehavior flexible</a></li>
+<li><a href="../fr481912/index.html">Pendant une semaine, j'étais stagiaire chez SRE-engineer. Regardez à travers les yeux d'un ingénieur logiciel</a></li>
+<li><a href="../fr481914/index.html">Spring Boot vs Spring MVC vs Spring - Comment se comparent-ils?</a></li>
+<li><a href="../fr481916/index.html">Pour quelle année 2019 en développement s'est-elle souvenue?</a></li>
+<li><a href="../fr481922/index.html">Nouvel an IMaskjs 6 - React Native, Pipes, ESM</a></li>
+<li><a href="../fr481926/index.html">Découvrez la nouvelle solution Veeam Backup pour AWS</a></li>
+<li><a href="../fr481930/index.html">Culture du développement: comment les performances et l'efficacité sont évaluées</a></li>
+<li><a href="../fr481932/index.html">Déploiement sans interruption et bases de données</a></li>
+<li><a href="../fr481934/index.html">Analyse: pourquoi les actions Tesla augmentent dans le prix</a></li>
+<li><a href="../fr481936/index.html">Avantages et inconvénients des tests A / B: expérience des grandes entreprises</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

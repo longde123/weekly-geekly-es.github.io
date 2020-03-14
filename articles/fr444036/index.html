@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🥧 🦎 🧓 Accélérer les E / S des fichiers C / C ++ sans vraiment forcer 🤳🏽 🎅 🤽🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Préface 
+ Il y a un utilitaire tellement simple et très utile dans le monde - BDelta , et il s'est avéré qu'il a pris racine dans notre processus de p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Accélérer les E / S des fichiers C / C ++ sans vraiment forcer</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/444036/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/1j/gs/ok/1jgsokcb4ocacisc7uvo-h40d8o.jpeg" alt="image"></div><br><h4>  Préface </h4><br>  Il y a un utilitaire tellement simple et très utile dans le monde - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">BDelta</a> , et il s'est avéré qu'il a pris racine dans notre processus de production pendant longtemps (bien que sa version ne puisse pas être installée, mais ce n'était certainement pas la dernière disponible).  Nous l'utilisons pour sa destination - la construction de correctifs binaires.  Si vous regardez ce qui se trouve dans le référentiel, cela devient un peu triste: en fait, il a été abandonné il y a longtemps et beaucoup y était très dépassé (une fois que mon ancien collègue y a fait plusieurs corrections, mais c'était il y a longtemps).  En général, j'ai décidé de ressusciter cette entreprise: j'ai bifurqué, jeté ce que je n'avais pas l'intention d'utiliser, dépassé le projet sur <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">cmake</a> , intégré les microfonctions «chaudes», retiré les grands tableaux de la pile (et les tableaux de longueur variable, dont j'ai «bombardé» franchement) , a une fois de plus conduit le profileur - et a découvert qu'environ 40% du temps est consacré à l' <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">écriture</a> ... <br><a name="habracut"></a><br><h4>  Alors quoi de neuf avec fwrite? </h4><br>  Dans ce code, fwrite (dans mon cas de test particulier: création d'un patch entre des fichiers de 300 Mo proches, les données d'entrée sont complètement en mémoire) est appelé des millions de fois avec un petit tampon.  De toute évidence, cette chose va ralentir, et donc je voudrais en quelque sorte influencer cette honte.  Il n'y a aucune envie d'implémenter tout type de sources de données, entrée-sortie asynchrone, je voulais trouver une solution plus simple.  La première chose qui m'est venue à l'esprit était d'augmenter la taille du tampon <br><br><pre><code class="cpp hljs">setvbuf(file, <span class="hljs-literal"><span class="hljs-literal">nullptr</span></span>, _IOFBF, <span class="hljs-number"><span class="hljs-number">64</span></span>* <span class="hljs-number"><span class="hljs-number">1024</span></span>)</code> </pre> <br>  mais je n'ai pas obtenu une amélioration significative du résultat (maintenant l'écriture représente environ 37% du temps) - cela signifie que le problème n'est toujours pas dans l'enregistrement fréquent des données sur le disque.  En regardant fwrite «sous le capot», vous pouvez voir que la structure de verrouillage / déverrouillage du fichier se produit à l'intérieur comme ceci (pseudo-code, toute l'analyse a été effectuée sous Visual Studio 2017): <br><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> fwrite (<span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">void</span></span> *buffer, <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> size, <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> count, FILE *stream) { <span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span> retval = <span class="hljs-number"><span class="hljs-number">0</span></span>; _lock_str(stream); <span class="hljs-comment"><span class="hljs-comment">/* lock stream */</span></span> __try { retval = _fwrite_nolock(buffer, size, count, stream); } __finally { _unlock_str(stream); <span class="hljs-comment"><span class="hljs-comment">/* unlock stream */</span></span> } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> retval; }</code> </pre><br>  Selon le profileur, _fwrite_nolock ne représente que 6% du temps, le reste est en surcharge.  Dans mon cas particulier, la sécurité des threads est un excès évident, je vais la sacrifier en remplaçant l'appel <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">fwrite</a> par <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">_fwrite_nolock</a> - même avec des arguments que je n'ai pas besoin d'être <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">intelligent</a> .  Total: cette simple manipulation a parfois réduit le coût d'enregistrement du résultat, qui dans la version originale représentait presque la moitié du temps.  Soit dit en passant, dans le monde POSIX, il existe une fonction similaire - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">fwrite_unlocked</a> .  D'une manière générale, il en va de même pour l'effroi.  Ainsi, avec l'aide de la paire #define, vous pouvez vous procurer une solution multiplateforme sans verrous inutiles s'ils ne sont pas nécessaires (et cela se produit assez souvent). <br><br><h4>  fwrite, _fwrite_nolock, setvbuf </h4><br>  Abandonnons le projet d'origine et commençons à tester un cas spécifique: l'enregistrement d'un gros fichier (512 Mo) en portions extrêmement petites - 1 octet.  Système de test: AMD Ryzen 7 1700, 16 Go de RAM, disque dur 3,5 "7200 tr / min 64 Mo de cache, Windows 10 1809, le binaire a été construit en 32 bits, des optimisations sont incluses, la bibliothèque est liée statiquement. <br><br>  Échantillon pour l'expérience: <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;chrono&gt; #include &lt;cstdio&gt; #include &lt;inttypes.h&gt; #include &lt;memory&gt; #ifdef _MSC_VER #define fwrite_unlocked _fwrite_nolock #endif using namespace std::chrono; int main() { std::unique_ptr&lt;FILE, int(*)(FILE*)&gt; file(fopen("test.bin", "wb"), fclose); if (!file) return 1; constexpr size_t TEST_BUFFER_SIZE = 256 * 1024; if (setvbuf(file.get(), nullptr, _IOFBF, TEST_BUFFER_SIZE) != 0) return 2; auto start = steady_clock::now(); const uint8_t b = 77; constexpr size_t TEST_FILE_SIZE = 512 * 1024 * 1024; for (size_t i = 0; i &lt; TEST_FILE_SIZE; ++i) fwrite_unlocked(&amp;b, sizeof(b), 1, file.get()); auto end = steady_clock::now(); auto interval = duration_cast&lt;microseconds&gt;(end - start); printf("Time: %lld\n", interval.count()); return 0; }</span></span></span></span></code> </pre><br>  Les variables seront TEST_BUFFER_SIZE, et pour quelques cas, nous remplacerons fwrite_unlocked par fwrite.  Commençons par le cas de fwrite sans définir explicitement la taille du buffer (commentez setvbuf et le code associé): temps 27048906 μs, vitesse d'écriture - 18,93 Mb / s.  Réglez maintenant la taille de la mémoire tampon à 64 Ko: temps - 25037111 μs, vitesse - 20,44 Mo / s.  Maintenant nous testons le fonctionnement de _fwrite_nolock sans appeler setvbuf: 7262221 ms, la vitesse est de 70,5 Mb / s! <br><br>  Ensuite, testez la taille du tampon (setvbuf): <br><br><img src="https://habrastorage.org/webt/xv/qv/jd/xvqvjd0rl4owz3zjb319bh0fq9u.png"><br><br>  Les données ont été obtenues en moyenne 5 expériences, j'étais trop paresseux pour considérer les erreurs.  Quant à moi, 93 Mo / s lors de l'écriture d'un octet sur un disque dur normal est un très bon résultat, il suffit de sélectionner la taille de tampon optimale (dans mon cas 256 Ko - juste à droite) et de remplacer fwrite par _fwrite_nolock / fwrite_unlocked (dans si la sécurité du fil n'est pas nécessaire, bien sûr). <br>  De même avec effroi dans des conditions similaires.  Voyons maintenant comment ça se passe sous Linux, la configuration de test est la suivante: AMD Ryzen 7 1700X, 16 Go de RAM, HDD 3,5 "7200 tr / min 64 Mo de cache, OpenSUSE 15 OS, GCC 8.3.1, nous allons tester x86-64 binar, système de fichiers sur section de test ext4 Le résultat de fwrite sans définir explicitement la taille de la mémoire tampon dans ce test est de 67,6 Mb / s, lors de la définition de la mémoire tampon à 256 Ko, la vitesse a augmenté à 69,7 Mb / s. Nous allons maintenant effectuer des mesures similaires pour fwrite_unlocked - les résultats sont respectivement de 93,5 et 94,6 Mb / s. Faire varier la taille du tampon de 1 Ko à 8 Mo m'a conduit aux conclusions suivantes: l'augmentation du tampon augmente la vitesse d'écriture,  mais la différence dans mon cas n'était que de 3 Mb / s, je n'ai pas du tout remarqué de différence de vitesse entre la mémoire tampon de 64 Ko et 8 Mo. A partir des données reçues sur cette machine Linux, nous pouvons tirer les conclusions suivantes: <br><br><ul><li>  fwrite_unlocked est plus rapide que fwrite, mais la différence de vitesse d'écriture n'est pas aussi grande que sur Windows </li><li>  La taille de la mémoire tampon sous Linux n'a pas d'effet aussi significatif sur la vitesse d'écriture via fwrite / fwrite_unlocked que sous Windows </li></ul><br><br>  Au total, la méthode proposée est efficace à la fois sur Windows, mais aussi sur Linux (quoique dans une bien moindre mesure). <br><br><h4>  Postface </h4><br>  Le but de cet article était de décrire une technique simple et efficace dans de nombreux cas (je n'ai pas rencontré les fonctions _fwrite_nolock / fwrite_unlocked plus tôt, elles ne sont pas très populaires - mais en vain).  Je ne prétends pas être nouveau dans le matériel, mais j'espère que l'article sera utile à la communauté. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr444036/">https://habr.com/ru/post/fr444036/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr444026/index.html">MODX Digest # 1.1 (25 février - 11 mars 2019)</a></li>
+<li><a href="../fr444028/index.html">Présentation de Microsoft Game Stack</a></li>
+<li><a href="../fr444030/index.html">Le détaillant en ligne chinois Gearbest a laissé ouverte une base de données contenant des millions de données personnelles sur les clients</a></li>
+<li><a href="../fr444032/index.html">Pourquoi une imprimante 3D n'est pas une imprimante</a></li>
+<li><a href="../fr444034/index.html">7 péchés capitaux d'un manager</a></li>
+<li><a href="../fr444038/index.html">Expérience de l'utilisation de «coordinateurs» dans un véritable projet «iOS»</a></li>
+<li><a href="../fr444040/index.html">Classement autocentrique. Rapport Yandex sur la recherche d'audiences pertinentes pour les auteurs zen</a></li>
+<li><a href="../fr444044/index.html">L'Europe va recycler le fer du centre de données</a></li>
+<li><a href="../fr444048/index.html">Trucs et astuces de Digital Forensics: comment détecter les modifications de stratégie de groupe induites par un intrus</a></li>
+<li><a href="../fr444050/index.html">Discussion: le stockage d'ADN deviendra-t-il massif</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏥 🧤 ❤️ Comment transférer des données entre microcontrôleurs à 100 Mbps 🤵🏿 💆 🎛️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="J'ai eu ce genre de problème: j'ai besoin de transférer des données entre deux microcontrôleurs STM32F407 au moins à une vitesse de 100 Mbps. Il serai...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Comment transférer des données entre microcontrôleurs à 100 Mbps</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/460805/"> J'ai eu ce genre de problème: j'ai besoin de transférer des données entre deux microcontrôleurs STM32F407 au moins à une vitesse de 100 Mbps.  Il serait possible d'utiliser Ethernet (MAC-à-MAC), mais le problème est qu'il est occupé, c'est à partir de ces données qu'elles sont prises ... <br>  De la périphérie inactive, il n'y a peut-être que SPI - mais ce n'est que 42 Mbps. <br><a name="habracut"></a><br>  Curieusement, rien de prêt n'a été trouvé sur le réseau.  Et j'ai décidé d'implémenter un registre d'horloge 8 bits parallèle.  Et quoi - la fréquence peut être réglée sur 10 MHz (c'est-à-dire, bien sûr, l'horloge elle-même est deux fois plus rapide, mais 20 MHz n'est pas quelque chose de compliqué) - donc avec une fréquence aussi basse, vous n'aurez pas à vous soucier du câblage de la carte.  Et la vitesse sera de 100 Mbps. <br><br>  Aussitôt dit, aussitôt fait.  En général, le système ressemble à ceci.  Nous utilisons une minuterie du côté émission, l'un des signaux de comparaison est émis vers une broche - ce sera un signal d'horloge et le second sera utilisé pour démarrer une rafale pour DMA. <br><br>  J'ai un bus à 82 MHz (en raison de la consommation de courant à une fréquence plus élevée :), une minuterie à la même fréquence: de sorte qu'avec une période d'ARR = 8, il s'avère environ 10 MHz (ce sera donc environ 80 Mbps, eh bien, d'accord). <br><br>  Le DMA transférera un octet de la mémoire (avec incrémentation automatique, bien sûr) directement vers le port de sortie du registre - dans mon cas, PORTE est apparu - ses 8 premiers bits correspondent à l'adresse du récepteur DMA. <br><br>  Du côté de la réception, nous utiliserons un signal d'horloge sur les deux fronts pour cadencer le temporisateur, avec une période de 1, et nous utiliserons le signal de mise à jour pour commencer le transfert pour le DMA, qui lit les données du port (le port PORTE à nouveau approché) et écrit dans la mémoire avec incrémentation automatique. <br><br>  Reste maintenant à tout configurer correctement (code ci-dessous) et à exécuter.  La terminaison des deux côtés est déterminée par l'interruption du DMA. <br><br>  Cependant, pour être complet, vous devez bien sûr inclure des vérifications des retards de transmission et de la gestion des erreurs dans le code, mais je l'omet. <br><br>  Dans le code ci-dessous, la minuterie TIM8 utilise le canal CC2 pour émettre le signal - pour voir ce qui se passe. <br><br><pre><code class="plaintext hljs">volatile int transmit_done; volatile int receive_done; void DMA2_Stream1_IRQHandler(void) { TIM8-&gt;CR1 &amp;= ~TIM_CR1_CEN; DMA2-&gt;LIFCR |= 0b1111 &lt;&lt; 8; receive_done = 1; } void DMA2_Stream4_IRQHandler(void) { TIM1-&gt;CR1 &amp;= ~TIM_CR1_CEN; TIM1-&gt;EGR |= TIM_EGR_BG; DMA2-&gt;HIFCR |= 0b1111101; transmit_done = 1; } void ii_receive(uint8_t *data, int len) { GPIOE-&gt;MODER = (GPIOE-&gt;MODER &amp; 0xFFFF0000) | 0x0000; DMA2_Stream1-&gt;PAR = (uint32_t) &amp;(GPIOE-&gt;IDR); DMA2_Stream1-&gt;M0AR = (uint32_t) data; DMA2_Stream1-&gt;NDTR = len; TIM8-&gt;CNT = 0; TIM8-&gt;BDTR |= TIM_BDTR_MOE; receive_done = 0; DMA2_Stream1-&gt;CR |= DMA_SxCR_EN; TIM8-&gt;CR1 |= TIM_CR1_CEN; } void ii_transmit(uint8_t *data, int len) { GPIOE-&gt;MODER = (GPIOE-&gt;MODER &amp; 0xFFFF0000) | 0x5555; DMA2_Stream4-&gt;PAR = (uint32_t) &amp;(GPIOE-&gt;ODR); DMA2_Stream4-&gt;M0AR = (uint32_t) data; DMA2_Stream4-&gt;NDTR = len; TIM1-&gt;CNT = 6; transmit_done = 0; DMA2_Stream4-&gt;CR |= DMA_SxCR_EN; TIM1-&gt;SR |= TIM_SR_BIF; TIM1-&gt;BDTR |= TIM_BDTR_MOE; TIM1-&gt;CR1 |= TIM_CR1_CEN; } // tx: TIM1 CH4 on DMA2/stream4/channel6, CH1 on output clock in PE9 // rx: TIM8 CH2 on DMA2/stream3/channel7, CH1 on input clock in PC6 void ii_init() { __HAL_RCC_GPIOC_CLK_ENABLE(); __HAL_RCC_GPIOE_CLK_ENABLE(); __HAL_RCC_TIM1_CLK_ENABLE(); __HAL_RCC_TIM8_CLK_ENABLE(); __HAL_RCC_TIM2_CLK_ENABLE(); __HAL_RCC_DMA2_CLK_ENABLE(); GPIOC-&gt;MODER |= (0b10 &lt;&lt; GPIO_MODER_MODE6_Pos) | (0b10 &lt;&lt; GPIO_MODER_MODE7_Pos); GPIOC-&gt;PUPDR |= (0b10 &lt;&lt; GPIO_PUPDR_PUPD7_Pos); GPIOC-&gt;AFR[0] |= (GPIO_AF3_TIM8 &lt;&lt; 24) | (GPIO_AF3_TIM8 &lt;&lt; 28); GPIOE-&gt;MODER |= (0b10 &lt;&lt; GPIO_MODER_MODE9_Pos); GPIOE-&gt;OSPEEDR |= GPIO_OSPEEDER_OSPEEDR9 | 0xFFFF; GPIOE-&gt;AFR[1] |= GPIO_AF1_TIM1 &lt;&lt; 4; GPIOE-&gt;PUPDR |= (0b10 &lt;&lt; GPIO_PUPDR_PUPD9_Pos); TIM1-&gt;ARR = 8; TIM1-&gt;CCR1 = 5; TIM1-&gt;CCR4 = 1; TIM1-&gt;EGR |= TIM_EGR_CC4G; TIM1-&gt;DIER |= TIM_DIER_CC4DE; TIM1-&gt;CCMR1 |= (0b110 &lt;&lt; TIM_CCMR1_OC1M_Pos); TIM1-&gt;CCER |= TIM_CCER_CC1E; TIM1-&gt;EGR |= TIM_EGR_BG; TIM8-&gt;ARR = 1; TIM8-&gt;CCR2 = 1; TIM8-&gt;EGR |= TIM_EGR_UG; TIM8-&gt;DIER |= TIM_DIER_UDE; TIM8-&gt;SMCR |= (0b100 &lt;&lt; TIM_SMCR_TS_Pos) | (0b111 &lt;&lt; TIM_SMCR_SMS_Pos); TIM8-&gt;CCMR1 = (0b01 &lt;&lt; TIM_CCMR1_CC1S_Pos) | (0b110 &lt;&lt; TIM_CCMR1_OC2M_Pos); TIM8-&gt;CCER |= (0b11 &lt;&lt; TIM_CCER_CC1P_Pos) | TIM_CCER_CC2E; DMA2_Stream1-&gt;CR = DMA_CHANNEL_7 | DMA_PRIORITY_VERY_HIGH | DMA_MINC_ENABLE | (0b00 &lt;&lt; DMA_SxCR_DIR_Pos) | DMA_SxCR_TCIE | DMA_SxCR_TEIE | DMA_SxCR_DMEIE; DMA2_Stream1-&gt;FCR |= DMA_FIFOMODE_ENABLE; DMA2_Stream4-&gt;CR = DMA_CHANNEL_6 | DMA_PRIORITY_VERY_HIGH | DMA_MINC_ENABLE | (0b01 &lt;&lt; DMA_SxCR_DIR_Pos) | DMA_SxCR_TCIE | DMA_SxCR_TEIE | DMA_SxCR_DMEIE; DMA2_Stream4-&gt;FCR |= DMA_FIFOMODE_ENABLE; HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0); HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn); HAL_NVIC_SetPriority(DMA2_Stream4_IRQn, 0, 0); HAL_NVIC_EnableIRQ(DMA2_Stream4_IRQn); }</code> </pre> <br>  Pour les tests, la même carte a été utilisée, seule la sortie d'horloge PE9 a été connectée à l'entrée PC6.  La boucle principale ressemblait à ceci: <br><br><pre> <code class="plaintext hljs"> ii_receive(rdata, 256); ii_transmit(tdata, 256); while (!transmit_done); while (!receive_done);</code> </pre><br>  Selon les résultats: les données ont été parfaitement envoyées pendant 30 à 31 microsecondes sans perte.  Les signaux ressemblent à ceci: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/z7/dx/gx/z7dxgxw4ppqv7mot4mk4kmjvi00.png"></div><br>  ici, le blanc est la sortie du temporisateur TIM8, le rouge est le signal d'horloge (TIM1) et l'orange est le bit de données le moins significatif (0-1-0-1 -...). <br><br>  Ce que je n'aime pas, c'est que vous ne pouvez pas démarrer DMA à partir d'une interruption à partir de l'entrée GPIO, vous devez travailler avec des minuteries.  Peut-être que quelqu'un vous dira une autre façon? <br><br>  PS À la suite de nouvelles expériences, il s'est avéré que l'augmentation de la fréquence à 168 MHz a naturellement augmenté la vitesse de 2 fois et les données ont été transmises en 14 microsecondes (soit 150 Mbps), mais lorsque la minuterie principale a été réduite en dessous de 7, le côté récepteur a commencé à briller - la minuterie n'a pas le temps TIM8.  À 7 ça marche toujours, mais à 6 c'est déjà parti, et après tout ce serait 200 Mbps ... </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr460805/">https://habr.com/ru/post/fr460805/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr460795/index.html">12 conseils pour améliorer les performances des applications JavaScript</a></li>
+<li><a href="../fr460797/index.html">Développement JavaScript responsable Partie 2</a></li>
+<li><a href="../fr460799/index.html">Demande de paiement API de navigateur standard</a></li>
+<li><a href="../fr460801/index.html">27 outils VS Code géniaux pour les développeurs JavaScript modernes</a></li>
+<li><a href="../fr460803/index.html">Lire pour l'été: des livres pour les techniciens</a></li>
+<li><a href="../fr460807/index.html">Mesurer sept fois, une fois implémenter l'outil BI</a></li>
+<li><a href="../fr460811/index.html">Composants communs par différentes équipes. Rapport Yandex</a></li>
+<li><a href="../fr460813/index.html">Comment utiliser les diagrammes de Voronoi pour contrôler l'IA</a></li>
+<li><a href="../fr460815/index.html">Inventer la bibliothèque vusb</a></li>
+<li><a href="../fr460819/index.html">WorldSkills: avis du participant de l'Olympiade</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

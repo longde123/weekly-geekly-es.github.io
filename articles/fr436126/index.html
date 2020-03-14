@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👶 🚜 💅🏽 Kubernetes: création d'images Docker dans un cluster 👩🏻‍🔬 ✝️ 🐏</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Vous pouvez utiliser kaniko pour créer des images Docker dans un conteneur sans faire Docker. Voyons comment exécuter kaniko localement et dans un clu...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kubernetes: création d'images Docker dans un cluster</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/436126/"><p>  Vous pouvez utiliser kaniko pour créer des images Docker dans un conteneur sans faire Docker.  Voyons comment exécuter kaniko localement et dans un cluster Kubernetes. </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/699/1ac/23b/6991ac23b41241f34ce0ab774a64124d.jpg" alt="image"><br>  <em>Le prochain sera un multi-livre</em> </p><a name="habracut"></a><br><p>  Supposons que vous décidiez de créer des images Docker dans un cluster Kubernetes (enfin, vous en avez besoin).  Ce qui est pratique, regardons un exemple réel, donc plus clairement. </p><br><p>  Nous parlerons également de Docker-in-Docker et de son alternative, kaniko, avec laquelle vous pouvez créer des images Docker sans utiliser Docker.  Enfin, nous apprendrons à configurer l'assemblage d'images dans le cluster Kubernetes. </p><br><p>  Une description générale de Kubernetes se trouve dans le livre <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">"Kubernetes in Action" ("Kubernetes in Action")</a> . </p><br><h3 id="realnyy-primer">  Exemple réel </h3><br><p>  Sur le Web natif, nous avons de nombreuses images Docker privées qui doivent être stockées quelque part.  Nous avons donc implémenté un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Docker Hub</a> privé.  Le <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Docker Hub</a> public a deux fonctionnalités qui nous intéressent particulièrement. </p><br><p>  Tout d'abord, nous voulions créer une file d'attente qui collecterait les images Docker dans Kubernetes de manière asynchrone.  Deuxièmement, implémentez l'envoi des images collectées au <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">registre Docker</a> privé. </p><br><p>  En général, la Docker CLI est utilisée directement pour implémenter ces fonctions: </p><br><pre><code class="plaintext hljs">$ docker build ... $ docker push ...</code> </pre> <br><p>  Mais dans le cluster Kubernetes, nous hébergeons des conteneurs basés sur des images Linux petites et élémentaires, dans lesquelles Docker n'est pas contenu par défaut.  Si maintenant nous voulons utiliser Docker (par exemple Docker <code>docker build...</code> ) dans un conteneur, nous avons besoin de quelque chose comme Docker-in-Docker. </p><br><h3 id="chto-ne-tak-s-docker-in-docker">  Quel est le problème avec Docker-in-Docker? </h3><br><p>  Pour collecter des images de conteneur dans Docker, nous avons besoin d'un démon Docker en cours d'exécution dans le conteneur, c'est-à-dire Docker-in-Docker.  Le démon Docker est un environnement virtualisé, et le conteneur de Kubernetes est virtualisé seul.  Autrement dit, si vous souhaitez exécuter le démon Docker dans un conteneur, vous devez utiliser la virtualisation imbriquée.  Pour ce faire, exécutez le conteneur en mode privilégié - pour accéder au système hôte.  Mais cela pose des problèmes de sécurité: par exemple, vous devez travailler avec différents systèmes de fichiers (hôte et conteneur) ou utiliser le cache de génération du système hôte.  C'est pourquoi nous ne voulions pas toucher Docker-in-Docker. </p><br><h3 id="znakomstvo-s-kaniko">  Connaissance de kaniko </h3><br><p>  Pas Docker-in-Docker seul ... Il y a une autre solution - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">kaniko</a> .  Il s'agit d'un outil écrit en <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Go</a> , il collecte des images de conteneurs à partir d'un Dockerfile sans Docker.  Il les envoie ensuite au <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">registre Docker</a> spécifié.  Il est recommandé de configurer kaniko - utilisez une <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">image exécuteur</a> prête à l' <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">emploi</a> qui peut être exécutée en tant que conteneur Docker ou conteneur dans Kubernetes. </p><br><p>  Gardez à l'esprit que kaniko est toujours en cours de développement et ne prend pas en charge toutes les commandes Dockerfile, par exemple <code>--chownflag</code> pour la <code>COPY</code> . </p><br><h3 id="zapusk-kaniko">  Lancement de Kaniko </h3><br><p>  Si vous souhaitez exécuter kaniko, vous devez spécifier plusieurs arguments pour le conteneur kaniko.  Insérez d'abord le Dockerfile avec toutes ses dépendances dans le conteneur kaniko.  Localement (dans Docker), l'option <code>-v &lt;__&gt;:&lt;__&gt;</code> est utilisée pour cela <code>-v &lt;__&gt;:&lt;__&gt;</code> , et Kubernetes a des <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">volumes</a> . </p><br><p>  Après avoir inséré la dépendance Dockerfile dans le conteneur kaniko, ajoutez l'argument <code>--context</code> , il indiquera le chemin vers le répertoire attaché (à l'intérieur du conteneur).  L'argument suivant est <code>--dockerfile</code> .  Il indique le chemin d'accès au Dockerfile (y compris le nom).  Un autre argument important est la <code>--destination</code> avec l'URL complète du registre Docker (y compris le nom et la balise d'image). </p><br><h3 id="lokalnyy-zapusk">  Lancement local </h3><br><p>  Kaniko démarre de plusieurs façons.  Par exemple, sur l'ordinateur local à l'aide de Docker (afin de ne pas jouer avec le cluster Kubernetes).  Exécutez kaniko avec la commande suivante: </p><br><pre> <code class="plaintext hljs">$ docker run \ -v $(pwd):/workspace \ gcr.io/kaniko-project/executor:latest \ --dockerfile=&lt;path-to-dockerfile&gt; \ --context=/workspace \ --destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;</code> </pre> <br><p>  Si l'authentification est activée dans le registre Docker, kaniko doit d'abord être connecté.  Pour ce faire, connectez le <code>config.jsonfile</code> Docker <code>config.jsonfile</code> local avec les informations d'identification du registre Docker au conteneur kaniko à l'aide de la commande suivante: </p><br><pre> <code class="plaintext hljs">$ docker run \ -v $(pwd):/workspace \ -v ~/.docker/config.json:/kaniko/.docker/config.json \ gcr.io/kaniko-project/executor:latest \ --dockerfile=&lt;path-to-dockerfile&gt; \ --context=/workspace \ --destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;</code> </pre> <br><h3 id="zapusk-v-kubernetes">  Lancement dans Kubernetes </h3><br><p>  Dans l'exemple, nous voulions exécuter kaniko dans un cluster Kubernetes.  Et nous avions également besoin de quelque chose comme une file d'attente pour assembler des images.  Si un échec se produit lors de l'assemblage ou de l'envoi de l'image dans le registre Docker, ce serait bien si le processus redémarre automatiquement.  Pour cela, il y a un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Job</a> à Kubernetes.  Configurez <code>backoffLimit</code> en spécifiant la fréquence à laquelle le processus doit réessayer. </p><br><p>  La façon la plus simple d'incorporer un Dockerfile avec des dépendances dans un conteneur kaniko est avec l'objet <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">PersistentVolumeClaim</a> (dans notre exemple, il s'appelle <code>kaniko-workspace</code> ).  Il sera lié au conteneur en tant que répertoire, et toutes les données devraient déjà être dans <code>kaniko-workspace</code> .  Disons que dans un autre conteneur, il y a déjà un Dockerfile avec des dépendances dans le <code>kaniko-workspace</code> <code>/my-build</code> dans <code>kaniko-workspace</code> . </p><br><p>  N'oubliez pas qu'en cas de problème AWS avec PersistentVolumeClaim.  Si vous créez un PersistentVolumeClaim dans AWS, il n'apparaîtra que sur un seul nœud du cluster AWS et n'y sera disponible.  (upd: en fait, lors de la création d'un PVC, un volume RDS sera créé dans une zone de disponibilité aléatoire de votre cluster. En conséquence, ce volume sera disponible pour toutes les machines de cette zone. Kubernetes contrôle lui-même qu'en utilisant ce PVC il sera lancé sur un nœud dans la zone de disponibilité Volyuma RDS - environ Per.) Donc, si vous exécutez Job kaniko et que cette tâche se trouve sur un autre nœud, elle ne démarrera pas, car PersistentVolumeClaim n'est pas disponible.  Espérons que Amazon Elastic File System sera bientôt disponible sur Kubernetes et que le problème disparaîtra.  (upd: EFS dans Kubernetes est pris en charge par <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">le provisionneur de stockage</a> . - <em>environ</em> .) </p><br><p>  La ressource de travail pour la création d'images Docker ressemble généralement à ceci: </p><br><pre> <code class="plaintext hljs">apiVersion: batch/v1 kind: Job metadata: name: build-image spec: template: spec: containers: - name: build-image image: gcr.io/kaniko-project/executor:latest args: - "--context=/workspace/my-build" - "--dockerfile=/workspace/my-build/Dockerfile" - "--destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;" volumeMounts: - name: workspace mountPath: /workspace volumes: - name: workspace persistentVolumeClaim: claimName: kaniko-workspace restartPolicy: Never backoffLimit: 3</code> </pre> <br><p>  Si le registre Docker de destination nécessite une authentification, transmettez le fichier <code>config.json</code> avec les informations d'identification au conteneur kaniko.  Le moyen le plus simple consiste à connecter <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">PersistentVolumeClaim</a> à un conteneur qui possède déjà un fichier <code>config.json</code> .  Ici, PersistentVolumeClaim sera monté non pas comme un répertoire, mais plutôt comme un fichier dans le chemin <code>/kaniko/.docker/config.json</code> dans le conteneur kaniko: </p><br><pre> <code class="plaintext hljs">apiVersion: batch/v1 kind: Job metadata: name: build-image spec: template: spec: containers: - name: build-image image: gcr.io/kaniko-project/executor:latest args: - "--context=/workspace/my-build" - "--dockerfile=/workspace/my-build/Dockerfile" - "--destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;" volumeMounts: - name: config-json mountPath: /kaniko/.docker/config.json subPath: config.json - name: workspace mountPath: /workspace volumes: - name: config-json persistentVolumeClaim: claimName: kaniko-credentials - name: workspace persistentVolumeClaim: claimName: kaniko-workspace restartPolicy: Never backoffLimit: 3</code> </pre> <br><p>  Si vous souhaitez vérifier l'état d'un travail de génération en <code>kubectl</code> , utilisez <code>kubectl</code> .  Pour filtrer le statut par <code>stdout</code> , exécutez la commande: </p><br><pre> <code class="plaintext hljs">$ kubectl get job build-image -o go-template='{{(index .status.conditions 0).type}}'</code> </pre> <br><h3 id="itogi">  Résumé </h3><br><p>  Vous avez appris de l'article lorsque Docker-in-Docker n'est pas adapté à la création d'images Docker dans Kubernetes.  Vous avez une idée de kaniko - une alternative à Docker-in-Docker, avec laquelle les images Docker sans Docker sont assemblées.  Nous avons également appris à écrire des ressources Job pour collecter des images Docker dans Kubernetes.  Et enfin, ils ont vu comment connaître l'état d'une tâche en cours. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr436126/">https://habr.com/ru/post/fr436126/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr436116/index.html">PERDIX: un algorithme pour la conception automatique d'ADN-origami de géométrie différente</a></li>
+<li><a href="../fr436118/index.html">L'expérience de la création du premier robot sur Arduino (robot-chasseur)</a></li>
+<li><a href="../fr436120/index.html">Le bug difficile à attraper dans LittleBigPlanet</a></li>
+<li><a href="../fr436122/index.html">Intel Lakefield: processeur hybride Atom + Core en 3D</a></li>
+<li><a href="../fr436124/index.html">Nous lisons les commentaires sur Habré avec commodités</a></li>
+<li><a href="../fr436128/index.html">Entretien avec le chasseur de bagages Artyom Moscou. Il a piraté Steam et a reçu le plus grand prix de l'histoire de Valve.</a></li>
+<li><a href="../fr436130/index.html">Le projet du ministère des télécommunications et des communications de masse sur le transfert du trafic Internet via les stations russes complique la légalisation de OneWeb en Russie</a></li>
+<li><a href="../fr436132/index.html">12 choses étranges qui peuvent arriver après l'installation du paquet npm</a></li>
+<li><a href="../fr436134/index.html">Jusqu'à 20% de droits de barrage seront imposés sur les routeurs d'importation</a></li>
+<li><a href="../fr436136/index.html">OceanLotus: attaque d'un point d'eau en Asie du Sud-Est</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

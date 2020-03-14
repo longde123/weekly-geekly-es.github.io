@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏽 ❓ 👨🏽‍🎤 ConfigureAwait, qui est à blâmer et que faire? 🔋 🐊 🚶🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Dans ma pratique, je trouve souvent, dans un environnement différent , du code comme celui ci-dessous: 
+
+
+[1] var x = FooWithResultAsync(/*...*/).Resu...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>ConfigureAwait, qui est à blâmer et que faire?</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/clrium/blog/463587/"><p>  Dans ma pratique, je trouve souvent, dans un environnement <em>différent</em> , du code comme celui ci-dessous: </p><br><pre><code class="plaintext hljs">[1] var x = FooWithResultAsync(/*...*/).Result; // [2] FooAsync(/*...*/).Wait(); // [3] FooAsync(/*...*/).GetAwaiter().GetResult(); // [4] FooAsync(/*...*/) .ConfigureAwait(false) .GetAwaiter() .GetResult(); // [5] await FooAsync(/*...*/).ConfigureAwait(false) //  [6] await FooAsync(/*...*/)</code> </pre> <br><p>  De la communication avec les auteurs de ces lignes, il est devenu clair qu'elles sont toutes divisées en trois groupes: </p><br><ul><li>  Le premier groupe est celui qui ne sait rien des problèmes possibles avec l'appel de <code>Result/Wait/GetResult</code> .  Les exemples (1-3) et parfois (6) sont typiques pour les programmeurs de ce groupe; </li><li>  Le deuxième groupe comprend des programmeurs qui sont conscients des problèmes possibles, mais ils ne connaissent pas les causes de leur occurrence.  Les développeurs de ce groupe, d'une part, essaient d'éviter les lignes comme (1-3 et 6), mais, d'autre part, abusent du code comme (4-5); </li><li>  Le troisième groupe, d'après mon expérience le plus petit, est constitué par les programmeurs qui savent comment fonctionne le code (1-6), et peuvent donc faire un choix éclairé. </li></ul><br><p>  Le risque est-il possible, et quelle est sa taille, lors de l'utilisation du code, comme dans les exemples ci-dessus, dépend, comme je l'ai noté précédemment, de l' <em>environnement</em> . </p><br><p><img src="https://habrastorage.org/webt/j6/dr/vl/j6drvl4thcu_8wzj5t7qe8o0oew.jpeg"></p><a name="habracut"></a><br><h2 id="riski-i-ih-prichiny">  Les risques et leurs causes </h2><br><p>  Les exemples (1-6) sont divisés en deux groupes.  Le premier groupe est le code qui bloque le thread appelant.  Ce groupe comprend (1-4). <br>  Bloquer un thread est le plus souvent une mauvaise idée.  Pourquoi?  Pour simplifier, nous supposons que tous les threads sont alloués à partir d'un pool de threads.  Si le programme a un verrou, cela peut conduire à la sélection de tous les threads du pool.  Dans le meilleur des cas, cela ralentira le programme et conduira à une utilisation inefficace des ressources.  Dans le pire des cas, cela peut entraîner un blocage, lorsqu'un thread supplémentaire est nécessaire pour terminer une tâche, mais que le pool ne peut pas l'allouer. <br>  Ainsi, lorsqu'un développeur écrit du code comme (1-4), il doit réfléchir à la probabilité de la situation décrite ci-dessus. </p><br><p>  Mais les choses empirent lorsque nous travaillons dans un environnement dans lequel il existe un contexte de synchronisation différent de la norme.  S'il existe un contexte de synchronisation <em>spécial</em> , le blocage du thread appelant augmente la probabilité qu'un blocage se produise plusieurs fois.  Ainsi, le code des exemples (1-3), s'il est exécuté dans le thread d'interface utilisateur WinForms, est presque garanti de créer un blocage.  J'écris "pratiquement" parce que  il y a une option quand ce n'est pas le cas, mais plus à ce sujet plus tard.  L'ajout de <code>ConfigureAwait(false)</code> , comme dans (4), ne donnera pas une garantie à 100% de protection contre l'impasse.  Voici un exemple pour le confirmer: </p><br><pre> <code class="plaintext hljs">[7] //   /  . async Task FooAsync() { // Delay   .     . await Task.Delay(5000); //       RestPartOfMethodCode(); } //  ""  ,   ,  WinForms . private void button1_Click(object sender, EventArgs e) { FooAsync() .ConfigureAwait(false) .GetAwaiter() .GetResult(); button1.Text = "new text"; }</code> </pre> <br><p>  L'article <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">"Parallel Computing - Tout est dans le SynchronizationContext"</a> fournit des informations sur différents contextes de synchronisation. </p><br><p>  Afin de comprendre la cause du blocage, vous devez analyser le code de la machine d'état dans laquelle l'appel à la méthode async est converti, puis le code des classes MS.  Un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Async Await et l'</a> article <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Generated StateMachine</a> fournissent un exemple d'une telle machine d'état. <br>  Je ne donnerai pas le code source complet généré par exemple (7), l'automate, je ne montrerai que les lignes importantes pour une analyse plus approfondie: </p><br><pre> <code class="plaintext hljs">//  MoveNext. //... //  taskAwaiter    . taskAwaiter = Task.Delay(5000).GetAwaiter(); if(tasAwaiter.IsCompleted != true) { _awaiter = taskAwaiter; _nextState = ...; _builder.AwaitUnsafeOnCompleted&lt;TaskAwaiter, ThisStateMachine&gt;(ref taskAwaiter, ref this); return; }</code> </pre> <br><p>  La branche <code>if</code> est exécutée si l'appel asynchrone ( <code>Delay</code> ) n'est pas encore terminé et, par conséquent, le thread actuel peut être libéré. <br>  Veuillez noter que dans <code>AwaitUnsafeOnCompleted</code> , taskAwaiter est reçu d'un appel asynchrone <strong>interne</strong> (par rapport à <code>FooAsync</code> ) ( <code>Delay</code> ). </p><br><p>  Si vous plongez dans la jungle des sources MS qui sont cachées derrière l'appel <code>AwaitUnsafeOnCompleted</code> , nous arriverons finalement à la classe <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">SynchronizationContextAwaitTaskContinuation</a> et à sa classe de base <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">AwaitTaskContinuation</a> , où se trouve la réponse à la question. </p><br><p>  Le code de ces classes et des classes connexes est assez déroutant, donc, pour faciliter la perception, je me permets d'écrire un "analogique" très simplifié de ce que l'exemple (7) devient, mais sans machine à états, et en termes de TPL: </p><br><pre> <code class="plaintext hljs">[8] Task FooAsync() { //  methodCompleted    ,  , //    ,     " ". //    ,   methodCompleted.WaitOne()  , //   SetResult  AsyncTaskMethodBuilder, //       . var methodCompleted = new AutoResetEvent(false); SynchronizationContext current = SynchronizationContext.Current; return Task.Delay(5000).ContinueWith( t=&gt; { if(current == null) { RestPartOfMethodCode(methodCompleted); } else { current.Post(state=&gt;RestPartOfMethodCode(methodCompleted), null); methodCompleted.WaitOne(); } }, TaskScheduler.Current); } // // void RestPartOfMethodCode(AutoResetEvent methodCompleted) // { //      FooAsync. // methodCompleted.Set(); // }</code> </pre> <br><p>  Dans l'exemple (8), il est important de faire attention au fait que s'il existe un contexte de synchronisation, tout le code de la méthode asynchrone qui vient après la fin de l'appel asynchrone interne est <strong>exécuté via ce contexte</strong> (appel <code>current.Post(...)</code> ).  Ce fait <strong>est à l'origine</strong> des blocages.  Par exemple, si nous parlons d'une application WinForms, le contexte de synchronisation qu'elle contient est associé au flux d'interface utilisateur.  Si le thread d'interface utilisateur est bloqué, dans l'exemple (7), cela se produit via un appel à <code>.GetResult()</code> , le reste du code de la méthode asynchrone ne peut pas être exécuté, ce qui signifie que la méthode asynchrone ne peut pas se terminer et ne peut pas libérer le thread d'interface utilisateur, qui est impasse. </p><br><p>  Dans l'exemple (7), l'appel à <code>FooAsync</code> été configuré via <code>ConfigureAwait(false)</code> , mais cela n'a pas aidé.  Le fait est que vous devez configurer exactement l'objet d'attente qui sera transmis à <code>AwaitUnsafeOnCompleted</code> , dans notre exemple, il s'agit de l'objet d'attente de l'appel de <code>Delay</code> .  En d'autres termes, dans ce cas, appeler <code>ConfigureAwait(false)</code> dans le code client n'a pas de sens.  Vous pouvez résoudre le problème si le développeur de la méthode <code>FooAsync</code> modifie comme suit: </p><br><pre> <code class="plaintext hljs">[9] async Task FooAsync() { await Task.Delay(5000).ConfigureAwait(false); //       RestPartOfMethodCode(); } private void button1_Click(object sender, EventArgs e) { FooAsync().GetAwaiter().GetResult(); button1.Text = "new text"; }</code> </pre> <br><p>  Ci-dessus, nous avons examiné les risques qui surviennent avec le code du premier groupe - le code avec blocage (exemples 1-4).  Maintenant sur le deuxième groupe (exemples 5 et 6) - un code sans verrous.  Dans ce cas, la question est: quand l'appel à <code>ConfigureAwait(false)</code> justifié?  Lors de l'analyse de l'exemple (7), nous avons déjà découvert que nous devons configurer l'objet en attente sur la base duquel la poursuite de l'exécution sera construite.  C'est-à-dire  la configuration est requise (si vous prenez cette décision) uniquement pour <strong>les</strong> appels asynchrones <strong>internes</strong> . </p><br><h2 id="kto-vinovat">  Qui est à blâmer? </h2><br><p>  Comme toujours, la bonne réponse est «tout».  Commençons par les programmeurs de MS.  D'une part, les développeurs de Microsoft ont décidé qu'en présence d'un contexte de synchronisation, un travail devait être effectué à travers celui-ci.  Et cela est logique, sinon pourquoi est-il toujours nécessaire.  Et, comme je le crois, ils s'attendaient à ce que les développeurs du code "client" <strong>ne</strong> bloquent <strong>pas</strong> le thread principal, surtout si le contexte de synchronisation y est lié.  D'un autre côté, ils ont donné un outil très simple pour "se tirer une balle dans le pied" - c'est trop simple et pratique pour obtenir le résultat en bloquant <code>.Result/.GetResult</code> , ou bloquer le flux, en attendant la fin de l'appel, via <code>.Wait</code> .  C'est-à-dire  Les développeurs de MS ont permis que l'utilisation "incorrecte" (ou dangereuse) de leurs bibliothèques ne pose aucun problème. </p><br><p>  Mais il y a aussi le blâme sur les développeurs du code "client".  Elle consiste en ce que, souvent, les développeurs n'essaient pas de comprendre leur outil et négligent les avertissements.  Et c'est un chemin direct vers les erreurs. </p><br><h2 id="chto-delat">  Que faire </h2><br><p>  Ci-dessous, je donne mes recommandations. </p><br><h3 id="dlya-razrabotchikov-klientskogo-koda">  Pour les développeurs de code client </h3><br><ol><li>  Faites de votre mieux pour éviter le blocage.  En d'autres termes, ne mélangez pas le code synchrone et asynchrone sans besoin particulier. </li><li>  Si vous devez verrouiller, déterminez dans quel environnement le code est exécuté: <br><ul><li>  Y a-t-il un contexte de synchronisation?  Si oui, lequel?  Quelles caractéristiques crée-t-il dans son travail? </li><li>  S'il n'y a pas de contexte de synchronisation, alors: Quelle sera la charge?  Quelle est la probabilité que votre bloc entraîne une "fuite" de threads dans le pool?  Le nombre de threads créés au démarrage sera-t-il suffisant par défaut, ou devrais-je en allouer plus? </li></ul></li><li>  Si le code est asynchrone, devez-vous configurer l'appel asynchrone via <code>ConfigureAwait</code> ? </li></ol><br><p>  Prenez une décision basée sur toutes les informations reçues.  Vous devrez peut-être repenser votre approche de mise en œuvre.  Peut-être que <code>ConfigureAwait</code> vous aidera, ou peut-être que vous n'en avez pas besoin. </p><br><h3 id="dlya-razrabotchikov-bibliotek">  Pour les développeurs de bibliothèques </h3><br><ol><li>  Si vous pensez que votre code peut être appelé à partir de "synchronous", assurez-vous d'implémenter une API synchrone.  Il doit être vraiment synchrone, c'est-à-dire  Vous devez utiliser l'API synchrone des bibliothèques tierces. </li><li>  <code>ConfigureAwait(true / false)</code> . </li></ol><br><p>  Ici, de mon point de vue, une approche plus subtile est nécessaire que d'habitude recommandée.  De nombreux articles indiquent que dans le code de bibliothèque, tous les appels asynchrones doivent être configurés via <code>ConfigureAwait(false)</code> .  Je ne peux pas être d'accord avec cela.  Du point de vue des auteurs, les collègues de Microsoft ont peut-être pris la mauvaise décision lors du choix du comportement "par défaut" par rapport à l'utilisation du contexte de synchronisation.  Mais ils (MS) ont néanmoins laissé aux développeurs du code "client" la possibilité de changer ce comportement.  La stratégie, lorsque le code de bibliothèque est entièrement couvert par <code>ConfigureAwait(false)</code> , modifie le comportement par défaut et, plus important encore, cette approche prive les développeurs du code "client" de choix. </p><br><p>  Mon option consiste à, lors de la mise en œuvre de l'API asynchrone, ajouter deux paramètres d'entrée supplémentaires à chaque méthode d'API: <code>CancellationToken token</code> et <code>bool continueOnCapturedContext</code> .  Et implémentez le code comme suit: </p><br><pre> <code class="plaintext hljs">public async Task&lt;string&gt; FooAsync( /*  */, CancellationToken token, bool continueOnCapturedContext) { // ... await Task.Delay(30, token).ConfigureAwait(continueOnCapturedContext); // ... return result; }</code> </pre> <br><p>  Le premier paramètre, le <code>token</code> , sert, comme vous le savez, à la possibilité d'une annulation coordonnée (les développeurs de bibliothèques négligent parfois cette fonctionnalité).  Le second, <code>continueOnCapturedContext</code> - vous permet de configurer l'interaction avec le contexte de synchronisation des appels asynchrones internes. </p><br><p>  Dans le même temps, si la méthode API asynchrone fait elle-même partie d'une autre méthode asynchrone, le code "client" pourra déterminer comment il doit interagir avec le contexte de synchronisation: </p><br><pre> <code class="plaintext hljs">//     : async Task ClientFoo() { // ""  ClientFoo   ,     //   FooAsync   . await FooAsync( /*  */, ancellationToken.None, false); //     . await FooAsync( /*  */, ancellationToken.None, false).ConfigureAwait(false); //... } // ,  . private void button1_Click(object sender, EventArgs e) { FooAsync( /*  */, _source.Token, false).GetAwaiter().GetResult(); button1.Text = "new text"; }</code> </pre> <br><h2 id="v-kachestve-zaklyucheniya">  En conclusion </h2><br><p>  La principale conclusion de ce qui précède est les trois réflexions suivantes: </p><br><ol><li>  Les verrous sont le plus souvent la racine de tout mal.  C'est la présence de verrous qui peut conduire, dans le meilleur des cas, à une dégradation des performances et à une utilisation inefficace des ressources, au pire - à un blocage.  Avant d'utiliser des verrous, demandez-vous si cela est nécessaire?  Il existe peut-être un autre moyen de synchronisation acceptable dans votre cas; </li><li>  Apprenez l'outil avec lequel vous travaillez; </li><li>  Si vous concevez des bibliothèques, essayez de vous assurer que leur utilisation correcte est facile, presque intuitive et que la mauvaise est lourde de complexité. </li></ol><br><p>  J'ai essayé le plus simplement possible d'expliquer les risques associés à l'async / attente et les raisons de leur apparition.  Et aussi, présenté ma vision de la résolution de ces problèmes.  J'espère que j'ai réussi, et le matériel sera utile au lecteur.  Afin de mieux comprendre comment tout fonctionne réellement, vous devez bien sûr vous référer à la source.  Cela peut être fait via les référentiels MS sur <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">GitHub</a> ou, encore plus commodément, via le site Web <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">MS</a> lui-même. </p><br><p>  <em>PS</em> Je vous serais reconnaissant de critiques constructives. </p><br><p> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><img src="https://habrastorage.org/getpro/habr/branding/e54/4c4/1ba/e544c41ba712b412e5347191ba90d0c8.png"></a> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr463587/">https://habr.com/ru/post/fr463587/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr463577/index.html">Plasticité et résistance: durcissement de l'intermétallique sans accent sur la luxation</a></li>
+<li><a href="../fr463579/index.html">Windows: découvrez qui est connecté où</a></li>
+<li><a href="../fr463581/index.html">Formation Cisco 200-125 CCNA v3.0. Jour 23. Technologies avancées de routage</a></li>
+<li><a href="../fr463583/index.html">Plugins fantastiques, vol. 1. Théorie</a></li>
+<li><a href="../fr463585/index.html">Formation Cisco 200-125 CCNA v3.0. Jour 24. IPv6</a></li>
+<li><a href="../fr463591/index.html">BlueKeep-2 - toutes les nouvelles versions de Windows sont désormais vulnérables</a></li>
+<li><a href="../fr463595/index.html">Nous contrôlons le focus ou une pincée de C # et STM32 pour une webcam</a></li>
+<li><a href="../fr463597/index.html">Utilisation de l'API contextuelle dans React pour créer une conception d'application réactive</a></li>
+<li><a href="../fr463599/index.html">«C'est un cauchemar»: des astronautes partagent leurs opinions sur les erreurs qu'Hollywood commet lors du tournage de films sur l'espace</a></li>
+<li><a href="../fr463601/index.html">Journalisation des méthodes distincte en Java / logback</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

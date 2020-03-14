@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👌🏼 🌛 🛀🏿 L'histoire d'un problème avec le compteur de vitesse ou comment Chromium gère la mémoire 🎠 ✌🏼 🐷</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Un navigateur moderne est un projet extrêmement complexe dans lequel même des changements d'apparence inoffensive peuvent entraîner des surprises inat...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>L'histoire d'un problème avec le compteur de vitesse ou comment Chromium gère la mémoire</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/436154/"> Un navigateur moderne est un projet extrêmement complexe dans lequel même des changements d'apparence inoffensive peuvent entraîner des surprises inattendues.  Par conséquent, il existe de nombreux tests internes qui devraient détecter ces modifications avant la publication.  Il n'y a jamais trop de tests, il est donc utile d'utiliser également des benchmarks publics tiers. <br><br>  Je m'appelle Andrey Logvinov, je travaille dans le groupe de développement du moteur de rendu Yandex.Browser à Nizhny Novgorod.  Aujourd'hui, je vais expliquer aux lecteurs de Habr comment fonctionne la gestion de la mémoire dans le projet Chromium en donnant l'exemple d'un problème mystérieux qui a entraîné une dégradation des performances lors du test du <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">compteur de vitesse</a> .  Ce message est basé sur mon rapport de l'événement Yandex.Inside. <br><br><img src="https://habrastorage.org/webt/rf/uv/u2/rfuvu23derqjtojmwivg2t-dhpm.png"><br><br><a name="habracut"></a><br>  Une fois sur notre tableau de bord de performance, nous avons constaté une détérioration du test du compteur de vitesse.  Ce test mesure les performances globales du navigateur sur une application proche de la réalité - une liste de tâches, où le test ajoute des éléments à la liste, puis les raye.  Les résultats des tests sont affectés à la fois par les performances du moteur V8 JS et par la vitesse de rendu des pages dans le moteur Blink.  Le test du compteur de vitesse se compose de plusieurs sous-tests, où l'application de test est écrite en utilisant l'un des cadres JS populaires, par exemple jQuery ou ReactJS.  Le résultat global du test est défini comme la moyenne des résultats pour tous les frameworks, mais le test vous permet de voir les performances de chaque framework individuellement.  Il est à noter que le test n'a pas pour but d'évaluer les performances des frameworks, ils ne sont utilisés que pour rendre le test moins synthétique et plus proche des applications web réelles.  Le détail par sous-test a montré qu'une détérioration n'est observée que pour la version de l'application de test créée à l'aide de jQuery.  Et c'est déjà intéressant, d'accord. <br><br>  L'enquête sur de telles situations commence de manière assez standard - nous déterminons quel engagement particulier envers le code a provoqué le problème.  Pour ce faire, nous stockons les assemblages Yandex.Browser pour chaque (!) Commit au cours des dernières années (il serait difficile de le réassembler, car l'assemblage prend plusieurs heures).  Cela prend beaucoup d'espace sur les serveurs, mais cela aide généralement à trouver rapidement la source du problème.  Mais cette fois n'a pas fonctionné rapidement.  Il s'est avéré que la détérioration des résultats des tests a coïncidé avec un commit intégrant la prochaine version de Chromium.  Le résultat n'est pas encourageant, car la nouvelle version de Chromium apporte un grand nombre de changements à la fois. <br><br>  Comme nous n'avons reçu aucune information indiquant un changement spécifique, j'ai dû faire une étude de fond du problème.  Pour ce faire, nous avons utilisé les outils de développement pour supprimer les traces de test.  Nous avons remarqué une caractéristique étrange - des intervalles «déchirés» pour l'exécution des fonctions de test Javascript. <br><br><img src="https://habrastorage.org/webt/fx/28/ua/fx28ua2nvcjcjxa6vrkf6xtzfye.png" alt="image"><br><br>  Nous supprimons une trace plus technique avec about: tracing et voyons qu'il s'agit de <b>garbage collection (GC)</b> dans Blink. <br><br><img src="https://habrastorage.org/webt/11/hr/h9/11hrh9f2kyuwkbmmpgtpi8ibm5y.png" alt="image"><br><br>  La piste mémoire ci-dessous montre que ces pauses GC prennent non seulement beaucoup de temps, mais ne contribuent pas non plus à arrêter la croissance de la consommation de mémoire. <br><br><img src="https://habrastorage.org/webt/u9/bw/qz/u9bwqzatofige39dtlpb7qabwjk.png" alt="image"><br><br>  Mais si vous insérez un appel GC explicite dans le test, nous voyons une image complètement différente - la mémoire est conservée dans la région zéro et ne fuit pas.  Ainsi, nous n'avons aucune fuite de mémoire et le problème est lié aux fonctionnalités du collecteur.  Nous continuons à creuser.  Nous démarrons le débogueur et voyons que le garbage collector a contourné environ 500 mille objets!  Un tel nombre d'objets n'a pas pu affecter les performances.  Mais d'où venaient-ils? <br><br>  Et ici, nous avons besoin d'un petit flashback sur le dispositif de collecte des ordures dans Blink.  Il supprime les objets morts, mais ne déplace pas les objets vivants, ce qui permet de fonctionner avec des pointeurs nus dans des variables locales en code C ++.  Ce modèle est activement utilisé dans Blink.  Mais il a son propre prix - lors de la collecte des ordures, vous devez <b>analyser la pile de</b> flux et si quelque chose de similaire à un pointeur vers un objet d'un tas (tas) y est trouvé, alors considérez l'objet et tout ce qu'il fait référence directement ou indirectement comme vivant.  Cela conduit au fait que certains objets pratiquement inaccessibles et donc «morts» sont identifiés comme vivants.  Par conséquent, cette forme de collecte des ordures est également appelée conservatrice. <br><br>  Nous vérifions la connexion avec l'analyse de la pile et la sautons.  Le problème a disparu. <br><br>  Qu'est-ce qui peut être tel dans une pile qui contient 500 000 objets?  Nous mettons un point d'arrêt dans la fonction d'ajout d'objets - entre autres choses, nous voyons qu'il y a suspect: <br><br>  blink :: TraceTrait &lt;blink :: HeapHashTableBacking &lt;WTF :: HashTable &lt;blink :: WeakMember ... <br><br>  <b>Une référence de table de hachage</b> est probablement suspecte!  Nous testons l'hypothèse en sautant l'ajout de ce lien.  Le problème a disparu.  Eh bien, nous sommes un pas de plus vers la réponse. <br><br>  Nous rappelons une autre caractéristique du garbage collector dans Blink: s'il voit un pointeur vers l'intérieur de la table de hachage, il considère cela comme un signe d'itération continue sur la table, ce qui signifie qu'il considère tous les liens de cette table utiles et continue de les contourner.  Dans notre cas, inactif.  Mais quelle fonction est à l'origine de ce lien? <br><br>  Nous avançons quelques images de la pile plus haut, prenons la position actuelle du scanner, regardons le cadre de la pile dans lequel il tombe.  Il s'agit d'une fonction appelée <b>ScheduleGCIfNeeded</b> .  Il semblerait qu'ici il soit le coupable, mais ... nous regardons le code source de la fonction et voyons qu'il n'y a pas du tout de tables de hachage.  De plus, cela fait déjà partie du garbage collector lui-même, et il n'a tout simplement pas besoin de faire référence aux objets du tas Blink.  D'où vient ce "mauvais" lien? <br><br>  Nous avons défini un point d'arrêt sur la modification de la cellule mémoire, dans laquelle nous avons trouvé un lien vers la table de hachage.  Nous voyons que l'une des fonctions internes appelées V8PerIsolateData :: AddActiveScriptWrappable y écrit.  Là, ils ajoutent des éléments HTML créés de certains types, y compris des entrées, à une seule table de hachage active_script_wrappables_.  Ce tableau est nécessaire pour empêcher la suppression d'éléments qui ne sont plus référencés depuis Javascript ou l'arborescence DOM, mais qui sont associés à toute activité externe qui, par exemple, peut générer des événements. <br><br>  Le garbage collector pendant la traversée normale de la table prend en compte l'état des éléments qu'il contient et les marque comme vivants ou ne les marque pas, puis ils sont supprimés à l'étape suivante de l'assemblage.  Cependant, dans notre cas, un pointeur vers le stockage interne de cette table apparaît lorsque la pile est analysée et tous les éléments de la table sont marqués comme actifs. <br><br>  Mais comment la valeur de la pile d'une fonction a-t-elle touché la pile d'une autre?! <br><br>  Pensez à ScheduleGCIfNeeded.  Rappelons que rien d'utile n'a été trouvé dans le code source de cette fonction, mais cela signifie seulement qu'il est temps de descendre à un niveau inférieur et de vérifier le <b>compilateur</b> .  Le prologue démonté de la fonction ScheduleGCIfNeeded ressemble à ceci: <br><br><pre><code class="plaintext hljs">0FCDD13A push ebp 0FCDD13B mov ebp,esp 0FCDD13D push edi 0FCDD13E push esi 0FCDD13F and esp,0FFFFFFF8h 0FCDD142 sub esp,0B8h 0FCDD148 mov eax,dword ptr [__security_cookie (13DD3888h)] 0FCDD14D mov esi,ecx 0FCDD14F xor eax,ebp 0FCDD151 mov dword ptr [esp+0B4h],eax</code> </pre> <br>  On peut voir que la fonction <b>descend en particulier vers 0B8h</b> , et cet endroit n'est plus utilisé.  Mais à cause de cela, le scanner de pile voit ce qui était précédemment enregistré par d'autres fonctions.  Et par hasard, un pointeur vers l'intérieur de la table de hachage laissée par la fonction AddActiveScriptWrappable pénètre dans ce «trou».  Il s'est avéré que la raison de l'apparition d'un «trou» dans ce cas était la <b>macro de</b> débogage <b>VLOG</b> à l'intérieur de la fonction, qui affiche des informations supplémentaires dans le journal. <br><br>  Mais pourquoi la table active_script_wrappable_ avait-elle des centaines de milliers d'éléments?  Pourquoi la dégradation des performances est-elle observée uniquement sur le test jQuery?  La réponse aux deux questions est la même - dans ce test particulier, pour chaque modification (comme une coche dans la case à cocher), l'interface utilisateur entière est complètement recréée.  Le test produit des éléments qui se transforment presque immédiatement en ordures.  Les autres tests du compteur de vitesse sont plus prudents et ne créent pas d'éléments inutiles, par conséquent, aucune dégradation des performances n'est observée pour eux.  Si vous développez des services Web, vous devez en tenir compte afin de ne pas créer de travail inutile pour le navigateur. <br><br>  Mais pourquoi le problème ne se posait-il maintenant que si la macro VLOG était antérieure?  Il n'y a pas de réponse exacte, mais très probablement, pendant la mise à jour, la position relative des éléments sur la pile a changé, à cause de quoi le pointeur vers la table de hachage est devenu accidentellement accessible au scanner.  En fait, nous avons gagné à la loterie.  Pour fermer rapidement le «trou» et restaurer les performances, nous avons supprimé la macro de débogage VLOG.  Pour les utilisateurs, il est inutile, et pour nos propres besoins de diagnostic, nous pouvons toujours le réactiver.  Nous avons également partagé nos expériences avec d'autres développeurs de Chromium.  La réponse a confirmé nos craintes: il s'agit d'un problème fondamental de la collecte des ordures conservatrice dans Blink, qui n'a pas de solution systémique. <br><br><h3>  Liens intéressants </h3><br>  1. Si vous souhaitez en savoir plus sur la vie quotidienne inhabituelle de notre groupe, rappelez-vous l' <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">histoire du rectangle noir</a> , qui a conduit à l'accélération non seulement de Yandex.Browser, mais de l'ensemble du projet Chromium. <br><br>  2. Je vous invite également à écouter d'autres reportages lors du prochain événement <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Yandex.Inside</a> le 16 février, les inscriptions sont ouvertes et la diffusion le sera également. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr436154/">https://habr.com/ru/post/fr436154/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr436140/index.html">«Sous le capot» du stockage Huawei: les technologies propriétaires et ce que les autres n'ont pas</a></li>
+<li><a href="../fr436144/index.html">Patrons suceurs de sang dans le contexte d'une biocénose: pourquoi une équipe autonome se désagrège si elle n'est pas centralisée</a></li>
+<li><a href="../fr436148/index.html">L'histoire d'un junior - comment commencer à travailler et ne pas avoir peur de tout</a></li>
+<li><a href="../fr436150/index.html">Configurer le transfert de données d'appareil vers AWS IoT Core</a></li>
+<li><a href="../fr436152/index.html">L'erreur qui m'a appris le design orienté business</a></li>
+<li><a href="../fr436160/index.html">5 règles de code faciles à lire</a></li>
+<li><a href="../fr436162/index.html">GoPro Factory déménage pour se prémunir contre la menace de droits d'importation plus élevés</a></li>
+<li><a href="../fr436164/index.html">L'expérience des signes a montré que la messagerie quantique est plus rapide que la messagerie classique</a></li>
+<li><a href="../fr436166/index.html">Tesla Model 3 est offert sur Pwn2Own à toute personne qui s'introduit dans un système de protection de véhicule électrique</a></li>
+<li><a href="../fr436170/index.html">Dans le bioconteneur sur la lune, les premières plantes ont germé</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
