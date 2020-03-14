@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐢 🍍 🎠 GitHub上的MySQL高可用性 🤰🏻 🛸 🖍️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="GitHub将MySQL用作与git不相关的所有内容的主要数据仓库，因此MySQL的可用性是GitHub正常运行的关键。 网站本身，GitHub API，身份验证系统以及许多其他功能都需要访问数据库。 我们使用几个MySQL集群来处理各种服务和任务。 它们根据经典方案进行配置，其中一个主节点可用于记...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>GitHub上的MySQL高可用性</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/432088/"><p> GitHub将MySQL用作与<code>git</code>不相关的所有内容的主要数据仓库，因此MySQL的可用性是GitHub正常运行的关键。 网站本身，GitHub API，身份验证系统以及许多其他功能都需要访问数据库。 我们使用几个MySQL集群来处理各种服务和任务。 它们根据经典方案进行配置，其中一个<em>主</em>节点可用于记录及其副本。  <em>副本</em> （其他群集节点）异步地复制对主节点的更改并提供读取访问权限。 </p><br><p> 主机站点的可用性至关重要。 没有主节点，群集将不支持记录，这意味着您无法保存必要的更改。 解决交易，注册问题，创建新用户，存储库，评论等等将是根本不可能的。 </p><br><p> 为了支持记录，需要一个相应的可访问节点-群集中的主节点。 但是，识别或<em>检测</em>此类节点的能力同样重要。 </p><br><p> 在当前主节点出现故障的情况下，重要的是要确保及时出现新服务器以替换它，并能够迅速将这一更改通知所有服务。 总停机时间包括检测故障，故障转移和通知新主节点所花费的时间。 </p><br><p><img src="https://habrastorage.org/webt/m8/ah/po/m8ahpo0jhrucgwj3kb5u7hn9edo.jpeg"></p><a name="habracut"></a><br><p> 该出版物描述了一种确保GitHub中MySQL的高可用性并发现主要服务的解决方案，该解决方案使我们能够可靠地执行涵盖多个数据中心的操作，在其中一些中心不可用时保持可操作性，并在发生故障时保证最小的停机时间。 </p><br><h3 id="celi-obespecheniya-vysokoy-dostupnosti"> 高可用性目标 </h3><br><p> 本文描述的解决方案是在GitHub上实现的先前高可用性（HA）解决方案的新改进版本。 随着我们的成长，我们需要调整MySQL HA策略以进行更改。 我们努力在GitHub上针对MySQL和其他服务采用类似的方法。 </p><br><p> 为了找到正确的解决方案以实现高可用性和服务发现，您应该首先回答一些具体问题。 这是其中的一个示例列表： </p><br><ul><li> 对于您而言，最大的停机时间不重要？ </li><li> 故障检测工具的可靠性如何？ 误报（过早的故障处理）对您来说至关重要吗？ </li><li> 故障转移系统的可靠性如何？ 哪里会发生故障？ </li><li> 该解决方案在多个数据中心的效果如何？ 该解决方案在低延迟和高延迟网络中的有效性如何？ </li><li> 如果整个数据中心（DPC）发生故障或网络隔离，该解决方案是否可以继续工作？ </li><li> 哪种机制（如果有）可以防止或减轻群集中独立记录的两个主服务器的出现所带来的后果？ </li><li> 数据丢失对您来说至关重要吗？ 如果是这样，到什么程度？ </li></ul><br><p> 为了演示，让我们首先考虑先前的解决方案，并讨论为什么我们决定放弃它。 </p><br><h3 id="otkaz-ot-ispolzovaniya-vip-i-dns-dlya-obnaruzheniya"> 拒绝使用VIP和DNS进行发现 </h3><br><p> 作为先前解决方案的一部分，我们使用了： </p><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">协调器，</a>用于故障检测和故障转移； </li><li>  VIP和DNS用于主机发现。 </li></ul><br><p> 在这种情况下，客户端通过名称来发现记录节点，例如<code>mysql-writer-1.github.net</code> 。 该名称用于确定主节点的虚拟IP地址（VIP）。 </p><br><p> 因此，在通常情况下，客户只需要解析名称并连接到接收到的IP地址，主节点已经在该IP地址上等待着他们。 </p><br><p> 考虑以下跨越三个不同数据中心的复制拓扑： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/8fa/e2e/4f3/8fae2e4f382f3060b5a14ed9d80a5f67.png" alt="图片"></p><br><p> 如果主节点发生故障，则必须将新服务器分配到其位置（副本之一）。 </p><br><p>  <code>orchestrator</code>检测到故障，选择一个新的主节点，然后分配名称/ VIP。 客户端实际上并不知道主节点的身份，他们仅知道名称，该名称现在应指向新节点。 但是，请注意这一点。 </p><br><p>  VIP地址是共享的，数据库服务器本身会请求并拥有它们。 要接收或释放VIP，服务器必须发送ARP请求。 拥有VIP的服务器必须先释放它，新的主服务器才能访问该地址。 这种方法导致一些不良后果： </p><br><ul><li> 在正常模式下，故障转移系统将首先联系发生故障的主节点，并请求其释放VIP，然后转到新的主服务器并请求VIP分配。 但是，如果第一个主节点不可用或拒绝释放VIP地址的请求该怎么办？ 鉴于服务器当前处于故障状态，它不太可能能够及时响应请求或完全响应请求。 <br><ol><li> 结果，当两个主机要求他们对同一VIP的权利时，可能会出现这种情况。 根据最短的网络路径，不同的客户端可以连接到任何这些服务器。 </li><li> 在这种情况下，正确的操作取决于两个独立服务器的交互，并且这种配置不可靠。 </li></ol></li><li> 即使第一个主节点响应请求，我们也浪费了宝贵的时间：在与旧的主服务器联系时不会切换到新的主服务器。 </li><li> 而且，即使在重新分配VIP的情况下，也无法保证旧服务器上的现有客户端连接将被断开。 同样，我们冒着处于具有两个独立主节点的情况的风险。 </li></ul><br><p> 在我们的环境中，到处都有VIP地址与实际位置相关联。 它们被分配给交换机或路由器。 因此，我们只能将VIP地址重新分配给与原始主机位于同一环境中的服务器。 特别是在某些情况下，我们将无法在另一个数据中心中分配VIP服务器，并且需要对DNS进行更改。 </p><br><ul><li> 将更改分发到DNS需要更长的时间。 客户端将DNS名称存储一段预定的时间。 涉及多个数据中心的故障转移需要更长的停机时间，因为向所有客户提供有关新主节点的信息会花费更多时间。 </li></ul><br><p> 这些限制足以迫使我们开始寻找新的解决方案，但是我们还必须考虑以下几点： </p><br><ul><li> 主节点通过<code>pt-heartbeat</code>独立发送脉冲包，以<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">测量延迟和负载调节</a> 。 服务必须转移到新任命的主节点。 如果可能，应在旧服务器上将其禁用。 </li><li> 同样，主要节点独立控制<a href="">Pseudo-GTID</a>的操作。 有必要在新的主节点上开始此过程，最好在旧的主节点上停止。 </li><li> 新的主节点变为可写。 旧节点（如果可能）应具有<code>read_only</code> （只读）。 </li></ul><br><p> 这些额外的步骤导致总的停机时间增加，并增加了自己的故障点和问题。 </p><br><p> 该解决方案有效，并且GitHub在后台成功处理了MySQL失败，但我们希望按以下方法改进HA的方法： </p><br><ul><li> 确保与特定数据中心的独立性； </li><li> 在数据中心发生故障时保证可操作性； </li><li> 放弃不可靠的协作工作流程 </li><li> 减少总停机时间； </li><li> 尽可能执行故障转移而不会造成损失。 </li></ul><br><h3 id="ha-reshenie-github-orchestrator-consul-glb">  GitHub HA解决方案：协调器，领事，GLB </h3><br><p> 我们的新策略以及随之而来的改进措施消除了上面提到的大多数问题，或减轻了它们的后果。 我们当前的HA系统包含以下元素： </p><br><ul><li> 用于故障检测和故障转移的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">协调</a>器。 我们将<a href="">Orchestrator / Raft</a>方案与多个数据中心一起使用，如下图所示； </li><li>  Hashicorp <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Consul</a>用于服务发现； </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GLB / HAProxy</a>作为客户端和记录节点之间的代理层。  GLB Director <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的源代码</a>已打开； </li><li> 网络路由的<code>anycast</code>技术。 </li></ul><br><p><img src="https://habrastorage.org/getpro/habr/post_images/762/fb4/7a0/762fb47a0de253cce045889faa945228.png" alt="图片"></p><br><p> 新方案允许完全放弃对VIP和DNS的更改。 现在，当引入新组件时，我们可以将它们分开并简化任务。 此外，我们有机会使用可靠和稳定的解决方案。 下面给出了新解决方案的详细分析。 </p><br><h3 id="normalnyy-potok"> 正常流量 </h3><br><p> 在正常情况下，应用程序通过GLB / HAProxy连接到记录节点。 </p><br><p> 应用程序不接收主服务器的身份。 和以前一样，它们仅使用名称。 例如， <code>cluster1</code>的主节点将是<code>mysql-writer-1.github.net</code> 。 但是，在我们当前的配置中，此名称解析为<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">任意播</a> IP地址。 </p><br><p> 多亏了<code>anycast</code>技术，该名称可以在任何地方解析为相同的IP地址，但根据客户端的位置，流量的定向是不同的。 特别是，我们的每个数据中心都部署了我们的高可用负载均衡器GLB的多个实例。  <code>mysql-writer-1.github.net</code>流量始终路由到本地数据中心的GLB群集。 因此，所有客户均由本地代理服务。 </p><br><p> 我们在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">HAProxy</a>之上运行GLB。 我们的HAProxy服务器提供<em>写池</em> ：每个MySQL群集一个。 此外，每个池只有一个服务器（集群的<em>主</em>节点）。 所有数据中心中的所有GLB / HAProxy实例都具有相同的池，并且它们都指向这些池中的相同服务器。 因此，如果应用程序希望将数据写入<code>mysql-writer-1.github.net</code>上的数据库，则连接到哪个GLB服务器都没有关系。 无论哪种情况，都将重定向到实际的主群集节点<code>cluster1</code> 。 </p><br><p> 对于应用程序，发现在GLB上结束，并且不需要重新发现。 该GLB将流量重定向到正确的位置。 </p><br><p>  GLB在哪里获得有关要列出哪些服务器的信息？ 我们如何更改GLB？ </p><br><h3 id="obnaruzhenie-cherez-consul"> 通过领事发现 </h3><br><p>  Consul服务被广泛称为服务发现解决方案，并且还具有DNS功能。 但是，在我们的情况下，我们将其用作键值（KV）的高度可访问的存储。 </p><br><p> 在Consul的KV存储库中，我们记录主群集节点的身份。 对于每个群集，都有一组KV记录，指向对应的主节点的数据：其<code>fqdn</code> ，端口，ipv4和ipv6地址。 </p><br><p> 每个GLB / HAProxy节点都会启动一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">consul-template</a> ，该服务可跟踪Consul数据的更改（在我们的示例中为主要节点数据的更改）。  <code>consul-template</code>创建一个配置文件，并可以在更改设置时重新加载HAProxy。 </p><br><p> 因此，有关在Consul中更改主节点身份的信息可用于每个GLB / HAProxy实例。 基于此信息，将执行实例的配置，新的主节点将指示为群集服务器池中的唯一实体。 之后，将重新加载实例以使更改生效。 </p><br><p> 我们已经在每个数据中心中部署了Consul实例，并且每个实例都提供了高可用性。 但是，这些实例彼此独立。 它们不复制，也不交换任何数据。 </p><br><p> 领事从哪里获得有关变更的信息，以及如何在数据中心之间分配变更？ </p><br><h3 id="orchestratorraft"> 协调器/木筏 </h3><br><p> 我们使用<code>orchestrator/raft</code>方案： <code>orchestrator</code>节点通过<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">筏</a>共识相互通信。 在每个数据中心中，我们都有一个或两个<code>orchestrator</code>节点。 </p><br><p>  <code>orchestrator</code>负责检测故障，MySQL故障转移并将更改后的主节点数据传输到Consul。 故障转移由单个<code>orchestrator/raft</code>主机管理，但是使用<code>raft</code>机制将群集现在是新的主机的消息<em>更改</em>传播到所有<code>orchestrator</code>节点。 </p><br><p> 当<code>orchestrator</code>节点收到有关主节点数据更改的新闻时，它们中的每个节点都会联系其自己的Consul本地实例并启动KV记录。 具有多个<code>orchestrator</code>实例的数据中心将在Consul中接收多个（相同）记录。 </p><br><h3 id="obobschennoe-predstavlenie-vsego-potoka"> 整个流的通用视图 </h3><br><p> 如果主节点发生故障： </p><br><ul><li>  <code>orchestrator</code>节点检测到故障； </li><li>  <code>orchestrator/raft</code>主启动恢复。 分配了一个新的主节点； </li><li>  <code>orchestrator/raft</code>方案将主要节点更改后的数据传输到<code>raft</code>群集的所有节点； </li><li>  <code>orchestrator/raft</code>每个实例都会收到有关节点更改的通知，并将新的主节点的标识写入Consul中的本地KV存储中； </li><li> 在每个GLB / HAProxy实例上，启动<code>consul-template</code>服务，该服务监视Consul中KV存储库中的更改，重新配置并重新启动HAProxy； </li><li> 客户端流量将重定向到新的主节点。 </li></ul><br><p> 对于每个组件，职责都有明确的分配，整个结构也得到了多样化和简化。  <code>orchestrator</code>器不与负载平衡器进行交互。 领事不需要有关信息来源的信息。 代理服务器仅与Consul一起使用。 客户端只能与代理服务器一起使用。 </p><br><p> 此外： </p><br><ul><li> 无需更改DNS并散布有关它们的信息； </li><li> 不使用TTL； </li><li> 线程不等待处于错误状态的主机的响应。 通常，它被忽略。 </li></ul><br><h3 id="dopolnitelnaya-informaciya"> 附加信息 </h3><br><p> 为了稳定流量，我们还应用以下方法： </p><br><ul><li>  HAProxy <code>hard-stop-after</code>参数设置为非常小的值。 当HAProxy在写池中使用新服务器重新启动时，该服务器会自动终止与旧主节点的所有现有连接。 <br><ol><li> 设置<code>hard-stop-after</code>参数可以使您不必等待客户端的任何操作，此外，还可以最大程度地减少群集中两个主要节点可能出现的负面影响。 重要的是要了解这里没有魔术，无论如何，要打破旧的纽带需要<em>一段时间</em> 。 但是在某个时间点之后，我们可以停止等待不愉快的惊喜。 </li></ol></li><li> 我们不需要持续提供领事服务。 实际上，我们需要它仅在故障转移期间可用。 如果领事服务没有响应，则GLB会以最新的已知值继续工作，并且不会采取严厉措施。 </li><li>  GLB配置为验证新分配的主节点的身份。 与<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">上下文敏感的MySQL池一样</a> ，执行检查以确认服务器确实可写。 如果我们不小心删除了Consul中主节点的身份，那么就不会有问题，空记录将被忽略。 如果我们错误地将另一台服务器（而不是主服务器）的名称写到Consul，那么就可以了：GLB不会更新它，并继续使用最后一个有效状态。 </li></ul><br><p> 在以下各节中，我们着眼于问题并分析了高可用性的目标。 </p><br><h3 id="obnaruzhenie-sboev-s-pomoschyu-orchestratorraft"> 使用Orchestrator /筏进行碰撞检测 </h3><br><p>  <code>orchestrator</code>采取了<a href="">全面的方法</a>来进行故障检测，从而确保了工具的高度可靠性。 我们不会遇到错误的肯定结果，不会执行过早的故障，这意味着排除了不必要的停机时间。 </p><br><p>  <code>orchestrator/raft</code>电路还可以应对数据中心完全网络隔离的情况（数据中心围墙）。 数据中心的网络隔离会引起混乱：数据中心内的服务器可以相互通信。 如何了解谁是真正孤立的人- <em>给定</em>数据中心或所有<em>其他</em>数据中心<em>内的</em>服务器？ </p><br><p> 在<code>orchestrator/raft</code>计划中， <code>orchestrator/raft</code>主服务器是故障转移。 节点成为领导者，该领导者得到组（仲裁）中多数的支持。 我们以这种方式部署了<code>orchestrator</code>节点，使得任何单个数据中心都无法提供多数，而任何<code>n-1</code>数据中心都可以提供。 </p><br><p> 在数据中心完全隔离的情况下，该中心的<code>orchestrator</code>节点与其他数据中心的类似节点断开连接。 结果，隔离的数据中心中的<code>orchestrator</code>节点无法成为<code>raft</code>群集中的引导节点。 如果此类节点是主节点，则它将失去此状态。 将为新主机分配其他数据中心的节点之一。 该负责人将获得所有其他可以相互交互的数据中心的支持。 </p><br><p> 这样， <code>orchestrator</code>主机将始终位于网络隔离的数据中心之外。 如果主节点位于隔离的数据中心中，那么<code>orchestrator</code>启动故障转移，以将其替换为可用数据中心之一的服务器。 我们通过将决策委派给可用数据中心的仲裁人数来减轻数据中心隔离的影响。 </p><br><h3 id="uskorennoe-opoveschenie"> 更快的通知 </h3><br><p> 通过加快主节点中更改通知的时间，可以进一步减少总停机时间。 如何实现呢？ </p><br><p> 当<code>orchestrator</code>启动故障转移时，它将考虑一组服务器，其中一个可以分配为主服务器。 给定复制规则，建议和限制，他能够就最佳操作方案做出明智的决定。 </p><br><p> 根据以下迹象，他还可以理解，可访问服务器是<em>首选</em>的主要<em>候选</em>服务器： </p><br><ul><li> 没有什么可以防止服务器升高（也许用户建议使用此服务器）； </li><li> 预期该服务器将能够使用所有其他服务器作为副本。 </li></ul><br><p> 在这种情况下， <code>orchestrator</code>首先将服务器配置为可写，然后立即宣布其状态增加（在我们的示例中，它将记录写入Consul中的KV存储库）。   orchestrator     ,     . </p><br><p>  ,    ,    GLB   ,     ,     .   :    ! </p><br><h3 id="polusinhronnaya-replikaciya">   </h3><br><p>   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="> </a> MySQL         ,           .       :  ,    ,   ,        . </p><br><p>     ,      .        ,    ,   .  ,    ,           ,    . </p><br><p>       : <code>500 </code> .                    .          (    ),          . </p><br><p>                   (   )    .           ,      . </p><br><p>       ,        <em> </em>     .            <em></em> ,      ,  <em></em>    .  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="></a> ,       <em> </em> , ,       . </p><br><h3 id="peredacha-paketov-pulsa">    </h3><br><p>  ,   /  <code>pt-heartbeat</code>  /  ,       .    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="></a> ,   <code>pt-heartbeat</code>     ,       <code>read_only</code> ,    . </p><br><p>      <code>pt-heartbeat</code>     ,     .       .               .     ,  <code>pt-heartbeat</code>              . </p><br><h3 id="delegirovanie-zadach-orchestrator">   orchestrator </h3><br><p>    orchestrator  : </p><br><ul><li>  Pseudo-GTID; </li><li>       ,    ; </li><li>         ( <code>read_only</code> ),   . </li></ul><br><p>    ,     . ,      ,      ,      .     <code>orchestrator</code>         . </p><br><h3 id="ogranicheniya-i-nedostatki">    </h3><br><p>  -   ,        ,         .     ,   -,         . </p><br><p>     ,       . </p><br><p> ,      ,     ,     -      .         .               <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">STONITH</a>    .    ,  <em> </em> ,       ,    «» -   .  ,       ,  . </p><br><p>    :  Consul    ,     . .  , ,      ,    ,      . </p><br><h3 id="rezultaty">  </h3><br><p>   orchestrator/GLB/Consul   : </p><br><ul><li>   ; </li><li>      ; </li><li>       ; </li><li>    ; </li><li>  ,      (    ); </li><li>    ; </li><li>    <code>10-13 </code>   . <br><ol><li>        <code>20 </code> ,      — <code>25 </code> . </li></ol></li></ul><br><h3 id="zaklyuchenie"> 结论 </h3><br><p>  «// »         ,   ,   .       .     ,    . </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN432088/">https://habr.com/ru/post/zh-CN432088/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN432076/index.html">无法识别的功能使程序速度降低5倍</a></li>
+<li><a href="../zh-CN432078/index.html">隧道末端的流量或渗透测试中的DNS</a></li>
+<li><a href="../zh-CN432080/index.html">玩家在评估风险时的误解。 开发中对随机数发生器的控制</a></li>
+<li><a href="../zh-CN432084/index.html">我们如何安排生产工人之间的轮班竞争（例如在苏联）</a></li>
+<li><a href="../zh-CN432086/index.html">在国际学校以罗蒙诺索夫（M.V. Lomonosov）命名的3D打印</a></li>
+<li><a href="../zh-CN432090/index.html">Magento Meetup Kharkiv No. 4-视频报道</a></li>
+<li><a href="../zh-CN432092/index.html">编写单元测试时出现令人不快的错误</a></li>
+<li><a href="../zh-CN432094/index.html">来自OpenGift和Credits区块链平台的联合在线黑客马拉松</a></li>
+<li><a href="../zh-CN432096/index.html">完整的CMake指南。 第二部分：构建系统</a></li>
+<li><a href="../zh-CN432098/index.html">道路运输中的自动驾驶仪，如何与特价商品进行交互。 通过运输？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

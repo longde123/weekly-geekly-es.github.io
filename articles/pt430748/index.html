@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍐 📫 👰🏼 A luta por recursos, parte 6: cpuset ou compartilhamento nem sempre está certa 🐷 👵🏼 🙍🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Ao falar sobre cgroups, os usuários do Red Hat costumam fazer a mesma pergunta: “Eu tenho um aplicativo que é muito sensível em termos de atrasos. É p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>A luta por recursos, parte 6: cpuset ou compartilhamento nem sempre está certa</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/redhatrussia/blog/430748/">  Ao falar sobre cgroups, os usuários do Red Hat costumam fazer a mesma pergunta: “Eu tenho um aplicativo que é muito sensível em termos de atrasos.  É possível usar cgroups para isolar esse aplicativo do restante, vinculando-o a determinados núcleos do processador? ” <br><br><img src="https://habrastorage.org/webt/hj/ig/zd/hjigzdvn7vwbunpdkqiqjcdmqde.png" width="100%"><br><br>  Claro que você pode.  Caso contrário, não escolheríamos esse problema como o tópico do artigo de hoje. <br><a name="habracut"></a><br>  Na infância, muitas vezes nos disseram que compartilhar é bom e correto.  Em geral, do jeito que está.  Mas há exceções. <br><br>  Como escrevemos no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">primeiro post desta série</a> , por padrão, o Red Hat Enterprise Linux 7 se comporta como uma avó esférica.  No sentido de que ela está tentando distribuir de maneira justa os recursos do sistema entre todos os que os solicitarem.  No entanto, na vida real, as avós têm animais de estimação que recebem mais.  Traduzido para o sysadmin, isso significa que existem situações em que alguns aplicativos ou serviços são mais importantes que outros; portanto, eles devem receber toda a atenção possível para que sejam o mais responsivos possível. <br><br>  O Red Hat Enterprise Linux 7 faz isso em duas etapas: <br><br><ol><li>  Isolamos parte dos núcleos do processador para transferi-los para o uso exclusivo desse aplicativo. </li><li>  Criamos grupos cgroups e arquivos de unidades que vinculam esse aplicativo a kernels isolados. </li></ol><br><h3>  Uma pequena digressão sobre os exemplos desses posts </h3><br>  O Hat Enterprise Linux 7.4 mudou o funcionamento das fatias de curta duração, como sessões de usuário.  Como resultado, eles não podem mais alterar as configurações do cgroup em tempo real, fazer alterações permanentes na configuração ou criar arquivos drop-in usando o comando systemctl set-property.  Sim, é uma pena, mas a comunidade de desenvolvimento Linux decidiu que sim.  A boa notícia é que essas mudanças não afetaram o serviço.  Ou seja, se os aplicativos iniciam e param nos arquivos da unidade (funcionam como daemons), todos os nossos exemplos funcionam.  Além disso, ainda é possível criar seus próprios cgroups usando ferramentas antigas, como cgcreate e cgset, e depois colocar sessões e processos de usuário nesses grupos para usar esferas da CPU e outros controles.  Na vida, tudo muda, então só podemos adaptar e inventar novas técnicas.  E agora nos voltamos para o tópico de hoje. <br><br><h3>  Construindo separatismo com isolcpus </h3><br>  Um dos componentes mais importantes no kernel do Linux é o agendador de processos.  Se um pouco mais profundo, então um processo é um código executável que faz parte de um aplicativo ou serviço.  De fato, o processo consiste em uma série de instruções que o computador executa, realizando este ou aquele trabalho, seja olhando selos ou algo mais sério. <br><br>  Essas instruções são tratadas pelo processador central, também conhecido como CPU.  Em computadores modernos, a CPU geralmente consiste em vários processadores chamados núcleos. <br><br>  Por padrão, o planejador considera cada núcleo do processador como um dos módulos executivos aos quais atribui novos processos à medida que aparecem.  Nesse caso, o planejador tenta distribuir de maneira mais ou menos uniforme os processos emergentes entre os núcleos, levando em consideração a carga.  Infelizmente, o planejador não pode ser informado de que esse processo específico acabará gerando um grupo inteiro de processos, e esse grupo precisará ser executado isoladamente de outros processos, no sentido de que eles não devem ter núcleos de processador comuns. <br><br>  Portanto, precisamos dizer de alguma forma ao planejador para que ele não toque em parte dos núcleos do processador, ou seja, não lhes dê nenhum processo que acerte.  E então nós mesmos (ou com a ajuda de algum outro processo) forçaremos os processos que consideramos necessários para serem isolados do agendador do kernel.  Isso pode ser feito usando o parâmetro isolcpus na linha de inicialização do kernel no arquivo de configuração do grub.  No exemplo abaixo, temos uma máquina com quatro kernels nos quais existem dois arquivos grub: um está no / etc / default e é chamado grub.noiso (este é o backup de configuração padrão), e o segundo está lá e é simplesmente chamado grub para que ele pegou grub2-mkconfig.  Este segundo arquivo foi editado para isolar os kernels 1-3 do agendador de processos. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/lx/ch/jj/lxchjjgcltehlxpbltbyfr5xark.png"></div><br>  AVISO: no Red Hat Enterprise Linux 7, você nunca precisa modificar manualmente o arquivo grub.conf na pasta / boot.  Em vez disso, faça as alterações necessárias em / etc / default / grub e recrie o arquivo grub.conf usando o utilitário apropriado, por exemplo, como este: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/w8/au/gp/w8augp_6vfuutouvjdv8imw5way.png"></div><br>  Ao usar o parâmetro isolcpus, é necessário listar os núcleos do processador liberados separados por vírgulas, a numeração começa em 0. Após o sistema reiniciar, o agendador de processos não utilizará esses núcleos para nada, exceto para determinados processos no nível do sistema que DEVEM ESTAR em cada núcleo.  Para verificar se nosso método funcionou, iniciaremos vários processos de carregamento e, em seguida, examinaremos o carregamento de cada kernel por meio do comando top. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/y_/0u/qh/y_0uqhre8j6tbm4mvaef0tdctms.png"></div><br>  Como você pode ver, todos os processos de carregamento estavam na CPU 0, em vez de serem distribuídos igualmente nos quatro núcleos.  Então, registramos o parâmetro de inicialização corretamente. <br><br><h3>  Vincular processos a kernels usando cpuset </h3><br>  Agora passamos a coisas <b>que é melhor não fazer se você não entender por que está fazendo isso e quais são melhores para implantar na produção somente após testes completos</b> . <br><br>  Para que servem esses avisos?  Ao fato de que, em geral, faremos coisas simples usando o libcgroup toolkit, que foi escrito em uma postagem anterior.  Se você se lembra, este é apenas um conjunto de comandos para criar, modificar e destruir cgroups.  De fato, eles fazem parte do Red Hat Enterprise Linux 6, mas também podem ser instalados no Red Hat Enterprise Linux 7, embora seja possível que essa possibilidade desapareça no futuro.  Lembre-se brevemente das principais recomendações para o uso do libcgroup: <br><br><ol><li>  Use systemd para controlar os controladores cgroup que estão sob o controle do próprio systemd (estes são CPU, memória e E / S de bloco). </li><li>  Use as ferramentas libcgroup para gerenciar todos os outros controladores cgroup. </li><li>  Tenha muito cuidado com as consequências não planejadas de suas ações. </li></ol><br>  Tudo é simples com o conceito cpuset - esta é uma lista de núcleos de processador (numeração, recall, inicia em 0), que aceita tarefas que serão executadas SOMENTE nesses núcleos.  Esses são os núcleos mais comuns do processador, podem ser controlados por um agendador de processos (é assim que o sistema é configurado por padrão) ou, por outro lado, podem ser isolados do agendador (como fizemos no exemplo acima). <br><br>  Vamos verificar o diretório / sys / fs / cgroup filesystem no sistema a partir do nosso exemplo.  Como você pode ver, o diretório cpuset já existe, pois esse controlador faz parte do kernel (embora não esteja sob o controle do systemd).  No entanto, ele ainda não possui cgroups, portanto, vemos apenas as configurações padrão neste diretório. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/yp/wy/md/ypwymdstnktxg_kjxosbhx1ilsa.png"></div><br>  Verifique se o libcgroup toolkit está instalado em nossa máquina: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/vn/rn/oh/vnrnoheqhc2xzziafvhnbfx1f2o.png"></div><br>  Se não estiver instalado, isso poderá ser facilmente corrigido com o comando yum install libcgroup, nem mesmo uma reinicialização. <br><br>  Agora crie cpuset.  Para fazer isso, usaremos os seguintes comandos para criar um novo cgroup para cpuset e registrar suas propriedades: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/bx/mv/kn/bxmvknuvxcxadwvboxizn__0hcg.png"></div><br>  O comando Cgcreate cria um cgroup chamado testset e o coloca dentro do controlador cpuset.  Em seguida, atribuímos o terceiro núcleo da nossa VM a esse novo cpuset e alocamos a zona NUMA 0. Mesmo que seu sistema não use o NUMA (e o nosso simplesmente não o usa), você ainda precisará registrar a zona, caso contrário, não poderá atribuir tarefas ao grupo cgroup .  Agora verifique se o diretório testset foi criado no sistema de arquivos e veja o que está dentro dele. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ts/uu/ow/tsuuowh_2c5fsqu3hulepjgwtb0.png"></div><br>  Como você pode ver, nossas alterações estão em vigor, mas até agora nenhum processo foi executado neste cpuset.  Como plantar algum processo aqui? <br><br>  Existem várias maneiras de fazer isso: <br><br><ul><li>  Você pode direcionar o PID de um processo existente para o arquivo de tarefas.  Funciona, mas não é muito bonito. </li><li>  Você pode usar o cgexec e especificar o grupo quando o processo iniciar.  Isso funciona se o aplicativo não for um daemon;  Além disso, tudo isso pode ser muito bem escrito no script de inicialização do aplicativo. </li><li>  Para um aplicativo que é executado como um daemon executando systemd, você pode criar um arquivo de serviço. </li></ul><br>  Vamos ver a opção cgexec. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/-w/ha/1y/-wha1yvoitn2e7-r_mlaqlunr-a.png"></div><br>  Lançamos o foo.exe, por sua vez, lançou um processo filho, o que apenas faz isso carregar ativamente o processador.  A opção --sticky no comando cgexec diz que "qualquer processo filho deve permanecer no mesmo cgroup que o processo pai".  Portanto, essa é uma opção importante e deve ser lembrada.  Agora vemos que dois processos estão girando em nosso cgroup e conhecemos seus PIDs.  Dê uma olhada no topo: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/tr/x5/83/trx583ix3zsq-c6gawy27bmxibq.png"></div><br>  Como você pode ver, a CPU 3 agora está carregada nos globos oculares e o restante está esfriando. <br><br>  E aqui está a aparência de um arquivo de unidade para executar o mesmo aplicativo que um serviço systemd: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/kx/wn/hv/kxwnhvb_6gwemks5fsoeoi37zpy.png"></div><br>  Existem três comandos ExecStartPre no arquivo da unidade que executam as configurações que já conseguimos fazer com nossas mãos.  Em seguida, vem o comando ExecStart, que inicia o aplicativo.  E quando o aplicativo é interrompido, o comando ExecStopPost é limpo automaticamente, removendo o cgroup. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/p2/wy/iw/p2wyiwogovccla42as0jpvwdemk.png"></div><br>  Como você pode ver, no último exemplo, criamos um novo cgroup chamado set1.  Fizemos isso para mostrar que você pode ter vários cgroups ativos que compartilham a mesma CPU.  Para quem pode parecer útil, mas, pelo contrário, confundir alguém. <br><br>  Bem, isso funciona?  Parece que sim! <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/pu/8x/7j/pu8x7jr-xhhtk6vayzkfqr0gcou.png"></div><br>  E agora concluiremos o trabalho do nosso serviço e verificaremos se o cgroup está destruído: <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/cd/qm/et/cdqmetsjwaodwhutwl5okmwob08.png"></div><br>  ATENÇÃO: os grupos cgroup criados usando cgcreate não são salvos após a reinicialização.  Portanto, a criação desses grupos deve ser prescrita nos scripts de inicialização e nos arquivos da unidade. <br><br>  Então agora em seu arsenal existem mais algumas ferramentas para trabalhar com cgroups.  Esperamos que eles sejam úteis! <br><br>  Outras postagens de cgroups de nossa série Resource Fight estão disponíveis em: <br><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Parte 1</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Parte 2</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Parte 3</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Parte 4</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Parte 5</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt430748/">https://habr.com/ru/post/pt430748/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt430736/index.html">Desenvolva seu navegador a partir do zero. Parte Um: HTML</a></li>
+<li><a href="../pt430738/index.html">Seja um ninja de segurança: nível secreto</a></li>
+<li><a href="../pt430740/index.html">Como ordenhar vacas com robôs e criar uma startup industrial nela. Histórico de Desenvolvimento do R-SEPT</a></li>
+<li><a href="../pt430742/index.html">Olimpíada Estudantil "Sou Profissional": direção "Programação e Tecnologia da Informação"</a></li>
+<li><a href="../pt430746/index.html">Por que as baterias Tesla não funcionam no táxi aéreo</a></li>
+<li><a href="../pt430750/index.html">Damas Quânticas - torne as damas excelentes novamente</a></li>
+<li><a href="../pt430752/index.html">DEV Labs 2018. Mitap on-line para desenvolvedores da web. 1 de dezembro</a></li>
+<li><a href="../pt430754/index.html">Adicione profundidade a sprites 2D usando mapas normais desenhados à mão</a></li>
+<li><a href="../pt430756/index.html">Fazendo o mouse WX no Nova Slider 600</a></li>
+<li><a href="../pt430762/index.html">Como escolher um no-break para otimizar custos</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✊🏾 💟 🍸 在VK中使用ClickHouse，或为什么我们要编写KittenHouse 🥣 🧗🏿 🥠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在年初，我们决定学习如何比以前更有效地存储和读取VK调试日志。 调试日志例如是视频转换日志（基本上是ffmpeg命令的输出以及用于预处理文件的步骤列表），有时我们在处理问题文件后仅需要2-3个月。 
+
+ 当时，我们有两种存储和处理日志的方式-我们自己的日志引擎和rsyslog，我们将它们并行使用。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>在VK中使用ClickHouse，或为什么我们要编写KittenHouse</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/vk/blog/430168/"><img src="https://habrastorage.org/webt/rr/st/hl/rrsthl86lfjf6fjaojdxickg_wu.jpeg" width="300" align="left"> 在年初，我们决定学习如何比以前更有效地存储和读取VK调试日志。 调试日志例如是视频转换日志（基本上是ffmpeg命令的输出以及用于预处理文件的步骤列表），有时我们在处理问题文件后仅需要2-3个月。 <br><br> 当时，我们有两种存储和处理日志的方式-我们自己的日志引擎和rsyslog，我们将它们并行使用。 我们开始考虑其他选择，并意识到Yandex的ClickHouse非常适合我们-我们决定实施它。 <br><br> 在本文中，我将讨论我们如何开始在VKontakte上使用ClickHouse，我们踩过的耙子以及KittenHouse和LightHouse是什么。 两种产品都在本文末尾的开源链接中进行了介绍。 <br><a name="habracut"></a><br><h3> 日志收集任务 </h3><br> 系统要求： <br><br><ol><li> 存储数百TB的日志。 </li><li> 可以存放几个月或（很少）年。 </li><li> 高写入速度。 </li><li> 读取速度快（很少读取）。 </li><li> 索引支持 </li><li> 支持长字符串（&gt; 4 Kb）。 </li><li> 操作简单。 </li><li> 紧凑的存储。 </li><li> 可以从成千上万的服务器插入（UDP将是一个加号）。 </li></ol><br><h3> 可能的解决方案 </h3><br> 让我们简要列出我们考虑的选项及其缺点： <br><br><h4> 日志引擎 </h4><br> 我们为日志编写的微服务。 <br><blockquote>  -只能给出适合RAM的最后N行。 <br>  -不太紧凑的存储（无透明压缩）。 </blockquote><br><h4>  Hadoop的 </h4><br><blockquote>  -并非所有格式都有索引。 <br>  -读取速度可能更高（取决于格式）。 <br>  -设置的复杂性。 <br>  -不可能从成千上万的服务器中插入（需要Kafka或类似产品）。 </blockquote><h4>  Rsyslog +文件 </h4><br><blockquote>  -没有索引。 <br>  -低读取速度（常规grep / zgrep）。 <br>  -架构上不支持的字符串&gt; 4 Kb，UDP甚至更少（1.5 Kb）。 <br>  ±通过在表冠上对数旋转实现紧凑的存储 </blockquote><br> 我们将rsyslog用作长期存储的备用，但是长行被截断了，因此很难称其为理想的。 <br><br><h4>  LSD +文件 </h4><br><blockquote>  -没有索引。 <br>  -低读取速度（常规grep / zgrep）。 <br>  -不是专门为从成千上万的服务器插入而设计的。 <br>  ±通过在表冠上对数旋转实现紧凑的存储。 </blockquote> 在我们的案例中，与rsyslog的区别在于LSD支持长字符串，但是要插入成千上万的服务器，需要对内部协议进行重大更改，尽管可以做到。 <br><br><h4> 弹性搜索 </h4><br><blockquote>  -操作问题。 <br>  -录制不稳定。 <br>  -没有UDP。 <br>  -压缩不良。 </blockquote> ELK堆栈已经几乎是日志存储的行业标准。 根据我们的经验，读取速度一切都很好，但是例如在合并索引时，书写就有问题。 <br><br>  ElasticSearch主要设计用于全文搜索和相对频繁的读取请求。 对于我们而言，准确的巧合是，稳定的记录和或多或少地快速读取我们的数据的能力更为重要。  ElasticSearch上的索引经过了锐化，可以进行全文搜索，并且与原始内容的gzip相比，其磁盘空间很大。 <br><br><h4>  Clickhouse </h4><br><blockquote>  -没有UDP。 </blockquote><br> 总的来说，ClickHouse唯一不适合我们的是缺少UDP通信。 实际上，在以上选项中，只有rsyslog拥有，但是rsyslog不支持长行。 <br><br> 根据其他条件，ClickHouse提出了建议，我们决定使用它，并且在此过程中解决了运输问题。 <br><br><h3> 为什么需要KittenHouse </h3><br> 您可能知道，VKontakte在PHP / KPHP上工作，在C / C ++中带有“引擎”（微服务），在Go上也有一点。 除了共享内存和开放连接之外，PHP在请求之间没有“状态”的概念。 <br><br> 由于我们有成千上万的服务器，希望从这些服务器将日志发送到ClickHouse，因此保持每个PHP工作者的开放连接（每个服务器可以有100多个工作者）是无利可图的。 因此，我们需要ClickHouse和PHP之间的某种代理。 我们称这个代理为KittenHouse。 <br><br><h3> 小猫屋v1 </h3><br> 首先，我们决定尝试使用最简单的方案来了解我们的方法是否行得通。 如果在解决这个问题时想到卡夫卡，那么您并不孤单。 但是，我们不想使用其他中间服务器-在这种情况下，我们可以轻松地依靠这些服务器的性能，而不是ClickHouse本身的性能。 此外，我们收集了日志，并且需要在数据插入方面进行可预见的且小的延迟。 该方案如下： <br><br><img src="https://habrastorage.org/webt/az/pv/b8/azpvb8fivabsjrpasiemvl0_udw.png"><br><br> 在每个服务器上都安装了本地代理（小猫），每个实例与必要的ClickHouse服务器严格保持一个HTTP连接。 粘贴是在假脱机表中完成的，因为通常不建议插入MergeTree。 <br><br><h3> 特色KittenHouse，v1 </h3><br>  KittenHouse的第一个版本知道很多，但这足以进行测试： <br><br><ul><li> 通过我们的RPC（TL计划）进行通信。 </li><li> 每个服务器维持1个TCP / IP连接。 </li><li> 默认情况下，内存中缓冲的缓冲区大小有限（其余部分将被丢弃）。 </li><li> 写入磁盘的能力，在这种情况下，保证了交付（至少一次）。 </li><li> 插入间隔是每2秒一次。 </li></ul><br><h3> 第一个问题 </h3><br> 当我们“偿还” ClickHouse服务器几个小时然后重新打开它时，我们遇到了第一个问题。 在下面，您可以看到服务器“上升”后的平均负载： <br><br><img src="https://habrastorage.org/webt/jr/sm/o6/jrsmo61d61pmkmf1wt39l8igl_i.png"><br><br> 解释很简单：ClickHouse每个线程模型都有一个网络，因此当我尝试同时从数千个节点进行INSERT时，对CPU资源的竞争非常激烈，服务器几乎没有响应。 但是，所有数据最终都插入了，什么也没掉。 <br><br> 为了解决这个问题，我们将nginx放在ClickHouse的前面，总的来说，它有所帮助。 <br><br><h3> 进一步发展 </h3><br> 在操作过程中，我们遇到了许多问题，主要与ClickHouse无关，而与我们的操作方式有关。 这是我们踩到的另一把耙子： <br><br><h4> 大量的“块”缓冲区表导致MergeTree中频繁的缓冲区刷新 </h4><br> 在我们的例子中，有16个缓冲区和每2秒重置一次间隔，并且有20个表，每秒最多可提供160个插入。 这会定期严重影响插入性能-后台合并很多，磁盘利用率达到80％或更高。 <br><br>  <b>解决方案：</b>增加默认的缓冲区重置间隔，将块数减少到2。 <br><br><h4> 当连接到上游端时，Nginx返回502 </h4><br> 这本身不是问题，但是结合频繁刷新缓冲区，在尝试插入任何表以及尝试执行SELECT时，这会产生相当高的502错误背景。 <br><br>  <b>解决方案：他们</b>使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=http://github.com/valyala/fast">fasthttp</a>库编写了反向代理，该库将插入分组到表中，并且非常经济地使用了连接。 它还可以区分SELECT和INSERT，并具有用于插入和读取的独立连接池。 <br><br><img src="https://habrastorage.org/webt/7i/4z/wl/7i4zwlmtjgfpgodsdqup1coqqus.png"><br><br><h4> 密集插入会耗尽内存 </h4><br>  fasthttp库有其优点和缺点。 缺点之一是在将控制权交给请求处理程序之前，请求和响应已在内存中完全缓冲。 对我们来说，这导致这样一个事实，即如果向ClickHouse插入“没有时间”，则缓冲区开始增长，最终服务器上的所有内存都用完了，这导致OOM杀死了反向代理。 同事们提了一个动力： <br><br><img src="https://habrastorage.org/webt/ny/cb/k1/nycbk1toeiw_x-ktpun4gmicsf0.png" width="300"><br><br>  <b>解决方案：</b>修补fasthttp以支持流式传输POST请求的内容原来是一项艰巨的任务，因此，如果请求带有KITTEN HTTP方法，我们决定使用Hijack（）连接并将连接升级到我们的协议。 由于服务器必须作为响应来回复MEOW，因此如果服务器理解此协议，则整个方案称为KITTEN / MEOW协议。 <br><br> 我们一次只能读取50个随机连接，因此，由于使用了TCP / IP，其余的客户端“等待”，并且在队列到达相应的客户端之前，我们不会在缓冲区上花费内存。 这将内存消耗减少了至少20倍，而且我们再也没有此类问题。 <br><br><h4> 如果查询很长，ALTER表可能会变长 </h4><br>  ClickHouse具有无阻塞的ALTER，因为它既不会干扰SELECT查询也不会干扰INSERT查询。 但是，ALTER在完成对在ALTER之前发送的该表的查询执行之前，无法启动。 <br><br> 如果您对服务器上的任何表进行“长时间”查询，那么您可能会遇到这种情况，即该表上的ALTER没有时间在默认的60秒超时时间内执行。 但这并不意味着ALTER将失败：它将在这些SELECT查询完成后立即执行。 <br><br> 这意味着您不知道ALTER实际发生在什么时间，并且您无法自动重新创建Buffer表，因此它们的布局始终相同。 这可能会导致插入问题。 <br><br><img src="https://habrastorage.org/webt/59/3n/qn/593nqn-p_ujm0uqitctfapgj8t4.png"><br><br><img src="https://habrastorage.org/webt/pj/2p/8p/pj2p8pxgpjxefjjgo_yzbvqg_ys.png"><br><br>  <b>解决方案：</b>因此，我们计划完全放弃使用缓冲区表。 通常，缓冲表具有作用域，到目前为止，我们一直在使用它们，并且不会遇到巨大的问题。 但是现在我们终于到了要点，在反向代理服务器上实现缓冲区表的功能比继续克服它们的缺点要容易得多。 示例电路如下所示（虚线显示了INSERT上的ACK异步）。 <br><br><img src="https://habrastorage.org/webt/1_/1f/l4/1_1fl4op3ycts_jltiboixtxmoq.png"><br><br><h3> 读取数据 </h3><br> 假设我们找出了插入内容。 如何从ClickHouse读取这些日志？ 不幸的是，我们没有找到任何方便且易于使用的工具来从ClickHouse读取原始数据（没有图形等），因此我们编写了自己的解决方案-LightHouse。 它的功能相当适中： <br><br><ul><li> 快速查看表内容。 </li><li> 过滤，分类。 </li><li> 编辑SQL查询。 </li><li> 查看表结构。 </li><li> 显示使用的大约行数和磁盘空间。 </li></ul><br> 但是，LightHouse速度很快，能够满足我们的需求。 这是几个屏幕截图： <br><br>  <b>查看表结构</b> <br><br><img src="https://habrastorage.org/webt/ne/jb/vt/nejbvtrgm8w2plmtk9rt24vtu9c.png"><br><br>  <b>内容过滤</b> <br><br><img src="https://habrastorage.org/webt/qe/-m/lj/qe-mlja21vnhuxziu3bzoj2gvek.png"><br><br><h3> 结果 </h3><br>  ClickHouse实际上是唯一在VKontakte扎根的开源数据库。 我们对它的工作速度感到满意，并准备弥补缺点，下面将对此进行讨论。 <br><br><h4> 工作困难 </h4><br> 总而言之，ClickHouse是一个非常稳定且非常快速的数据库。 但是，与任何产品一样，尤其是年纪轻轻的产品，需要考虑作品中的某些功能： <br><br><ul><li> 并非所有版本都同样稳定：不要在生产中直接升级到新版本，最好等待几个bugfix版本发布。 </li><li> 为了获得最佳性能，强烈建议根据说明配置RAID和其他一些东西。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">最近有报道称</a>这是高<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">负荷的</a> 。 </li><li> 复制没有内置的速度限制，如果您不自己对其进行限制（但他们承诺会对其进行修复），则可能导致服务器性能显着降低。 </li><li>  Linux具有虚拟内存机制的令人不快的功能：如果您主动写入磁盘并且没有足够的时间刷新数据，则在某个时候服务器完全“进入自身”，开始主动将页面缓存刷新到磁盘并几乎完全阻塞ClickHouse进程。 大型合并有时会发生这种情况，您需要监视此情况，例如，自己定期刷新缓冲区或进行同步。 </li></ul><br><h3> 开源的 </h3><br>  KittenHouse和LightHouse现在可以在我们的github存储库中以开源形式使用： <br><br><ul><li>  KittenHouse： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">github.com/vkcom/kittenhouse</a> </li><li> 灯塔： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">github.com/vkcom/lighthouse</a> </li></ul><br> 谢谢你 <br><br>  <i>Yuri Nasretdinov，VKontakte后端基础架构部门的开发人员</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN430168/">https://habr.com/ru/post/zh-CN430168/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN430156/index.html">“不客气”：流媒体视频服务市场将出现新的播放器</a></li>
+<li><a href="../zh-CN430158/index.html">10条对任何组织都可能有用的安全诫命</a></li>
+<li><a href="../zh-CN430160/index.html">全新VS 2019的UX / UI设计</a></li>
+<li><a href="../zh-CN430164/index.html">如何对外国客户说不，不破坏业务关系</a></li>
+<li><a href="../zh-CN430166/index.html">Blazor 0.7.0的新功能</a></li>
+<li><a href="../zh-CN430172/index.html">使用IPFS的无服务器静态站点</a></li>
+<li><a href="../zh-CN430178/index.html">中国人造太阳...</a></li>
+<li><a href="../zh-CN430180/index.html">“头脑在线。” 与另一种想法接触</a></li>
+<li><a href="../zh-CN430182/index.html">CodeOne 2018作为JavaOne，但仅在掩码中</a></li>
+<li><a href="../zh-CN430186/index.html">日常生活中的懒惰计算</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

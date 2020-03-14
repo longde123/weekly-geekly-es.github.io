@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐿️ 👩🏾‍🤝‍👨🏻 👂 Verwenden von ClickHouse in VK oder Warum wir KittenHouse geschrieben haben 🕙 🎯 👩🏼‍🤝‍👨🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Anfang des Jahres haben wir uns entschlossen, zu lernen, wie VK-Debugging-Protokolle effizienter als zuvor gespeichert und gelesen werden können. Debu...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Verwenden von ClickHouse in VK oder Warum wir KittenHouse geschrieben haben</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/vk/blog/430168/"><img src="https://habrastorage.org/webt/rr/st/hl/rrsthl86lfjf6fjaojdxickg_wu.jpeg" width="300" align="left">  Anfang des Jahres haben wir uns entschlossen, zu lernen, wie VK-Debugging-Protokolle effizienter als zuvor gespeichert und gelesen werden können.  Debugging-Protokolle sind beispielsweise Videokonvertierungsprotokolle (im Grunde die Ausgabe des Befehls ffmpeg und eine Liste von Schritten zur Vorverarbeitung von Dateien), die manchmal nur 2-3 Monate nach der Verarbeitung der Problemdatei benötigt werden. <br><br>  Zu diesem Zeitpunkt hatten wir zwei Möglichkeiten, Protokolle zu speichern und zu verarbeiten - unsere eigene Protokoll-Engine und rsyslog, die wir parallel verwendeten.  Wir begannen andere Optionen in Betracht zu ziehen und stellten fest, dass ClickHouse von Yandex für uns gut geeignet ist - wir entschieden uns, es zu implementieren. <br><br>  In diesem Artikel werde ich darüber sprechen, wie wir ClickHouse auf VKontakte verwendet haben, auf welche Art von Rechen sie getreten sind und was KittenHouse und LightHouse sind.  Beide Produkte sind in Open-Source-Links am Ende des Artikels dargestellt. <br><a name="habracut"></a><br><h3>  Protokollsammlungsaufgabe </h3><br>  Systemanforderungen: <br><br><ol><li>  Speicherung von Hunderten von Terabyte an Protokollen. </li><li>  Lagerung für Monate oder (selten) Jahre. </li><li>  Hohe Schreibgeschwindigkeit. </li><li>  Hohe Lesegeschwindigkeit (Lesen ist selten). </li><li>  Indexunterstützung </li><li>  Unterstützung für lange Saiten (&gt; 4 Kb). </li><li>  Einfache Bedienung. </li><li>  Kompakte Lagerung. </li><li>  Die Möglichkeit, von Zehntausenden von Servern einzufügen (UDP ist ein Plus). </li></ol><br><h3>  Mögliche Lösungen </h3><br>  Lassen Sie uns kurz die Optionen auflisten, die wir in Betracht gezogen haben, und ihre Nachteile: <br><br><h4>  Protokolliert die Engine </h4><br>  Unser selbstgeschriebener Microservice für Protokolle. <br><blockquote>  - Kann nur die letzten N Zeilen angeben, die in den RAM passen. <br>  - Nicht sehr kompakter Speicher (keine transparente Komprimierung). </blockquote><br><h4>  Hadoop </h4><br><blockquote>  - Nicht alle Formate haben Indizes. <br>  - Die Lesegeschwindigkeit kann höher sein (je nach Format). <br>  - Die Komplexität der Einstellungen. <br>  - Es gibt keine Möglichkeit, von Zehntausenden von Servern einzufügen (Kafka oder Analoga werden benötigt). </blockquote><h4>  Rsyslog + -Dateien </h4><br><blockquote>  - Keine Indizes. <br>  - Niedrige Lesegeschwindigkeit (normales grep / zgrep). <br>  - Architektonisch nicht unterstützte Strings&gt; 4 Kb, UDP noch weniger (1,5 Kb). <br>  ± Eine kompakte Lagerung wird durch logrotate über der Krone erreicht </blockquote><br>  Wir haben rsyslog als Fallback für die Langzeitspeicherung verwendet, aber lange Zeilen wurden abgeschnitten, sodass es kaum als ideal bezeichnet werden kann. <br><br><h4>  LSD + -Dateien </h4><br><blockquote>  - Keine Indizes. <br>  - Niedrige Lesegeschwindigkeit (normales grep / zgrep). <br>  - Nicht speziell für das Einfügen von Zehntausenden von Servern konzipiert. <br>  ± Eine kompakte Lagerung wird durch logrotate über der Krone erreicht. </blockquote>  Die Unterschiede zu rsyslog bestehen in unserem Fall darin, dass LSD lange Zeichenfolgen unterstützt. Zum Einfügen von Zehntausenden von Servern sind jedoch erhebliche Änderungen am internen Protokoll erforderlich, obwohl dies möglich ist. <br><br><h4>  Elasticsearch </h4><br><blockquote>  - Betriebsprobleme. <br>  - Instabile Aufnahme. <br>  - Kein UDP. <br>  - Schlechte Komprimierung. </blockquote> Der ELK-Stack ist bereits fast der Industriestandard für die Protokollspeicherung.  Nach unserer Erfahrung ist alles in Ordnung mit der Lesegeschwindigkeit, aber es gibt Probleme beim Schreiben, zum Beispiel beim Zusammenführen von Indizes. <br><br>  ElasticSearch wurde hauptsächlich für die Volltextsuche und relativ häufige Leseanforderungen entwickelt.  Für uns sind eine stabile Aufzeichnung und die Fähigkeit, unsere Daten mehr oder weniger schnell zu lesen, wichtiger und genau zufällig.  Der Index bei ElasticSearch ist für die Volltextsuche geschärft, und der Speicherplatz ist im Vergleich zum gzip des ursprünglichen Inhalts ziemlich groß. <br><br><h4>  Clickhouse </h4><br><blockquote>  - Kein UDP. </blockquote><br>  Im Großen und Ganzen war das einzige, was uns bei ClickHouse nicht gefiel, der Mangel an UDP-Kommunikation.  Von den oben genannten Optionen verfügte nur rsyslog darüber, aber rsyslog unterstützte keine langen Warteschlangen. <br><br>  Nach anderen Kriterien kam ClickHouse auf uns zu und wir entschieden uns, es zu verwenden, und Probleme mit dem Transport wurden dabei gelöst. <br><br><h3>  Warum KittenHouse benötigt wird </h3><br>  Wie Sie wahrscheinlich wissen, arbeitet VKontakte mit PHP / KPHP, mit "Engines" (Microservices) in C / C ++ und ein wenig mit Go.  PHP hat kein Konzept des "Status" zwischen Anforderungen, außer vielleicht für gemeinsam genutzten Speicher und offene Verbindungen. <br><br>  Da wir Zehntausende von Servern haben, von denen wir Protokolle an ClickHouse senden möchten, wäre es unrentabel, offene Verbindungen von jedem PHP-Worker aufrechtzuerhalten (es können mehr als 100 Worker für jeden Server sein).  Daher benötigen wir eine Art Proxy zwischen ClickHouse und PHP.  Wir haben diesen Proxy KittenHouse genannt. <br><br><h3>  KittenHouse, v1 </h3><br>  Zuerst haben wir uns entschlossen, ein möglichst einfaches Schema auszuprobieren, um zu verstehen, ob unser Ansatz funktioniert oder nicht.  Wenn Ihnen Kafka bei der Lösung dieses Problems in den Sinn kommt, sind Sie nicht allein.  Wir wollten jedoch keine zusätzlichen Zwischenserver verwenden. In diesem Fall können wir uns leicht auf die Leistung dieser Server und nicht auf ClickHouse selbst verlassen.  Außerdem haben wir Protokolle gesammelt und brauchten eine vorhersehbare und kleine Verzögerung beim Einfügen von Daten.  Das Schema ist wie folgt: <br><br><img src="https://habrastorage.org/webt/az/pv/b8/azpvb8fivabsjrpasiemvl0_udw.png"><br><br>  Auf jedem der Server ist unser lokaler Proxy (Kittenhouse) installiert, und jede Instanz unterhält ausschließlich eine HTTP-Verbindung mit dem erforderlichen ClickHouse-Server.  Das Einfügen erfolgt in Spool-Tabellen, da das Einfügen von MergeTree häufig nicht empfohlen wird. <br><br><h3>  Eigenschaften KittenHouse, v1 </h3><br>  Die erste Version von KittenHouse wusste einiges, aber dies war genug zum Testen: <br><br><ul><li>  Kommunikation über unser RPC (TL Scheme). </li><li>  Pflegen Sie 1 TCP / IP-Verbindung pro Server. </li><li>  Standardmäßig speicherinterne Pufferung mit begrenzter Puffergröße (der Rest wird verworfen). </li><li>  Die Möglichkeit, auf die Festplatte zu schreiben, besteht in diesem Fall eine Zustellgarantie (mindestens einmal). </li><li>  Das Einfügeintervall beträgt einmal alle 2 Sekunden. </li></ul><br><h3>  Erste Probleme </h3><br>  Das erste Problem trat auf, als wir den ClickHouse-Server mehrere Stunden lang „zurückzahlten“ und ihn dann wieder einschalteten.  Unten sehen Sie den Lastdurchschnitt auf dem Server, nachdem dieser "gestiegen" ist: <br><br><img src="https://habrastorage.org/webt/jr/sm/o6/jrsmo61d61pmkmf1wt39l8igl_i.png"><br><br>  Die Erklärung ist recht einfach: ClickHouse verfügt über ein Netzwerk pro Thread-Modell. Wenn ich also versuche, INSERT aus Tausenden von Knoten gleichzeitig zu erstellen, gab es eine sehr starke Konkurrenz um CPU-Ressourcen und der Server reagierte kaum.  Schließlich wurden jedoch alle Daten eingefügt und nichts fiel. <br><br>  Um dieses Problem zu lösen, haben wir nginx vor ClickHouse gestellt und im Allgemeinen hat es geholfen. <br><br><h3>  Weiterentwicklung </h3><br>  Während des Betriebs stießen wir auf eine Reihe von Problemen, die hauptsächlich nicht mit ClickHouse, sondern mit unserer Funktionsweise zusammenhängen.  Hier ist ein weiterer Rechen, auf den wir getreten sind: <br><br><h4>  Eine große Anzahl von "Blöcken" von Puffertabellen führt zu häufigen Pufferlöschungen in MergeTree </h4><br>  In unserem Fall gab es alle 2 Sekunden 16 Pufferstücke und ein Rücksetzintervall, und es gab 20 Tabellenstücke, die bis zu 160 Einfügungen pro Sekunde ergaben.  Dies wirkte sich in regelmäßigen Abständen sehr stark auf die Einfügeleistung aus - es gab viele Hintergrundzusammenführungen und die Festplattenauslastung erreichte 80% und mehr. <br><br>  <b>Lösung:</b> Erhöhen Sie das Standardintervall für das Zurücksetzen des Puffers und reduzieren Sie die Anzahl der Teile auf 2. <br><br><h4>  Nginx gibt 502 zurück, wenn Verbindungen zum Upstream-Ende hergestellt werden </h4><br>  Dies ist an sich kein Problem, aber in Kombination mit dem häufigen Leeren des Puffers ergab dies einen ziemlich hohen Hintergrund von 502 Fehlern beim Versuch, in eine der Tabellen einzufügen, sowie beim Versuch, SELECT auszuführen. <br><br>  <b>Lösung: Sie</b> haben ihren Reverse-Proxy mithilfe der <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=http://github.com/valyala/fast">fasthttp-</a> Bibliothek geschrieben, die die Einfügung in Tabellen gruppiert und Verbindungen sehr wirtschaftlich verbraucht.  Es unterscheidet auch zwischen SELECT und INSERT und verfügt über separate Verbindungspools zum Einfügen und Lesen. <br><br><img src="https://habrastorage.org/webt/7i/4z/wl/7i4zwlmtjgfpgodsdqup1coqqus.png"><br><br><h4>  Bei intensiver Einfügung geht der Speicher aus </h4><br>  Die fasthttp-Bibliothek hat ihre Vor- und Nachteile.  Einer der Nachteile besteht darin, dass die Anforderung und die Antwort vollständig im Speicher gepuffert sind, bevor der Anforderungshandler gesteuert wird.  Für uns führte dies dazu, dass, wenn die Einfügung in ClickHouse "keine Zeit hatte", die Puffer zu wachsen begannen und schließlich der gesamte Speicher auf dem Server leer wurde, was dazu führte, dass OOM den Reverse Proxy tötete.  Kollegen haben einen Demotivator gezogen: <br><br><img src="https://habrastorage.org/webt/ny/cb/k1/nycbk1toeiw_x-ktpun4gmicsf0.png" width="300"><br><br>  <b>Lösung: Das</b> Patchen von fasthttp zur Unterstützung des Streamings der POST-Anforderung stellte sich als entmutigende Aufgabe heraus. Daher haben wir uns entschieden, Hijack () -Verbindungen zu verwenden und die Verbindung zu unserem Protokoll zu aktualisieren, wenn die Anforderung mit der KITTEN-HTTP-Methode geliefert wurde.  Da der Server MEOW als Antwort antworten muss, wird das gesamte Schema als KITTEN / MEOW-Protokoll bezeichnet, wenn er dieses Protokoll versteht. <br><br>  Wir lesen jeweils nur von 50 zufälligen Verbindungen. Dank TCP / IP „warten“ die restlichen Clients und geben keinen Speicher für Puffer aus, bis die Warteschlange die jeweiligen Clients erreicht.  Dies reduzierte den Speicherverbrauch um mindestens das 20-fache, und wir hatten keine derartigen Probleme mehr. <br><br><h4>  ALTER-Tabellen können bei langen Abfragen sehr lang werden </h4><br>  ClickHouse verfügt über einen nicht blockierenden ALTER in dem Sinne, dass er sowohl SELECT- als auch INSERT-Abfragen nicht beeinträchtigt.  ALTER kann jedoch erst gestartet werden, wenn die vor ALTER gesendeten Abfragen an diese Tabelle abgeschlossen sind. <br><br>  Wenn Sie Hintergrundinformationen zu „langen“ Abfragen an Tabellen auf Ihrem Server haben, kann es vorkommen, dass ALTER in dieser Tabelle in einem Standardzeitlimit von 60 Sekunden keine Zeit für die Ausführung hat.  Dies bedeutet jedoch nicht, dass ALTER fehlschlägt: Es wird ausgeführt, sobald diese SELECT-Abfragen abgeschlossen sind. <br><br>  Dies bedeutet, dass Sie nicht wissen, zu welchem ​​Zeitpunkt ALTER tatsächlich aufgetreten ist, und dass Sie nicht in der Lage sind, Puffertabellen automatisch neu zu erstellen, sodass ihr Layout immer gleich ist.  Dies kann zu Einfügeproblemen führen. <br><br><img src="https://habrastorage.org/webt/59/3n/qn/593nqn-p_ujm0uqitctfapgj8t4.png"><br><br><img src="https://habrastorage.org/webt/pj/2p/8p/pj2p8pxgpjxefjjgo_yzbvqg_ys.png"><br><br>  <b>Lösung: Aus diesem</b> Grund planen wir, die Verwendung von Puffertabellen vollständig aufzugeben.  Im Allgemeinen haben Puffertabellen einen Gültigkeitsbereich. Bisher verwenden wir sie und haben keine großen Probleme.  Jetzt haben wir endlich den Punkt erreicht, an dem es einfacher ist, die Funktionalität von Puffertabellen auf der Reverse-Proxy-Seite zu implementieren, als ihre Mängel weiterhin in Kauf zu nehmen.  Eine Beispielschaltung sieht folgendermaßen aus (die gestrichelte Linie zeigt die ACK-Asynchronität bei INSERT). <br><br><img src="https://habrastorage.org/webt/1_/1f/l4/1_1fl4op3ycts_jltiboixtxmoq.png"><br><br><h3>  Daten lesen </h3><br>  Nehmen wir an, wir haben die Beilage herausgefunden.  Wie lese ich diese Protokolle von ClickHouse?  Leider haben wir keine praktischen und benutzerfreundlichen Tools zum Lesen von Rohdaten (ohne Grafiken und andere) von ClickHouse gefunden. Deshalb haben wir unsere eigene Lösung geschrieben - LightHouse.  Seine Fähigkeiten sind eher bescheiden: <br><br><ul><li>  Schnelle Ansicht des Tabelleninhalts. </li><li>  Filtern, Sortieren. </li><li>  Bearbeiten einer SQL-Abfrage. </li><li>  Tabellenstruktur anzeigen. </li><li>  Zeigt die ungefähre Anzahl der Zeilen und den verwendeten Speicherplatz an. </li></ul><br>  LightHouse ist jedoch schnell und in der Lage, das zu tun, was wir brauchen.  Hier ein paar Screenshots: <br><br>  <b>Tabellenstruktur anzeigen</b> <br><br><img src="https://habrastorage.org/webt/ne/jb/vt/nejbvtrgm8w2plmtk9rt24vtu9c.png"><br><br>  <b>Inhaltsfilterung</b> <br><br><img src="https://habrastorage.org/webt/qe/-m/lj/qe-mlja21vnhuxziu3bzoj2gvek.png"><br><br><h3>  Ergebnisse </h3><br>  ClickHouse ist praktisch die einzige Open-Source-Datenbank, die in VKontakte Fuß gefasst hat.  Wir sind mit der Geschwindigkeit seiner Arbeit zufrieden und bereit, die unten diskutierten Mängel in Kauf zu nehmen. <br><br><h4>  Schwierigkeiten bei der Arbeit </h4><br>  Alles in allem ist ClickHouse eine sehr stabile Datenbank und sehr schnell.  Wie bei jedem Produkt, insbesondere bei so jungen, gibt es jedoch Merkmale in der Arbeit, die berücksichtigt werden müssen: <br><br><ul><li>  Nicht alle Versionen sind gleich stabil: Aktualisieren Sie in der Produktion nicht direkt auf die neue Version. Warten Sie besser auf mehrere Bugfix-Versionen. </li><li>  Für eine optimale Leistung ist es sehr ratsam, RAID und einige andere Dinge gemäß den Anweisungen zu konfigurieren.  Dies wurde <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">kürzlich bei Hochlast gemeldet</a> . </li><li>  Die Replikation hat keine integrierten Geschwindigkeitsbegrenzungen und kann die Serverleistung erheblich beeinträchtigen, wenn Sie sie nicht selbst einschränken (sie versprechen jedoch, sie zu beheben). </li><li>  Linux hat eine unangenehme Funktion des virtuellen Speichermechanismus: Wenn Sie aktiv auf die Festplatte schreiben und die Daten keine Zeit zum Löschen haben, geht der Server irgendwann vollständig in sich selbst über, beginnt aktiv, den Seitencache auf die Festplatte zu leeren und blockiert den ClickHouse-Prozess fast vollständig.  Dies geschieht manchmal bei großen Zusammenführungen, und Sie müssen dies überwachen, z. B. die Puffer regelmäßig selbst leeren oder synchronisieren. </li></ul><br><h3>  Open Source </h3><br>  KittenHouse und LightHouse sind jetzt als Open Source in unserem Github-Repository verfügbar: <br><br><ul><li>  KittenHouse: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">github.com/vkcom/kittenhouse</a> </li><li>  Leuchtturm: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">github.com/vkcom/lighthouse</a> </li></ul><br>  Vielen Dank! <br><br>  <i>Yuri Nasretdinov, Entwickler in der Backend-Infrastrukturabteilung von VKontakte</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de430168/">https://habr.com/ru/post/de430168/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de430156/index.html">"Abheben oder nicht": Ein neuer Player wird auf dem Markt für Streaming-Videodienste erscheinen</a></li>
+<li><a href="../de430158/index.html">10 Sicherheitsgebote, die für jede Organisation nützlich sein können</a></li>
+<li><a href="../de430160/index.html">UX / UI-Design des neuen VS 2019</a></li>
+<li><a href="../de430164/index.html">Wie man zu einem ausländischen Kunden nein sagt und die Geschäftsbeziehungen nicht ruiniert</a></li>
+<li><a href="../de430166/index.html">Was ist neu in Blazor 0.7.0?</a></li>
+<li><a href="../de430172/index.html">Serverlose statische Site mit IPFS</a></li>
+<li><a href="../de430178/index.html">Chinesische künstliche Sonne ...</a></li>
+<li><a href="../de430180/index.html">"Der Geist ist online." Kontakt mit einem anderen Geist</a></li>
+<li><a href="../de430182/index.html">CodeOne 2018 als JavaOne, jedoch nur in Maske</a></li>
+<li><a href="../de430186/index.html">Lazy Computing im Alltag</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

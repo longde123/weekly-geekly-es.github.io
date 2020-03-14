@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐒 👦 😢 Elasticsearch PB群集中的最佳分片排列：线性规划 🤜🏽 🤦 🔔</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Elasticsearch是Meltwater和Fairhair.ai搜索引擎的核心，它是一个包含数十亿个媒体和社交媒体文章的集群集合。 
+
+ 集群中的索引分片在访问结构，工作负载和大小方面差异很大，这引起了一些非常有趣的问题。 
+
+ 在本文中，我们将描述如何使用线性规划（线性优化）在群集中的所有节...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Elasticsearch PB群集中的最佳分片排列：线性规划</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/429738/"><img src="https://habrastorage.org/getpro/habr/post_images/fb5/ee1/f72/fb5ee1f72a2519aae061ef6be05aa09a.png" align="left">  Elasticsearch是Meltwater和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Fairhair.ai</a>搜索引擎的核心，它是一个包含数十亿个媒体和社交媒体文章的集群集合。 <br><br> 集群中的索引分片在访问结构，工作负载和大小方面差异很大，这引起了一些非常有趣的问题。 <br><br> 在本文中，我们将描述如何使用线性规划（线性优化）在群集中的所有节点上尽可能均匀地分布搜索和索引工作负载。 此解决方案降低了一个节点成为系统瓶颈的可能性。 结果，我们提高了搜索速度并节省了基础架构。 <br><a name="habracut"></a><br><h1> 背景知识 </h1><br>  Fairhair.ai的搜索引擎包含来自社交媒体和社论的大约400亿个帖子，每天处理数百万个查询。 该平台为客户提供搜索结果，图形，分析，数据导出，以进行更高级的分析。 <br><br> 这些庞大的数据集驻留在750个节点的Elasticsearch集群中，这些集群具有50,000个分片中的数千个索引。 <br><br> 有关我们集群的更多信息，请参阅先前有关<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">其架构</a>和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">机器学习负载平衡器的文章</a> 。 <br><br><h1> 工作量分配不均 </h1><br> 我们的数据查询和用户查询通常都带有日期限制。 大多数请求属于某个时间段，例如上周，上个月，上一季度或任意范围。 为了简化索引和查询，我们使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">时间索引</a> ，类似于<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ELK堆栈</a> 。 <br><br> 该索引体系结构具有多个优点。 例如，您可以执行有效的质量索引，以及在数据过时时删除整个索引。 这也意味着给定索引的工作负载会随着时间变化很大。 <br><br> 与旧索引相比，最新查询的索引数量更多。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/cd9/4a6/25a/cd94a625ae06e77932216d721bb5eea7.png"><br>  <i><font color="gray">图</font></i>  <i><font color="gray">1.时间索引的访问方案。</font></i>  <i><font color="gray">纵轴表示已完成查询的数量，横轴表示索引的使用期限。</font></i>  <i><font color="gray">每周，每月和每年的平稳期都清晰可见，随后旧指标的工作量减少了</font></i> <br><br> 图中的图案。  1个是可以预见的，因为我们的客户对新信息更感兴趣，并定期将当月与过去和/或今年与过去一年进行比较。 问题在于，Elasticsearch不了解这种模式，并且不会自动针对观察到的工作负载进行优化！ <br><br> 内置的Elasticsearch分片分配算法仅考虑两个因素： <br><br><ol><li> 每个节点上<i>的分片数</i> 。 该算法尝试在整个集群中平均平衡每个节点的分片数量。 </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">标记</a>可用磁盘空间。  Elasticsearch在决定是向该节点分配新的分片还是将段从该节点移动到其他节点之前，先考虑节点上的可用磁盘空间。 如果使用了80％的磁盘，则禁止在一个节点上放置新的碎片，而90％的系统将开始从该节点主动转移碎片。 </li></ol><br> 该算法的基本假设是，集群中的每个段接收的工作量大致相同，并且每个人的大小均相同。 就我们而言，这与事实相去甚远。 <br><br> 标准负载平衡会很快导致群集中出现热点。 它们随着工作负载随时间变化而随机出现和消失。 <br><br> 热点本质上是指主机在接近一个或多个系统资源（例如CPU，磁盘I / O或网络带宽）的限制下运行。 发生这种情况时，节点首先将请求排队一段时间，这会增加对请求的响应时间。 但是，如果过载持续很长时间，那么最终请求将被拒绝，并且用户会收到错误消息。 <br><br> 拥塞的另一个常见后果是由于查询和索引操作导致JVM垃圾的不稳定压力，这导致JVM垃圾收集器的“可怕地狱”现象。 在这种情况下，JVM要么无法足够快地获取内存并崩溃，要么陷入无尽的垃圾回收周期，冻结并停止响应集群的请求和ping。 <br><br> 当我们<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在AWS下重构架构</a>时，问题变得更加严重。 以前，我们对自己在数据中心强大的服务器（24个内核）上最多运行四个Elasticsearch节点感到“震惊”。 这掩盖了碎片不对称分布的影响：机器上相对大量的铁心极大地减轻了负载。 <br><br> 重构之后，我们一次只在功能不强的机器（8核）上放置了一个节点-最初的测试立即显示出“热点”存在很大的问题。 <br><br>  Elasticsearch以随机顺序分配碎片，并且在集群中有500多个节点时，单个节点上太多“热”碎片的可能性大大增加-并且此类节点迅速溢出。 <br><br> 对于用户来说，这将意味着工作严重恶化，因为拥塞的节点响应速度很慢，有时会完全拒绝请求或崩溃。 如果您将这样的系统投入生产，那么用户会看到频繁的UI减速和随机超时。 <br><br> 同时，仍然存在大量带有分片的节点，它们没有很大的负载，实际上是不活动的。 这导致对群集资源的低效使用。 <br><br> 如果Elasticsearch更智能地分布分片，则可以避免这两个问题，因为所有节点上系统资源的平均使用率处于40％的健康水平。 <br><br><h3> 集群连续变化 </h3><br> 当工作超过500个节点时，我们还观察到了另一件事：节点状态的不断变化。 在以下因素的影响下，分片在节点中不断来回移动： <br><br><ul><li> 创建新索引，旧索引被丢弃。 </li><li> 磁盘标签是由于索引编制和其他分片更改而触发的。 </li><li>  Elasticsearch随机决定与群集的平均值相比，节点上的碎片太少或太多。 </li><li> 硬件崩溃和操作系统级别的崩溃导致新的AWS实例启动并将它们加入集群。 对于500个节点，这种情况平均每周发生几次。 </li><li> 由于正常的数据增长，几乎每周都会添加新站点。 </li></ul><br> 考虑到所有这些因素，我们得出的结论是，所有问题的复杂而连续的解决方案都需要一个连续且动态的重新优化算法。 <br><br><h3> 解决方案：Shardonnay </h3><br> 经过对可用选项的长期研究，我们得出了我们想要的结论： <br><br><ol><li> 构建自己的解决方案。 我们没有找到任何适合我们规模和任务的好的文章，代码或其他现有想法。 </li><li> 在Elasticsearch外部启动重新平衡过程，并使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">集群重定向API，</a>而不是尝试<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">创建插件</a> 。 我们希望有一个快速的反馈循环，并且在如此规模的集群上部署插件可能需要数周的时间。 </li><li> 使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">线性编程</a>在任何给定时间计算最佳碎片运动。 </li><li> 连续执行优化，以使群集状态逐渐达到最佳状态。 </li><li> 不要一次移动太多碎片。 </li></ol><br> 我们注意到了一件有趣的事情：如果您同时移动过多的分片，则很容易触发<i>级联的分片移动风暴</i> 。 此类风暴爆发后，它可能会持续数小时，这时碎片将无法控制地来回移动，从而在各个位置出现有关磁盘空间临界水平的标记。 反过来，这会导致新的碎片运动等。 <br><br> 要了解正在发生的事情，重要的是要知道，当您移动活动索引的段时，它实际上开始在要从中移动的磁盘上使用更多的空间。 这是由于Elasticsearch如何存储<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">事务日志</a> 。 我们已经看到了在移动节点时索引加倍的情况。 这意味着由于磁盘空间使用率高而启动了分片移动的节点将<i>在一段</i>时间内使用<i>更多的磁盘空间，</i>直到它将足够的分片移动到其他节点。 <br><br> 为解决此问题，我们以著名的霞多丽葡萄品种<i>为名</i> ，开发了<i>Shardonnay</i>服务。 <br><br><h3> 线性优化 </h3><br> 线性优化（或<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">线性规划</a> LP）是一种在数学模型中获得最佳结果（例如最大利润或最低成本）的方法，其要求由线性关系表示。 <br><br> 优化方法基于线性变量系统，必须满足的一些约束以及确定成功解决方案外观的目标函数。 线性优化的目标是找到受限制的，使目标函数最小化的变量值。 <br><br><h3> 分片分布是线性优化问题 </h3><br>  Shardonnay应该连续工作，并且在每次迭代时执行以下算法： <br><br><ol><li> 使用该API，Elasticsearch检索有关集群中现有分片，索引和节点及其当前位置的信息。 </li><li> 将集群的状态建模为一组二进制LP变量。 每个组合（节点，索引，分片，副本）都有自己的变量。 在LP模型中，有许多经过精心设计的试探法，限制和目标函数，下面将对此进行详细介绍。 </li><li> 将LP模型发送到线性求解器，该线性求解器考虑了约束和目标函数，给出了一个最佳解决方案。 解决方案是将分片重新分配给节点。 </li><li> 解释LP的解并将其转换为碎片运动的序列。 </li><li> 指示Elasticsearch通过集群重定向API移动分片。 </li><li> 等待集群移动分片。 </li><li> 返回步骤1。 </li></ol><br> 最主要的是开发正确的约束条件和目标功能。 其余的将由Solver LP和Elasticsearch完成。 <br><br> 毫不奇怪，对于这种规模和复杂性的集群而言，这项任务非常困难！ <br><br><h3> 局限性 </h3><br> 我们根据Elasticsearch本身规定的规则对模型进行一些限制。 例如，始终粘贴磁盘标签或禁止将副本与同一分片的另一副本放置在同一节点上。 <br><br> 根据在大型集群上多年工作中获得的经验，添加了其他组件。 以下是一些我们自己的局限性的例子： <br><br><ul><li> 不要移动当今的索引，因为它们是最热门的索引，并且在读取和写入时几乎保持恒定的负载。 </li><li> 优先移动较小的分片，因为Elasticsearch可以更快地处理它们。 </li><li> 建议在未来的碎片变得活跃，开始建立索引并承受沉重的负载之前几天创建并放置它们。 </li></ul><br><br><h3> 成本函数 </h3><br> 我们的成本函数权衡了许多不同的因素。 例如，我们想要： <br><br><ul><li> 最小化索引和搜索查询的差异，以减少“热点”的数量； </li><li> 保持磁盘使用的最小差异，以使系统稳定运行； </li><li> 如上所述，最大程度地减少分片移动的次数，以免发生带有连锁反应的“风暴”。 </li></ul><br><h3> 减少LP变量 </h3><br> 在我们的规模上，这些LP模型的大小成为一个问题。 我们很快意识到，在超过6000万个变量的合理时间内无法解决问题。 因此，我们应用了许多优化和建模技巧来大大减少变量的数量。 其中包括有偏抽样，启发式，分治法，迭代松弛和优化。 <br><br> <a href=""><img src="https://habrastorage.org/getpro/habr/post_images/4db/240/fb2/4db240fb21653d48fd6a5ad69728082e.png"></a> <br>  <i><font color="gray">图</font></i>  <i><font color="gray">2.热图显示了Elasticsearch集群上的不平衡负载。</font></i>  <i><font color="gray">这体现在图左侧的资源使用大量分散中。</font></i>  <i><font color="gray">通过不断的优化，情况正在逐步稳定</font></i> <br><br> <a href=""><img src="https://habrastorage.org/getpro/habr/post_images/19c/fa6/f18/19cfa6f1813be7f3a2ae9d90c58570b2.png"></a> <br>  <i><font color="gray">图</font></i>  <i><font color="gray">3.热图显示在Shardonnay中设置热度功能之前和之后，群集所有节点上的CPU使用情况。</font></i>  <i><font color="gray">在工作负载不变的情况下，CPU使用率发生了显着变化。</font></i> <br><br> <a href=""><img src="https://habrastorage.org/getpro/habr/post_images/dfc/288/81f/dfc28881fa593f543c14c8aa14069525.png"></a> <br>  <i><font color="gray">图</font></i>  <i><font color="gray">热图显示了在与图4相同的时间段内磁盘的读取吞吐量。</font></i>  <i><font color="gray">3.读取操作也更均匀地分布在整个群集中。</font></i> <br><br><h1> 结果 </h1><br> 结果，即使对于我们庞大的集群，我们的LP解算器也能在几分钟内找到好的解决方案。 因此，系统在最优方向上迭代地改善了群集的状态。 <br><br> 最好的部分是工作负载和磁盘使用情况的分散程度达到了预期的收敛，并且自此以来，在集群状态发生了许多有意和意外的更改之后，这种接近最佳的状态得以保持！ <br><br> 现在，我们在Elasticsearch集群中支持健康的工作负载分配。 全部归功于线性优化和我们的服务，我们将其称为<i>霞多丽</i> 。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN429738/">https://habr.com/ru/post/zh-CN429738/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN429724/index.html">有用的评论。 28本书影响了我的思想，受到启发或变得更好</a></li>
+<li><a href="../zh-CN429728/index.html">基于Kotlin的现代MVI架构</a></li>
+<li><a href="../zh-CN429732/index.html">您可能会讨厌这个或一个关于代码看起来应该如何的故事</a></li>
+<li><a href="../zh-CN429734/index.html">带着偏见飞行的梦想</a></li>
+<li><a href="../zh-CN429736/index.html">索斯诺夫斯基的霍格威德。 在MO中引入了罚款以进行分配</a></li>
+<li><a href="../zh-CN429744/index.html">学习OpenGL。 第6.4课-IBL。 镜面曝光</a></li>
+<li><a href="../zh-CN429750/index.html">开发人员手册：DDD食谱（第3部分，应用程序体系结构）</a></li>
+<li><a href="../zh-CN429754/index.html">致命的硬件集成错误</a></li>
+<li><a href="../zh-CN429756/index.html">如何在运行时配置Nuxt.js环境变量的安装，或者如何做不像每个人都喜欢的事情并且不后悔</a></li>
+<li><a href="../zh-CN429758/index.html">为什么SRE文档很重要。 第一部分</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

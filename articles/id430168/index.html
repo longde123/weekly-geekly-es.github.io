@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌃 👕 💯 Menggunakan ClickHouse di VK, atau Mengapa kami menulis KittenHouse 🔠 👨 👏🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Pada awal tahun, kami memutuskan untuk belajar cara menyimpan dan membaca log debugging VK lebih efisien dari sebelumnya. Log debugging, misalnya, log...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Menggunakan ClickHouse di VK, atau Mengapa kami menulis KittenHouse</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/vk/blog/430168/"><img src="https://habrastorage.org/webt/rr/st/hl/rrsthl86lfjf6fjaojdxickg_wu.jpeg" width="300" align="left">  Pada awal tahun, kami memutuskan untuk belajar cara menyimpan dan membaca log debugging VK lebih efisien dari sebelumnya.  Log debugging, misalnya, log konversi video (pada dasarnya output dari perintah ffmpeg dan daftar langkah-langkah untuk file preprocessing), yang kadang-kadang kita hanya perlu 2-3 bulan setelah memproses file masalah. <br><br>  Pada saat itu, kami memiliki 2 cara untuk menyimpan dan memproses log - mesin log kami sendiri dan rsyslog, yang kami gunakan secara paralel.  Kami mulai mempertimbangkan opsi lain dan menyadari bahwa ClickHouse dari Yandex cukup cocok untuk kami - kami memutuskan untuk menerapkannya. <br><br>  Dalam artikel ini saya akan berbicara tentang bagaimana kami mulai menggunakan ClickHouse di VKontakte, yang telah kami injak, dan apa itu KittenHouse dan LightHouse.  Kedua produk diletakkan di sumber terbuka, tautan di akhir artikel. <br><a name="habracut"></a><br><h3>  Tugas pengumpulan log </h3><br>  Persyaratan Sistem: <br><br><ol><li>  Penyimpanan ratusan terabyte log. </li><li>  Penyimpanan selama berbulan-bulan atau (jarang) tahun. </li><li>  Kecepatan menulis tinggi. </li><li>  Kecepatan membaca tinggi (jarang membaca). </li><li>  Dukungan Indeks </li><li>  Dukungan untuk string panjang (&gt; 4 Kb). </li><li>  Kesederhanaan operasi. </li><li>  Penyimpanan kompak. </li><li>  Kemampuan untuk memasukkan dari puluhan ribu server (UDP akan menjadi nilai tambah). </li></ol><br><h3>  Kemungkinan solusi </h3><br>  Mari kita secara singkat daftar opsi yang kita pertimbangkan, dan kontra mereka: <br><br><h4>  Mesin log </h4><br>  Layanan catatan tertulis kami untuk log. <br><blockquote>  - Mampu memberikan hanya N baris terakhir yang sesuai dengan RAM. <br>  - Penyimpanan tidak terlalu kompak (tidak ada kompresi transparan). </blockquote><br><h4>  Hadoop </h4><br><blockquote>  - Tidak semua format memiliki indeks. <br>  - Kecepatan membaca bisa lebih tinggi (tergantung format). <br>  - Kompleksitas pengaturan. <br>  - Tidak mungkin untuk memasukkan dari puluhan ribu server (Kafka atau analog diperlukan). </blockquote><h4>  File Rsyslog + </h4><br><blockquote>  - Tidak ada indeks. <br>  - Kecepatan baca rendah (grep reguler / zgrep). <br>  - Arsitektur tidak didukung string&gt; 4 Kb, UDP bahkan kurang (1,5 Kb). <br>  ± Penyimpanan kompak dicapai dengan logrotate di atas mahkota </blockquote><br>  Kami menggunakan rsyslog sebagai cadangan untuk penyimpanan jangka panjang, tetapi garis panjang terpotong, sehingga hampir tidak bisa disebut ideal. <br><br><h4>  File LSD + </h4><br><blockquote>  - Tidak ada indeks. <br>  - Kecepatan baca rendah (grep reguler / zgrep). <br>  - Tidak dirancang khusus untuk pemasangan dari puluhan ribu server. <br>  ± Penyimpanan kompak dicapai dengan logrotate di atas mahkota. </blockquote>  Perbedaan dari rsyslog dalam kasus kami adalah bahwa LSD mendukung string panjang, tetapi perubahan signifikan pada protokol internal diperlukan untuk memasukkan dari puluhan ribu server, meskipun ini dapat dilakukan. <br><br><h4>  Pencarian Elastics </h4><br><blockquote>  - Masalah dengan operasi. <br>  - Rekaman tidak stabil. <br>  - Tidak ada UDP. <br>  - Kompresi buruk. </blockquote> Tumpukan ELK sudah hampir standar industri untuk penyimpanan log.  Dalam pengalaman kami, semuanya baik-baik saja dengan kecepatan membaca, tetapi ada masalah dengan menulis, misalnya, saat menggabungkan indeks. <br><br>  ElasticSearch terutama dirancang untuk pencarian teks lengkap dan permintaan membaca yang relatif sering.  Bagi kami, perekaman yang stabil dan kemampuan untuk membaca data kami lebih atau kurang cepat lebih penting, dan secara kebetulan.  Indeks di ElasticSearch dipertajam untuk pencarian teks lengkap, dan ruang disk cukup besar dibandingkan dengan gzip konten asli. <br><br><h4>  Clickhouse </h4><br><blockquote>  - Tidak ada UDP. </blockquote><br>  Secara umum, satu-satunya hal yang tidak sesuai dengan kami di ClickHouse adalah kurangnya komunikasi UDP.  Bahkan, dari opsi di atas, hanya rsyslog yang memilikinya, tetapi rsyslog tidak mendukung garis yang panjang. <br><br>  Menurut kriteria lain, ClickHouse mendatangi kami, dan kami memutuskan untuk menggunakannya, dan masalah dengan transportasi diselesaikan dalam proses. <br><br><h3>  Mengapa KittenHouse dibutuhkan </h3><br>  Seperti yang mungkin Anda ketahui, VKontakte bekerja di PHP / KPHP, dengan "mesin" (microservices) di C / C ++ dan sedikit on Go.  PHP tidak memiliki konsep "keadaan" antara permintaan, kecuali mungkin untuk memori bersama dan koneksi terbuka. <br><br>  Karena kami memiliki puluhan ribu server dari mana kami ingin dapat mengirim log ke ClickHouse, itu akan tidak menguntungkan untuk menjaga koneksi terbuka dari setiap pekerja PHP (mungkin ada lebih dari 100 pekerja untuk setiap server).  Oleh karena itu, kami memerlukan semacam proxy antara ClickHouse dan PHP.  Kami menyebut proksi ini KittenHouse. <br><br><h3>  KittenHouse, v1 </h3><br>  Pertama, kami memutuskan untuk mencoba skema yang paling sederhana untuk memahami apakah pendekatan kami akan berhasil atau tidak.  Jika Kafka muncul di benak Anda ketika memecahkan masalah ini, maka Anda tidak sendirian.  Namun, kami tidak ingin menggunakan server perantara tambahan - dalam hal ini, kami dapat dengan mudah mengandalkan kinerja server ini, dan bukan ClickHouse itu sendiri.  Selain itu, kami mengumpulkan log dan kami membutuhkan penundaan penyisipan data yang dapat diprediksi dan kecil.  Skemanya adalah sebagai berikut: <br><br><img src="https://habrastorage.org/webt/az/pv/b8/azpvb8fivabsjrpasiemvl0_udw.png"><br><br>  Pada masing-masing server, proksi lokal kami (kittenhouse) diinstal, dan setiap instance menjaga ketat satu koneksi HTTP dengan server ClickHouse yang diperlukan.  Tempel dilakukan dalam tabel spooled, karena MergeTree sering tidak direkomendasikan untuk dimasukkan. <br><br><h3>  Fitur KittenHouse, v1 </h3><br>  Versi pertama KittenHouse tahu sedikit, tetapi ini cukup untuk pengujian: <br><br><ul><li>  Komunikasi melalui RPC (Skema TL) kami. </li><li>  Pertahankan 1 koneksi TCP / IP per server. </li><li>  In-memory buffering secara default, dengan ukuran buffer yang terbatas (sisanya dibuang). </li><li>  Kemampuan menulis ke disk, dalam hal ini ada jaminan pengiriman (setidaknya sekali). </li><li>  Interval penyisipan adalah setiap 2 detik sekali. </li></ul><br><h3>  Masalah pertama </h3><br>  Kami mengalami masalah pertama ketika kami "melunasi" server ClickHouse selama beberapa jam dan kemudian menyalakannya kembali.  Di bawah ini Anda dapat melihat rata-rata beban di server setelah "naik": <br><br><img src="https://habrastorage.org/webt/jr/sm/o6/jrsmo61d61pmkmf1wt39l8igl_i.png"><br><br>  Penjelasannya cukup sederhana: ClickHouse memiliki model jaringan per utas, jadi ketika saya mencoba membuat INSERT dari ribuan node pada saat yang sama, ada persaingan yang sangat kuat untuk sumber daya CPU dan server hampir tidak menanggapi.  Namun, semua data akhirnya dimasukkan dan tidak ada yang jatuh. <br><br>  Untuk mengatasi masalah ini, kami menempatkan nginx di depan ClickHouse dan, secara umum, ini membantu. <br><br><h3>  Pengembangan lebih lanjut </h3><br>  Selama operasi, kami menemukan sejumlah masalah, terutama yang terkait bukan dengan ClickHouse, tetapi dengan cara kami mengoperasikannya.  Berikut rake lain yang kami injak: <br><br><h4>  Sejumlah besar "potongan" dari tabel Buffer menyebabkan seringnya buffer flush di MergeTree </h4><br>  Dalam kasus kami, ada 16 lembar buffer dan interval reset setiap 2 detik, dan ada 20 lembar tabel, yang memberikan hingga 160 sisipan per detik.  Ini secara berkala mempengaruhi kinerja penyisipan sangat buruk - ada banyak penggabungan latar belakang dan pemanfaatan disk mencapai 80% dan lebih tinggi. <br><br>  <b>Solusi:</b> tambah interval reset buffer default, kurangi jumlah kepingan menjadi 2. <br><br><h4>  Nginx mengembalikan 502 ketika koneksi ke ujung hulu </h4><br>  Ini sendiri bukan masalah, tetapi dalam kombinasi dengan pembilasan buffer yang sering, ini memberikan latar belakang 502 kesalahan yang agak tinggi ketika mencoba memasukkan ke dalam tabel mana saja, serta ketika mencoba untuk melakukan SELECT. <br><br>  <b>Solusi: mereka</b> menulis proksi terbalik menggunakan perpustakaan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=http://github.com/valyala/fast">fasthttp</a> , yang mengelompokkan sisipan ke dalam tabel dan menggunakan koneksi dengan sangat ekonomis.  Ini juga membedakan antara SELECT dan INSERT dan memiliki kumpulan koneksi terpisah untuk penyisipan dan membaca. <br><br><img src="https://habrastorage.org/webt/7i/4z/wl/7i4zwlmtjgfpgodsdqup1coqqus.png"><br><br><h4>  Kehabisan memori dengan penyisipan intensif </h4><br>  Pustaka fasthttp memiliki kelebihan dan kekurangan.  Salah satu kelemahannya adalah bahwa permintaan dan respons sepenuhnya buffered dalam memori sebelum memberikan kontrol kepada penangan permintaan.  Bagi kami, ini menghasilkan fakta bahwa jika memasukkan ke dalam ClickHouse “tidak punya waktu”, maka buffer mulai tumbuh dan akhirnya semua memori di server habis, yang menyebabkan terbunuhnya proxy terbalik oleh OOM.  Kolega menggambar demotivator: <br><br><img src="https://habrastorage.org/webt/ny/cb/k1/nycbk1toeiw_x-ktpun4gmicsf0.png" width="300"><br><br>  <b>Solusi:</b> menambal fasthttp untuk mendukung streaming isi permintaan POST ternyata menjadi tugas yang menakutkan, jadi kami memutuskan untuk menggunakan koneksi Hijack () dan memutakhirkan koneksi ke protokol kami jika permintaan tersebut datang dengan metode HTTP KITTEN.  Karena server harus membalas MEOW sebagai respons, jika memahami protokol ini, seluruh skema disebut protokol KITTEN / MEOW. <br><br>  Kami hanya membaca dari 50 koneksi acak pada satu waktu, oleh karena itu, berkat TCP / IP, seluruh klien "menunggu" dan kami tidak menghabiskan memori pada buffer sampai antrian mencapai klien yang sesuai.  Ini mengurangi konsumsi memori setidaknya 20 kali, dan kami tidak punya masalah seperti itu lagi. <br><br><h4>  Tabel ALTER bisa lama jika ada pertanyaan panjang </h4><br>  ClickHouse memiliki ALTER non-pemblokiran dalam arti bahwa itu tidak mengganggu permintaan SELECT dan INSERT.  Tetapi ALTER tidak dapat memulai sampai selesai mengeksekusi kueri ke tabel ini dikirim sebelum ALTER. <br><br>  Jika server Anda memiliki latar belakang "panjang" kueri untuk beberapa tabel, maka Anda mungkin menghadapi situasi di mana ALTER pada tabel ini tidak akan punya waktu untuk mengeksekusi dalam batas waktu default 60 detik.  Tetapi ini tidak berarti bahwa ALTER akan gagal: itu akan dieksekusi segera setelah permintaan SELECT tersebut selesai. <br><br>  Ini berarti bahwa Anda tidak tahu pada titik waktu ALTER benar-benar terjadi, dan Anda tidak memiliki kemampuan untuk secara otomatis membuat kembali tabel Buffer sehingga tata letaknya selalu sama.  Ini dapat menyebabkan masalah penyisipan. <br><br><img src="https://habrastorage.org/webt/59/3n/qn/593nqn-p_ujm0uqitctfapgj8t4.png"><br><br><img src="https://habrastorage.org/webt/pj/2p/8p/pj2p8pxgpjxefjjgo_yzbvqg_ys.png"><br><br>  <b>Solusi:</b> Sebagai hasilnya, kami berencana untuk sepenuhnya mengabaikan penggunaan tabel buffer.  Secara umum, tabel buffer memiliki ruang lingkup, sejauh ini kami menggunakannya dan tidak mengalami masalah besar.  Tapi sekarang kita akhirnya mencapai titik di mana lebih mudah untuk mengimplementasikan fungsi tabel buffer di sisi proxy sebaliknya daripada terus memasang kekurangannya.  Contoh rangkaian akan terlihat seperti ini (garis putus-putus menunjukkan asinkron ACK pada INSERT). <br><br><img src="https://habrastorage.org/webt/1_/1f/l4/1_1fl4op3ycts_jltiboixtxmoq.png"><br><br><h3>  Membaca data </h3><br>  Katakanlah kita menemukan sisipan.  Bagaimana cara membaca log ini dari ClickHouse?  Sayangnya, kami tidak menemukan alat yang mudah digunakan dan mudah digunakan untuk membaca data mentah (tanpa grafik dan lainnya) dari ClickHouse, jadi kami menulis solusi kami sendiri - LightHouse.  Kemampuannya agak sederhana: <br><br><ul><li>  Tampilan cepat isi tabel. </li><li>  Memfilter, menyortir. </li><li>  Mengedit kueri SQL. </li><li>  Lihat struktur tabel. </li><li>  Menunjukkan perkiraan jumlah garis dan ruang disk yang digunakan. </li></ul><br>  Namun, LightHouse cepat dan mampu melakukan apa yang kita butuhkan.  Berikut ini beberapa tangkapan layar: <br><br>  <b>Lihat struktur tabel</b> <br><br><img src="https://habrastorage.org/webt/ne/jb/vt/nejbvtrgm8w2plmtk9rt24vtu9c.png"><br><br>  <b>Penyaringan Konten</b> <br><br><img src="https://habrastorage.org/webt/qe/-m/lj/qe-mlja21vnhuxziu3bzoj2gvek.png"><br><br><h3>  Hasil </h3><br>  ClickHouse praktis satu-satunya database open-source yang telah berakar pada VKontakte.  Kami senang dengan kecepatan kerjanya dan siap untuk menerima kekurangan, yang dibahas di bawah ini. <br><br><h4>  Kesulitan dalam bekerja </h4><br>  Secara keseluruhan, ClickHouse adalah basis data yang sangat stabil dan sangat cepat.  Namun, seperti halnya produk apa pun, terutama yang masih muda, ada fitur dalam pekerjaan yang perlu dipertimbangkan: <br><br><ul><li>  Tidak semua versi sama-sama stabil: jangan memutakhirkan langsung ke versi baru pada produksi, lebih baik menunggu beberapa rilis perbaikan bug. </li><li>  Untuk kinerja yang optimal, sangat disarankan untuk mengkonfigurasi RAID dan beberapa hal lain sesuai dengan instruksi.  Ini <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">baru</a> - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">baru ini dilaporkan pada beban tinggi</a> . </li><li>  Replikasi tidak memiliki batas kecepatan bawaan dan dapat menyebabkan penurunan kinerja server yang signifikan jika Anda tidak membatasi sendiri (tetapi mereka berjanji untuk memperbaikinya). </li><li>  Linux memiliki fitur yang tidak menyenangkan dari mekanisme memori virtual: jika Anda secara aktif menulis ke disk dan data tidak punya waktu untuk dibilas, pada beberapa titik server benar-benar "masuk sendiri", mulai aktif menyiram cache halaman ke disk dan hampir sepenuhnya memblokir proses ClickHouse.  Ini kadang-kadang terjadi dengan penggabungan besar, dan Anda perlu memonitor ini, misalnya, menyiram buffer secara berkala atau melakukan sinkronisasi. </li></ul><br><h3>  Sumber terbuka </h3><br>  KittenHouse dan LightHouse sekarang tersedia dalam sumber terbuka di repositori github kami: <br><br><ul><li>  KittenHouse: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">github.com/vkcom/kittenhouse</a> </li><li>  LightHouse: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">github.com/vkcom/lighthouse</a> </li></ul><br>  Terima kasih <br><br>  <i>Yuri Nasretdinov, pengembang di departemen infrastruktur backend VKontakte</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id430168/">https://habr.com/ru/post/id430168/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id430154/index.html">"Revival of AI" tidak lebih dari perangkat keras mahal dan iklan yang ditinggalkan untuk menerapkan ide lama</a></li>
+<li><a href="../id430156/index.html">"Take off or not": pemain baru akan muncul di pasar layanan video streaming</a></li>
+<li><a href="../id430158/index.html">10 perintah keselamatan yang dapat bermanfaat bagi organisasi mana pun</a></li>
+<li><a href="../id430160/index.html">Desain UX / UI dari VS 2019 baru</a></li>
+<li><a href="../id430166/index.html">Apa yang Baru di Blazor 0.7.0</a></li>
+<li><a href="../id430172/index.html">Situs Statis Tanpa Server Menggunakan IPFS</a></li>
+<li><a href="../id430178/index.html">Matahari buatan cina ...</a></li>
+<li><a href="../id430180/index.html">"Pikiran sedang online." Kontak dengan pikiran yang berbeda</a></li>
+<li><a href="../id430182/index.html">CodeOne 2018 sebagai JavaOne tetapi hanya di mask</a></li>
+<li><a href="../id430186/index.html">Komputasi malas dalam kehidupan sehari-hari</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

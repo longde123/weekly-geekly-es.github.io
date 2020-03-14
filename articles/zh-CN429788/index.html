@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐥 📒 🤾🏿 Docker容器变慢的另一个原因 👌🏼 🔏 👅</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在上一篇文章中，我谈到了Kubernetes， ThoughtSpot如何将其用于自身的开发支持需求。 今天，我想继续讨论一个简短的话题，但是从最近发生的同样有趣的调试历史中可以看出。 本文基于容器化=虚拟化这一事实。 此外，它显示了即使对cgroup进行了最佳限制和实现了较高的计算机性能，容器化的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Docker容器变慢的另一个原因</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/429788/"><p> 在上一篇<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文章中，</a>我谈到了Kubernetes， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ThoughtSpot</a>如何将其用于自身的开发支持需求。 今天，我想继续讨论一个简短的话题，但是从最近发生的同样有趣的调试历史中可以看出。 本文基于容器化=虚拟化这一事实。 此外，它显示了即使对cgroup进行了最佳限制和实现了较高的计算机性能，容器化的进程也如何竞争资源。 </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/297/09a/dfa/29709adfa1fa1830ee869e441e343fcf.png" alt="图片"></p><a name="habracut"></a><br><p>之前，我们在Kubernetes内部集群中启动了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">一系列与b CI / CD开发相关的操作</a> 。 一切都会很好，但是当您启动“ dockerized”应用程序时，性能突然急剧下降。 我们并不小气：在每个容器中，通过Pod配置设置的计算能力和内存（5 CPU / 30 GB RAM）都受到限制。 在具有此类参数的虚拟机上，我们从微小数据集（10 Kb）进行测试的所有请求都会执行。 但是，在具有72个CPU / 512 GB RAM的Docker＆Kubernetes中，我们设法启动了3-4个产品副本，然后刹车开始了。 过去几毫秒内完成的请求现在挂了1-2秒，这导致CI任务管道中的各种失败。 我不得不密切配合调试。 </p><br><p> 通常，怀疑将应用程序打包在Docker中时会发生各种配置错误。 但是，我们没有发现任何可能导致至少某种程度的速度下降（与裸机或虚拟机上的安装相比）。 一切似乎都是正确的。 接下来，我们尝试了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Sysbench</a>软件包中的各种测试。 我们检查了CPU，磁盘，内存的性能-一切都与裸机相同。 我们产品的某些服务存储有关所有操作的详细信息：然后可以将其用于性能分析。 通常，当资源（CPU，RAM，磁盘，网络）短缺时，在某些呼叫中会出现严重的时间故障-因此我们可以找出导致速度下降的确切原因和原因。 但是，在这种情况下没有任何反应。 时间比例与工作配置没有区别-唯一的区别是每个呼叫的速度都比裸机慢得多。 没有任何迹象表明问题的真正根源。 当我们突然<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">发现这一点</a>时，我们准备放弃。 </p><br><p> 在本文中，作者分析了一个类似的神秘案例，当原理上，两个轻进程在同一台机器上的Docker内部运行时互相杀死，并且资源限制设置为非常适中的值。 我们得出两个重要结论： </p><br><ol><li>主要原因在于Linux内核本身。 由于内核中的dentry缓存对象的结构，一个进程的行为大大抑制了对<code>__d_lookup_loop</code>内核的调用，这直接影响了另一个内核的性能。 </li><li> 作者使用<code>perf</code>来检测内核中的错误。 我们从未使用过的出色调试工具（可惜！）。 </li></ol><br><blockquote>  perf（有时称为perf_events或perf工具；以前称为Linux性能计数器，PCL）是Linux性能分析工具，可从内核版本2.6.31获得。 用户空间管理实用程序perf可从命令行获得，它是子命令的集合。 </blockquote><br><blockquote> 它对整个系统（内核和用户空间）进行统计分析。 该工具支持硬件和软件性能计数器（例如hrtimer）平台，跟踪点和动态样本（例如kprobes或uprobes）。  2012年，两名IBM工程师将perf（以及OProfile）视为Linux上两个最常用的性能计数器性能分析工具之一。 </blockquote><p> 所以我们想：也许我们有同一件事？ 我们在容器中启动了数百个不同的过程，并且每个过程都有相同的核心。 我们感觉到我们已经袭击了这条小径！ 装备了<code>perf</code> ，我们重复了调试过程，最后我们等待着最有趣的发现。 </p><br><p> 以下是在运行正常（快速）的机器上（左）在容器内（右）运行的ThoughtSpot的前10秒的性能记录。 <br><img src="https://habrastorage.org/getpro/habr/post_images/82a/5a4/2a3/82a5a42a3c8de024901a4d21108469a4.png" alt="图片"></p><br><p> 很明显，在右边，前5个调用与内核连接。 时间主要花在内核空间上，而左侧则是大部分时间花在我们在用户空间中运行的进程上。 但是最有趣的是<code>posix_fadvise</code>调用始终花费时间。 </p><br><blockquote> 程序使用posix_fadvise（），声明将来打算根据特定模式访问文件数据。 这使内核有机会进行必要的优化。 </blockquote><p> 该调用可用于任何情况，因此，它不会明确指出问题的根源。 但是，深入研究代码，我发现只有一个地方在理论上影响了系统中的每个进程： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/12d/2ef/c14/12d2efc144b5e9e9babfb05180726c7b.png" alt="图片"></p><br><p> 这是一个称为<code>glog</code>的第三方日志记录库。 我们将其用于项目。 具体来说，这一行（在<code>LogFileObject::Write</code> ）可能是整个库中最关键的路径。 所有事件都称为“日志到文件”（日志到文件），并且我们产品的许多实例经常记录。 快速查看源代码表明，可以通过设置<code>--drop_log_memory=false</code>参数来禁用fadvise部分： </p><br><pre> <code class="hljs php"> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (file_length_ &gt;= logging::kPageSize) { <span class="hljs-comment"><span class="hljs-comment">// don't evict the most recent page uint32 len = file_length_ &amp; ~(logging::kPageSize — 1); posix_fadvise(fileno(file_), 0, len, POSIX_FADV_DONTNEED); } }</span></span></code> </pre> <br><p> 当然，我们做到了，而且……在靶心上！ </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/07c/945/bb2/07c945bb2d23ede3c4bf64823120d2a3.png" alt="图片"></p><br><p> 现在以前需要花费几秒钟的时间现在只需<b>8</b>毫秒即可完成。 稍作谷歌搜索，我们发现了这个： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https</a> : <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">//issues.apache.org/jira/browse/MESOS-920</a>以及这个： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https</a> : <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">//github.com/google/glog/pull/145</a> ，它再次得到证实我们对抑制的真正原因的预感。 最有可能在虚拟机/裸机上发生了同样的事情，但是由于我们每个机器/内核只有一个进程的副本，因此fadvise调用强度要低得多，这说明没有额外的资源消耗。 将日志记录过程增加了3-4倍，并为它们强调了一个共同的核心，我们看到它确实使fadvise停滞了。 </p><br><p> 并得出结论： </p><br><p> 这些信息并不是什么新鲜事物，但是由于某些原因，很多人忘记了主要的事情：在使用容器的情况下，“隔离的”进程会争夺<b>所有核心资源</b> ，而不仅仅是争夺<b>CPU</b> ， <b>RAM</b> ， <b>磁盘空间</b>和<b>网络</b> 。 而且由于内核是一个极其复杂的结构，因此崩溃可能发生在任何地方（例如， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">SysSys文章中</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">__d_lookup_loop中</a> ）。 但是，这并不意味着容器比传统的虚拟化要差或更好。 它们是解决任务的出色工具。 请记住：内核是共享资源，并准备调试内核空间中的意外冲突。 此外，这样的冲突为攻击者提供了一个突破“稀疏”隔离并在容器之间创建隐藏通道的绝佳机会。 最后，还有<code>perf</code>一个出色的工具，它将显示系统中正在发生的事情并帮助调试任何性能问题。 如果您打算在Docker中运行高负载的应用程序，请务必花时间学习<code>perf</code> 。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN429788/">https://habr.com/ru/post/zh-CN429788/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN429776/index.html">“用于数百个客户端版本的Monolith”报告的摘要（HL2018，Badoo，Vladimir Yants）</a></li>
+<li><a href="../zh-CN429778/index.html">计算系统语音接口概念，可帮助有语音障碍的人</a></li>
+<li><a href="../zh-CN429780/index.html">现代C ++！=（大多数）新标准</a></li>
+<li><a href="../zh-CN429782/index.html">我们如何加速测试12次的故事</a></li>
+<li><a href="../zh-CN429786/index.html">适用于Delphi的嵌入式ASM上的Fast Sin和Cos</a></li>
+<li><a href="../zh-CN429790/index.html">朱莉娅和电磁场中带电粒子的运动</a></li>
+<li><a href="../zh-CN429792/index.html">基于物理的人工智能可以推断虚构的宇宙定律</a></li>
+<li><a href="../zh-CN429794/index.html">谷歌谈论AI指数式增长改变了计算的本质</a></li>
+<li><a href="../zh-CN429796/index.html">DeviceLock DLP如何防止GitHub上的机密数据泄漏</a></li>
+<li><a href="../zh-CN429798/index.html">美国插电式电动汽车的销售（图表）：2018年10月</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
