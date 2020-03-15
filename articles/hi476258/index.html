@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📩 🧚 👩🏼‍🎤 GitLab डेटाबेस बाहरी PostgreSQL में माइग्रेशन 🤛🏼 👌 👣</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="सभी को नमस्कार! 
+
+ इस लेख में, हम GitLab डेटाबेस को आंतरिक PostgreSQL, जो GitLab के साथ स्थापित है, बाहरी PostgreSQL, जो पहले से ही किसी अन्य सर्वर पर...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>GitLab डेटाबेस बाहरी PostgreSQL में माइग्रेशन</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/476258/"> सभी को नमस्कार! <br><br>  इस लेख में, हम GitLab डेटाबेस को आंतरिक PostgreSQL, जो GitLab के साथ स्थापित है, बाहरी PostgreSQL, जो पहले से ही किसी अन्य सर्वर पर स्थापित है, से माइग्रेट करेगा। <br><br><img src="https://habrastorage.org/webt/xc/2l/gc/xc2lgcwnx8zb3ksut8bridiklou.png"><a name="habracut"></a><br><blockquote>  <b>नोट</b> <br>  सभी कार्यों को CentOS 7.7.1908, PostgreSQL 12 और GitLab 12.4.2-ee.0 पर काम करने की गारंटी है। <br></blockquote><h2>  प्रारंभिक तैयारी </h2><br>  <b>हम पहले से तीन काम करेंगे:</b> <br><br>  1. PostgreSQL सर्वर पर, फ़ायरवॉल के लिए एक नियम जोड़ें जो PostgreSQL 5432 / TCP पोर्ट के लिए आने वाले कनेक्शन की अनुमति देता है। <br><br>  <b>मेरे मामले में:</b> <br><br><pre><code class="bash hljs">firewall-cmd --add-service=postgresql --zone=internal --permanent success firewall-cmd --reload success</code> </pre> <br>  2. एक ही स्थान पर, लेकिन postgresql.conf फ़ाइल में, नेटवर्क इंटरफ़ेस को बाहर से आने वाले कनेक्शनों को स्वीकार करने की अनुमति देता है।  Postgresql.conf फ़ाइल खोलें, टिप्पणी की गई लाइन " <i>#listen_addresses = 'localhost' खोजें</i> और उसके नीचे की रेखा जोड़ें।  जहां 10.0.0.2 है, आपके इंटरफ़ेस का पता। <br><br>  <b>मेरे मामले में:</b> <br><br><pre> <code class="bash hljs">vi /var/lib/pgsql/12/data/postgresql.conf <span class="hljs-comment"><span class="hljs-comment"># - Connection Settings - #listen_addresses = 'localhost' # what IP address(es) to listen on; listen_addresses = 'localhost, 10.0.0.2' # comma-separated list of addresses;</span></span></code> </pre> <br><br>  3. चूँकि GitLab सर्वर एक बाहरी डेटाबेस से जुड़ेगा, इसलिए इसे pg_hba.conf फ़ाइल में PostgreSQL सर्वर पर सक्षम किया जाना चाहिए।  मेरे GitLab सर्वर का पता 10.0.0.4 है। <br><br>  <b>Pg_hba.conf फ़ाइल खोलें और वहां लाइन जोड़ें:</b> <br><br><pre> <code class="bash hljs">host all gitlab 10.0.0.4/24 md5</code> </pre> <br>  <b>यह इस तरह दिखेगा:</b> <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># TYPE DATABASE USER ADDRESS METHOD # "local" is for Unix domain socket connections only local all postgres md5 # IPv4 local connections: host all postgres 127.0.0.1/32 md5 host all gitlab 10.0.0.4/24 md5</span></span></code> </pre> <br>  <b>अंत में, postgresql सेवा को फिर से शुरू करें:</b> <br><br><pre> <code class="bash hljs">systemctl restart postgresql-12.service</code> </pre> <br><h2>  GitLab डेटाबेस निर्यात करें </h2><br>  <b>चलो GitLab सर्वर पर, डेटाबेस का बैकअप लेते हैं:</b> <br><pre> <code class="bash hljs">sudo -u gitlab-psql /opt/gitlab/embedded/bin/pg_dumpall -U gitlab-psql --host=/var/opt/gitlab/postgresql &gt; /tmp/internal-gitlab.sql</code> </pre> <br><br>  <b>बैकअप / tmp में दिखाई दिया:</b> <br><br><pre> <code class="bash hljs">ls -lh total 836K -rw-r--r--. 1 root root 836K Nov 18 12:59 internal-gitlab.sql</code> </pre> <br>  <b>इस प्रतिलिपि को PostgreSQL सर्वर पर कॉपी करें:</b> <br><br><pre> <code class="bash hljs">scp /tmp/internal-gitlab.sql 10.0.0.2:/tmp/ internal-gitlab.sql 100% 835KB 50.0MB/s 00:00</code> </pre> <br><h2>  PostgreSQL में "आंतरिक- gitlab.sql" आयात करें </h2><br>  <b>डेटाबेस को PostgreSQL में आयात करें:</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -f /tmp/internal-gitlab.sql</code> </pre> <br>  <b>जांचें कि डेटाबेस अब PostgreSQL में है:</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -l</code> </pre> <br>  <b>निम्न पंक्ति दिखाई देनी चाहिए:</b> <br><br><pre> <code class="bash hljs">gitlabhq_production | gitlab | UTF8 | en_US.UTF-8 | en_US.UTF-8 |</code> </pre> <br><h2>  GitLab को कॉन्फ़िगर करना </h2><br>  PostgreSQL में डेटाबेस आयात करने के बाद, गिटलैब उपयोगकर्ता बनाया गया था।  आपको इस उपयोगकर्ता के लिए पासवर्ड बदलना होगा। <br><br>  <b>पासवर्ड बदलें:</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -c <span class="hljs-string"><span class="hljs-string">"ALTER USER gitlab ENCRYPTED PASSWORD '' VALID UNTIL 'infinity';"</span></span> Password <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> user postgres: ALTER ROLE</code> </pre> <br>  फिर कॉन्फ़िगरेशन फ़ाइल /etc/gitlab/gitlab.rb में GitLab सर्वर पर हम बाहरी PostgreSQL के सभी डेटा को निर्दिष्ट करेंगे। <br><br>  <b>Gitlab.rb फ़ाइल की बैकअप प्रतिलिपि बनाएँ:</b> <br><br><pre> <code class="bash hljs">cp /etc/gitlab/gitlab.rb /etc/gitlab/gitlab.rb.orig</code> </pre> <br>  <b>अब gitlab.rb फ़ाइल के अंत में, इन पंक्तियों को जोड़ें:</b> <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   PostgreSQL. postgresql['enable'] = false #      .  . gitlab_rails['db_adapter'] = 'postgresql' gitlab_rails['db_encoding'] = 'utf8' gitlab_rails['db_host'] = '10.0.0.2' gitlab_rails['db_port'] = 5432 gitlab_rails['db_database'] = "gitlabhq_production" gitlab_rails['db_username'] = 'gitlab' gitlab_rails['db_password'] = '******'</span></span></code> </pre> <br>  <b>फ़ाइल को सहेजें /etc/gitlab/gitlab.rb और GitLab को फिर से कॉन्फ़िगर करें:</b> <br><br><pre> <code class="bash hljs">gitlab-ctl reconfigure &amp;&amp; gitlab-ctl restart</code> </pre> <br>  वह सब है :) <br><br><blockquote>  एक बड़ा अनुरोध।  यदि आप माइनस लगाते हैं, तो टिप्पणी में कारण लिखें। </blockquote></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/hi476258/">https://habr.com/ru/post/hi476258/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../hi476248/index.html">18 से 24 नवंबर तक मास्को में डिजिटल कार्यक्रम</a></li>
+<li><a href="../hi476250/index.html">18 से 24 नवंबर तक सेंट पीटर्सबर्ग में डिजिटल कार्यक्रम</a></li>
+<li><a href="../hi476252/index.html">मेल माइग्रेशन: आसानी से एक सर्वर से दूसरे स्थान पर कैसे जाएं</a></li>
+<li><a href="../hi476254/index.html">छात्रों से घटनाओं या ज्ञान और अनुभव के बिना एक आईटी कंपनी में कैसे प्रवेश करें</a></li>
+<li><a href="../hi476256/index.html">रूसी स्काला आंदोलन के नक्शेकदम पर। भाग 3</a></li>
+<li><a href="../hi476260/index.html">हम आरपीएम वायरमॉक में इकट्ठा करते हैं - उबंटू में पीपीए के फेडोरा सीओपीआर एनालॉग में वेब सेवाओं पर स्टब्स बनाने के लिए एक उपयोगिता</a></li>
+<li><a href="../hi476262/index.html">Centos रिपॉजिटरी मिरर के बारे में और सबसे अच्छा एक का चयन</a></li>
+<li><a href="../hi476264/index.html">विदेशी भाषाओं को सीखने के लिए टेलीग्राम बॉट: बोलचाल के शब्दों से लेकर बोलने तक</a></li>
+<li><a href="../hi476266/index.html">मंगल डिजिटल टेक्नोलॉजीज में इंटर्नशिप। हमने एमएंडएम में गहन शिक्षा कैसे लागू की</a></li>
+<li><a href="../hi476268/index.html">2018-2019 में सम्मेलनों में पीवीएस-स्टूडियो टीम द्वारा प्रस्तुत बग-खोज चुनौतियों का समाधान</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
