@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌅 👨🏻‍💻 🙎🏿 Tangan kami bukan untuk kebosanan: memulihkan cluster Rook di K8s 🤵🏼 👨🏼‍🤝‍👨🏻 🥠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Kita sudah bicara tentang bagaimana / mengapa kita suka Rook: sampai batas tertentu, ini menyederhanakan bekerja dengan penyimpanan di cluster Kuberne...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Tangan kami bukan untuk kebosanan: memulihkan cluster Rook di K8s</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/477680/"><img src="https://habrastorage.org/webt/x_/rb/jm/x_rbjmnxk6egjidxf_fvk1otkqe.png"><br><br>  Kita <a href="https://habr.com/ru/company/flant/blog/451818/">sudah bicara tentang</a> bagaimana / mengapa kita suka Rook: sampai batas tertentu, ini menyederhanakan bekerja dengan penyimpanan di cluster Kubernetes.  Namun, dengan kesederhanaan ini beberapa kesulitan datang.  Kami berharap bahwa materi baru akan membantu untuk lebih memahami kesulitan seperti itu bahkan sebelum mereka menampakkan diri. <br><br>  Dan untuk membacanya lebih menarik, kita mulai dengan <i>konsekuensi dari</i> masalah hipotetis di kluster. <a name="habracut"></a><br><br><h2>  "Semuanya hilang!" </h2><br>  Bayangkan bahwa Anda pernah mengkonfigurasi dan meluncurkan Rook di cluster K8s Anda, ia senang dengan pekerjaannya, tetapi pada saat "luar biasa" hal berikut terjadi: <br><br><ul><li>  Pod baru tidak dapat me-mount Ceph RBDs. </li><li>  Perintah seperti <code>lsblk</code> dan <code>df</code> tidak berfungsi pada host Kubernetes.  Ini secara otomatis berarti "ada sesuatu yang salah" dengan gambar RBD yang dipasang di simpul.  Saya tidak bisa membacanya, yang menunjukkan tidak dapat diaksesnya monitor ... </li><li>  Ya, tidak ada monitor operasional di cluster.  Selain itu - bahkan tidak ada pod dengan OSD, atau pod dari MGR. </li></ul><br>  Kapan <code>rook-ceph-operator</code> pod <code>rook-ceph-operator</code> diluncurkan?  Belum lama ini saat dia dikerahkan.  Mengapa  Operator-pemula memutuskan untuk membuat cluster baru ... Bagaimana kita sekarang dapat mengembalikan cluster dan data di dalamnya? <br><br>  Untuk memulai, mari kita pergi ke cara yang <s>lebih</s> menarik, setelah melakukan penyelidikan mendalam terhadap "internal" Rook dan restorasi komponennya secara bertahap.  Tentu saja, ada cara yang benar <s>lebih pendek</s> : menggunakan cadangan.  Seperti yang Anda ketahui, admin dibagi menjadi dua jenis: mereka yang tidak melakukan backup, dan mereka yang sudah melakukannya ... Tetapi lebih lanjut tentang ini setelah penyelidikan. <br><br><h2>  Sedikit latihan, atau jauh </h2><br><h3>  Lihatlah dan pulihkan monitor </h3><br>  Jadi, mari kita lihat daftar ConfigMaps: ada <code>rook-ceph-config</code> dan <code>rook-config-override</code> diperlukan untuk cadangan.  Mereka muncul setelah penyebaran cluster berhasil. <br><br>  <i><b>NB</b> : Dalam versi baru, setelah adopsi <a href="https://github.com/rook/rook/pull/3573">PR ini</a> , ConfigMaps tidak lagi menjadi indikator keberhasilan penyebaran cluster.</i> <br><br>  Untuk melakukan tindakan lebih lanjut, kita perlu mem-boot ulang semua server yang telah memasang gambar RBD ( <code>ls /dev/rbd*</code> ).  Itu harus dilakukan melalui sysrq (atau "berjalan kaki" ke pusat data).  Persyaratan ini disebabkan oleh tugas melepaskan RBD yang terpasang, yang untuk itu reboot biasa tidak akan berfungsi (itu tidak akan berhasil mencoba melepasnya secara normal). <br><br>  Teater dimulai dengan gantungan, dan cluster Ceph dimulai dengan monitor.  Mari lihat mereka. <br><br>  Rook memasang entitas berikut di pod monitor: <br><br><pre> <code class="plaintext hljs">Volumes: rook-ceph-config: Type: ConfigMap (a volume populated by a ConfigMap) Name: rook-ceph-config rook-ceph-mons-keyring: Type: Secret (a volume populated by a Secret) SecretName: rook-ceph-mons-keyring rook-ceph-log: Type: HostPath (bare host directory volume) Path: /var/lib/rook/kube-rook/log ceph-daemon-data: Type: HostPath (bare host directory volume) Path: /var/lib/rook/mon-a/data Mounts: /etc/ceph from rook-ceph-config (ro) /etc/ceph/keyring-store/ from rook-ceph-mons-keyring (ro) /var/lib/ceph/mon/ceph-a from ceph-daemon-data (rw) /var/log/ceph from rook-ceph-log (rw)</code> </pre> <br>  Mari kita lihat apa rahasia dari <code>rook-ceph-mons-keyring</code> : <br><br><pre> <code class="plaintext hljs">kind: Secret data: keyring: LongBase64EncodedString=</code> </pre> <br>  Kami men-decode dan mendapatkan keyring biasa dengan hak admin dan monitor: <br><br><pre> <code class="plaintext hljs">[mon.] key = AQAhT19dlUz0LhBBINv5M5G4YyBswyU43RsLxA== caps mon = "allow *" [client.admin] key = AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br>  Ingat.  Sekarang lihat keyring di <code>rook-ceph-admin-keyring</code> rahasia: <br><br><pre> <code class="plaintext hljs">kind: Secret data: keyring: anotherBase64EncodedString=</code> </pre> <br>  Apa isinya? <br><br><pre> <code class="plaintext hljs">[client.admin] key = AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br>  Yang sama.  Mari kita lihat lebih lanjut ... Di sini, misalnya, adalah rahasia <code>rook-ceph-mgr-a-keyring</code> : <br><br><pre> <code class="plaintext hljs">[mgr.a] key = AQBZR19dbVeaIhBBXFYyxGyusGf8x1bNQunuew== caps mon = "allow *" caps mds = "allow *" caps osd = "allow *"</code> </pre> <br>  Pada akhirnya, kami menemukan beberapa rahasia lagi di ConfigMap <code>rook-ceph-mon</code> : <br><br><pre> <code class="plaintext hljs">kind: Secret data: admin-secret: AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== cluster-name: a3ViZS1yb29r fsid: ZmZiYjliZDMtODRkOS00ZDk1LTczNTItYWY4MzZhOGJkNDJhCg== mon-secret: AQAhT19dlUz0LhBBINv5M5G4YyBswyU43RsLxA==</code> </pre> <br>  Dan ini adalah daftar awal dengan keyring, dari mana semua rahasia yang dijelaskan di atas berasal. <br><br>  Seperti yang Anda ketahui (lihat <code>dataDirHostPath</code> dalam <a href="https://rook.github.io/docs/rook/master/ceph-cluster-crd.html">dokumentasi</a> ), Rook menyimpan data ini di dua tempat.  Oleh karena itu, mari kita pergi ke node untuk melihat keyring'y berbaring di direktori yang dipasang di pod dengan monitor dan OSD.  Untuk melakukan ini, cari node <code>/var/lib/rook/mon-a/data/keyring</code> dan lihat: <br><br><pre> <code class="plaintext hljs"># cat /var/lib/rook/mon-a/data/keyring [mon.] key = AXAbS19d8NNUXOBB+XyYwXqXI1asIzGcGlzMGg== caps mon = "allow *"</code> </pre> <br>  <b>Tiba-tiba,</b> rahasianya ternyata berbeda - tidak seperti di ConfigMap. <br><br>  Bagaimana dengan keyring admin?  Kami juga memilikinya: <br><br><pre> <code class="plaintext hljs"># cat /var/lib/rook/kube-rook/client.admin.keyring [client.admin] key = AXAbR19d8GGSMUBN+FyYwEqGI1aZizGcJlHMLgx= caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br>  Inilah masalahnya.  Terjadi kegagalan: kluster diciptakan kembali ... tetapi kenyataannya tidak. <br><br>  Menjadi jelas bahwa keyring yang baru dibuat disimpan dalam rahasia, dan itu <b>bukan</b> dari cluster lama kami.  Oleh karena itu: <br><br><ul><li>  kami mengambil keyring dari monitor dari file <code>/var/lib/rook/mon-a/data/keyring</code> (atau dari cadangan); </li><li>  mengubah keyring di secret <code>rook-ceph-mons-keyring</code> ; </li><li>  mendaftar keyring dari admin dan monitor di ConfigMap'e <code>rook-ceph-mon</code> ; </li><li>  menghapus pengontrol pod dengan monitor. </li></ul><br>  Mukjizat tidak akan lama: monitor akan muncul dan mulai.  Hore, sebuah awal! <br><br><h3>  Kembalikan OSD </h3><br>  Kami masuk ke <code>rook-operator</code> pod pod: memanggil <code>ceph mon dump</code> menunjukkan bahwa semua monitor ada di tempatnya, dan <code>ceph -s</code> bahwa mereka berada dalam kuorum.  Namun, jika Anda melihat pohon OSD ( <code>ceph osd tree</code> ), Anda akan melihat sesuatu yang aneh di dalamnya: OSD mulai muncul, tetapi semuanya kosong.  Ternyata mereka juga perlu dipulihkan.  Tapi bagaimana caranya? <br><br>  Sementara itu, <code>rook-ceph-config</code> dan <code>rook-config-override</code> , serta banyak ConfigMaps lainnya dengan nama form <code>rook-ceph-osd-$nodename-config</code> , muncul di ConfigMap yang sangat dibutuhkan.  Mari kita lihat mereka: <br><br><pre> <code class="plaintext hljs">kind: ConfigMap data: osd-dirs: '{"/mnt/osd1":16,"/mnt/osd2":18}'</code> </pre> <br>  Semuanya salah, semuanya tercampur aduk! <br><br>  Skala pod operator ke nol, hapus pod Deployment yang dihasilkan dari OSD, dan perbaiki ConfigMaps ini.  Tapi di mana mendapatkan peta OSD yang <b>benar</b> dengan node? <br><br><ul><li>  Mari mencoba menggali <code>/mnt/osd[1-2]</code> pada node lagi - dengan harapan kita dapat menangkap sesuatu di sana. </li><li>  Ada 2 subdirektori dalam direktori <code>/mnt/osd1</code> : <code>osd0</code> dan <code>osd16</code> .  Yang terakhir hanyalah ID yang ditentukan dalam ConfigMap (16)? </li><li>  Mari kita <code>osd0</code> ukurannya dan lihat bahwa <code>osd0</code> jauh lebih besar dari <code>osd16</code> . </li></ul><br>  Kami menyimpulkan bahwa <code>osd0</code> adalah OSD yang diperlukan, yang ditetapkan sebagai <code>/mnt/osd1</code> di ConfigMap (karena kami menggunakan <a href="https://github.com/rook/rook/issues/3379">osd berbasis direktori</a> .) <br><br>  Langkah demi langkah, kami memeriksa semua node dan mengedit ConfigMap.  Setelah semua instruksi, Anda dapat menjalankan pod dari operator Rook dan membaca log-nya.  Dan semuanya indah di dalamnya: <br><br><ul><li>  Saya adalah operator klaster; </li><li>  Saya menemukan drive di node; </li><li>  Saya menemukan monitor; </li><li>  monitor menjadi teman, mis.  membentuk kuorum; </li><li>  menjalankan penyebaran OSD ... </li></ul><br>  Mari kita kembali ke pod dari operator Rook dan memeriksa cluster liveness ... ya, kami membuat sedikit kesalahan dengan kesimpulan tentang nama OSD pada beberapa node!  Tidak masalah: mereka sekali lagi memperbaiki ConfigMaps, menghapus direktori tambahan dari OSD baru dan sampai pada keadaan <code>HEALTH_OK</code> telah lama ditunggu-tunggu! <br><br>  Periksa gambar di kolam: <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># rbd ls -p kube pvc-9cfa2a98-b878-437e-8d57-acb26c7118fb pvc-9fcc4308-0343-434c-a65f-9fd181ab103e pvc-a6466fea-bded-4ac7-8935-7c347cff0d43 pvc-b284d098-f0fc-420c-8ef1-7d60e330af67 pvc-b6d02124-143d-4ce3-810f-3326cfa180ae pvc-c0800871-0749-40ab-8545-b900b83eeee9 pvc-c274dbe9-1566-4a33-bada-aabeb4c76c32 …</span></span></code> </pre> <br>  Semuanya ada di tempatnya - kluster disimpan! <br><br><h2>  Saya <s>malas</s> melakukan backup, atau Fast Way </h2><br>  Jika cadangan dilakukan untuk Rook, maka prosedur pemulihan menjadi lebih sederhana dan bermuara sebagai berikut: <br><br><ol><li>  Skala ke nol penyebaran operator Benteng; </li><li>  Kami menghapus semua penyebaran kecuali operator Benteng; </li><li>  Kami mengembalikan semua rahasia dan ConfigMaps dari cadangan; </li><li>  Kembalikan isi <code>/var/lib/rook/mon-*</code> pada node; </li><li>  Pulihkan (jika tiba-tiba hilang) CRD <code>CephCluster</code> , <code>CephFilesystem</code> , <code>CephBlockPool</code> , <code>CephNFS</code> , <code>CephObjectStore</code> ; </li><li>  Skala penyebaran operator Rook kembali ke 1. </li></ol><br><h2>  Tips Berguna </h2><br>  Buat cadangan! <br><br>  Dan untuk menghindari situasi ketika Anda harus pulih dari mereka: <br><br><ol><li>  Sebelum skala besar bekerja dengan cluster, yang terdiri dari reboot server, skala operator Rook ke nol sehingga tidak terlalu banyak. </li><li>  Pada monitor, <a href="">tambahkan nodeAffinity</a> terlebih dahulu. </li><li>  Perhatikan <a href="">pengaturan waktu</a> <code>ROOK_MON_HEALTHCHECK_INTERVAL</code> dan <code>ROOK_MON_OUT_TIMEOUT</code> . </li></ol><br><h2>  Alih-alih sebuah kesimpulan </h2><br>  Tidak ada gunanya berargumentasi bahwa Rook, sebagai “lapisan” tambahan (dalam skema umum mengatur penyimpanan di Kubernetes), yang lebih disederhanakan, juga menambah kesulitan baru dan potensi masalah dalam infrastruktur.  Masalahnya tetap "kecil": untuk membuat pilihan yang seimbang dan terinformasi antara risiko ini di satu sisi dan manfaat yang dibawa solusi dalam kasus khusus Anda, di sisi lain. <br><br>  Omong-omong, bagian "Mengadopsi kluster Rook Ceph yang ada ke dalam kluster Kubernet baru" baru-baru <a href="https://github.com/rook/rook/commit/b651239d3f9a793c95b5c06668b7f28771254082">ini ditambahkan ke</a> dokumentasi Rook.  Ini menjelaskan secara lebih terperinci apa yang perlu dilakukan untuk memindahkan data yang ada ke kluster Kubernet baru atau mengembalikan kluster yang telah runtuh karena satu dan lain alasan. <br><br><h2>  PS </h2><br>  Baca juga di blog kami: <br><br><ul><li>  " <a href="https://habr.com/ru/company/flant/blog/451818/">Benteng atau bukan Benteng - itulah pertanyaannya</a> "; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/348044/">Rook adalah" gudang data mandiri untuk Kubernetes</a> "; </li><li>  " <a href="https://habr.com/ru/company/flant/blog/474208/">Longhorn, penyimpanan terdistribusi Rancher untuk K8, ditransfer ke CNCF</a> ." </li><li>  " <a href="https://habr.com/ru/company/flant/blog/329666/">Menciptakan penyimpanan persisten dengan penyediaan di Kubernetes berdasarkan Ceph</a> ." </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id477680/">https://habr.com/ru/post/id477680/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id477668/index.html">29 November, 6 malam - devleads-mitap</a></li>
+<li><a href="../id477670/index.html">Apa yang memberi otomatisasi pengujian</a></li>
+<li><a href="../id477672/index.html">Hak dan kewajiban anggota tim: aspek hukum dan budaya</a></li>
+<li><a href="../id477674/index.html">Apakah AI berarti cinta?</a></li>
+<li><a href="../id477678/index.html">Prospek untuk televisi digital di Rusia</a></li>
+<li><a href="../id477682/index.html">Layanan lawas dalam infrastruktur Anda</a></li>
+<li><a href="../id477684/index.html">Angular: Sahabat Bangunan Terbaik untuk aplikasi Interaktif</a></li>
+<li><a href="../id477686/index.html">Kami di Konferensi Perjalanan AI</a></li>
+<li><a href="../id477688/index.html">Desember Acara TI Digest</a></li>
+<li><a href="../id477692/index.html">Pengalaman menggunakan ZGC dan Shenandoah GC dalam produksi</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

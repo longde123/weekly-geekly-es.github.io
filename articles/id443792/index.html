@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧘🏻 🤕 🍘 Kesalahan umum ketika bekerja dengan PostgreSQL. Bagian 2 👩🏼‍✈️ 🤡 🍣</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Kami terus menerbitkan video dan transkrip laporan terbaik dari konferensi PGConf.Russia 2019 . Di bagian pertama pembicaraan Ivan Frolkov , ini tenta...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kesalahan umum ketika bekerja dengan PostgreSQL. Bagian 2</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/443792/"> Kami terus menerbitkan video dan transkrip laporan terbaik dari konferensi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><b>PGConf.Russia 2019</b></a> .  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Di bagian pertama</a> <b>pembicaraan Ivan Frolkov</b> , ini tentang penamaan yang tidak konsisten, tentang kendala, tentang di mana lebih baik untuk berkonsentrasi logika - dalam database atau dalam aplikasi.  Di bagian ini, Anda akan menemukan penanganan kesalahan parsing, akses bersamaan, operasi yang tidak dapat dibatalkan, CTE dan JSON. <br><br><img src="https://habrastorage.org/webt/f7/ro/mc/f7romcfk7jnjqrlwyalubebwxbo.jpeg"><br><br>  Saya akan menceritakan kisah seperti itu.  Klien kami mengatakan: “Basis data bekerja lambat, dan aplikasi kami terlibat dalam melayani populasi.  Kami takut mereka akan mengangkat kami di sini untuk garpu. ”  Ternyata mereka memiliki banyak proses dalam keadaan <b>tidak aktif dalam</b> keadaan <b>transaksi</b> .  Aplikasi memulai transaksi, tidak melakukan apa-apa, tetapi transaksi tidak selesai.  Jika Anda berinteraksi dengan beberapa layanan eksternal, maka, pada prinsipnya, ini adalah situasi yang normal.  Hal lain adalah jika <b>idle</b> Anda <b>dalam</b> status <b>transaksi</b> bertahan lama (sudah mencurigakan selama lebih dari satu menit), maka ini buruk karena PostgreSQL benar-benar tidak menyukai transaksi lama: VACUUM tidak akan dapat menghapus semua baris yang dapat dilihatnya, dan menggantungnya dalam waktu yang lama. transaksi secara efektif memblokir VACUUM.  Tabel mulai membengkak, indeks menjadi semakin tidak efektif. <br><br><img src="https://habrastorage.org/webt/mf/ml/t8/mfmlt8ovoywmqjplbggaszfvj-q.jpeg"><a name="habracut"></a><br><br>  Dalam hal ini, orang tidak menulis permintaan dengan benar dan menerima produk Cartesian - permintaan tersebut selesai selama beberapa hari.  Nah, pengguna, dia akan menekan tombol, menunggu hasilnya dan, jika tidak ada hasil, tekan tombol lagi. <br><br>  Tetapi ini tidak menjelaskan mengapa mereka memiliki begitu banyak proses dalam <b>menganggur dalam transaksi</b> .  Dan mereka muncul dalam situasi berikut: aplikasi merangkak ke dalam database, memulai transaksi, merangkak ke beberapa layanan eksternal, mendapat kesalahan di sana, dan kemudian semuanya hancur, kami mencetak ke log <b>jejak tumpukan</b> , dan kami tenang dalam hal ini.  Koneksi tetap ditinggalkan, tergantung dan mengganggu. <br><br>  Apa yang harus dilakukan?  Pertama, Anda harus selalu menangani kesalahan.  Jika ada kesalahan, harap jangan abaikan.  Ada baiknya jika PostgreSQL kehilangan koneksi: itu memutar kembali transaksi, kita selamat.  Tentang ini saya akan berhenti.  Nah, jika ada kode yang tidak punya waktu untuk mengedit sama sekali, maka kami masih memiliki <b>max idle dalam transaksi</b> - Anda dapat memasukkannya, dan itu hanya akan mematikan transaksi yang tidak aktif. <br><br><img src="https://habrastorage.org/webt/jf/nn/gj/jfnngjpf_bkmogvxhjzxigrwlli.jpeg"><br><br>  Kasus penanganan kesalahan yang umum adalah: PENGECUALIAN KETIKA NILAI LAIN DARI NULL.  Pernah kami berdebat dengan seorang kolega tentang terminologi.  Saya mengatakan bahwa itu diterjemahkan sebagai "bakar semuanya dengan api biru," dan yang dia maksudkan "semuanya sia-sia."  Jika sesuatu yang buruk terjadi pada kami, maka, bahkan jika semuanya memarahi log, itu masih lebih baik daripada diam sepenuhnya - seperti di sini. <br><br><img src="https://habrastorage.org/webt/wt/ya/u0/wtyau0lfirp6ftxlbxw7lpkrqpa.jpeg"><br><br>  Jika Anda tidak tahu apa yang harus dilakukan dengan kesalahan, maka jangan mencegatnya.  Praktek yang sangat umum: mereka menangkap kesalahan, mencatatnya dan berlari seolah-olah tidak ada yang terjadi.  Jika, sekali lagi, Anda terlibat dalam transaksi uang dan Anda memiliki kesalahan yang Anda abaikan, hasilnya mungkin tidak dapat diprediksi.  Di tahun 90-an mereka bisa, misalnya, dibawa keluar ke dalam hutan di bagasi.  Sekarang zaman telah menjadi lebih lembut, tetapi juga tidak terlalu menyenangkan. <br><br><img src="https://habrastorage.org/webt/yh/p0/zv/yhp0zvuubrxfxgdqoqxy6xoai0a.jpeg"><br><br>  Jika kami melakukan operasi pada klien, maka, sebagai aturan, kami mengembalikan nilai: semuanya berjalan dengan baik atau gagal.  Dan kami memproses setiap kesalahan.  Saya melihat bagaimana orang secara khusus menulis kode <b>plpgsql</b> , di mana mereka menemukan kesalahan, menulis ke log itu, mereka berkata, ya, ada kesalahan dan cukup kasar, mereka memasukkan teks pesan mereka.  Tapi SQLSTATE tidak kembali.  Ini selalu dilakukan, jadi jika mereka lupa memeriksa sesuatu, maka mereka mulai mengalami masalah. <br><br>  Semua orang, karena alasan tertentu, takut akan pengecualian - baik dalam <b>plpgsql</b> dan dalam bahasa lain.  Dan jika Anda tidak menciptakan sesuatu sendiri, tetapi menggunakan fitur standar bahasa, semuanya biasanya berjalan dengan baik.  Terutama masalah ini sering terjadi ketika koneksi terputus.  Telah jatuh, prosesnya <b>menganggur dalam transaksi</b> , basis data terisi, kinerja menurun.  Ngomong-ngomong, transaksi semacam itu mungkin masih meninggalkan kunci, tetapi untuk beberapa alasan ini tidak begitu umum.  Oleh karena itu, tambahkan <b>akhirnya</b> kesalahan pada kode pemrosesan dan di sana, bersihkan koneksi dan berikan kembali ke server. <br><br><img src="https://habrastorage.org/webt/z-/9-/dx/z-9-dxwfwub-ayln3xckyuzd9xy.jpeg"><br><br>  Selain itu, jika Anda memiliki kendala yang terdefinisi dengan baik, Anda dapat melempar pengecualian bukan dari database, tetapi dari aplikasi saat memproses kesalahan.  Di <b>musim semi</b> ada <b>terjemahan pengecualian</b> , <b>di php</b> , masing-masing, <b>set_exception_handler</b> .  Perhatikan alat-alat yang disediakan kerangka kerja Anda, mereka muncul di sana karena suatu alasan. <br><br>  Jadi: jangan menangkap kesalahan yang Anda tidak tahu harus berbuat apa;  kesalahan nama dengan cermat dan akurat;  mengklasifikasikan kesalahan. <br><br><img src="https://habrastorage.org/webt/ly/ow/iu/lyowiutps2aojvxrwr0mu-tuopg.jpeg"><br><br>  Secara pribadi, saya mengklasifikasikan berdasarkan kriteria tersebut: operasi dapat diulangi (misalnya, kami mengalami kebuntuan);  operasi tidak dapat diulang, itu telah selesai;  operasi tidak dapat dilakukan pada prinsipnya. <br><br>  Paradoksnya, dari sudut pandang aplikasi, situasi ketika kebuntuan terjadi, ketika koneksi terputus dan ketika kita kehabisan uang untuk membayar adalah situasi yang sama: penangan kesalahan akan mencoba melakukan operasi lagi setelah beberapa saat. <br><br><img src="https://habrastorage.org/webt/i4/8v/tt/i48vttsmqdtuxbu3am8jtpa2swm.jpeg"><br><br>  Di sisi lain, apa yang mereka tulis dalam aplikasi, secara umum, bukan urusan saya: Saya terlibat dalam pangkalan.  Saya hanya mendesak Anda untuk menangani kesalahan dengan hati-hati, jika tidak: menganggur dalam transaksi, baris terkunci, database bengkak dan sebagainya. <br><br>  Sebagian besar pengembang percaya bahwa mereka bekerja dengan database saja, dan aplikasi mereka melakukan operasi secara berurutan.  Dan ini merupakan nilai tambah untuk semua DBMS relasional karena, anehnya, semuanya berfungsi, sebagai aturan, sangat baik, bahkan dengan tingkat isolasi standar BACA BERKOMITMEN, dan tidak SERIALIZABLE.  Pada saat yang sama, situasi terjadi ketika pembaruan hilang: satu memuat formulir, yang lain memuat formulir yang sama, satu menulis dan menyimpan, yang lain menyimpan yang lama - perubahan dihapus.  Yang pertama bersumpah: "bagaimana begitu, saya menulis begitu banyak, dan semuanya hilang." <br><br><img src="https://habrastorage.org/webt/e_/ct/vz/e_ctvzfp_f1uqnunhhqllgds3cg.jpeg"><br><br>  Dari pengalaman saya: sekali seminggu pada hari Jumat, dua manajer melakukan pembayaran.  Mereka seharusnya <br>  berubah setiap waktu, tetapi, bagaimanapun, pernah naik pada waktu yang sama dan melakukan dua pembayaran per orang.  Jika Anda memiliki setidaknya beberapa kemungkinan kesalahan akses kompetitif, itu akan terjadi cepat atau lambat.  Pertanyaannya adalah kapan. <br><br>  Selain itu, saya menarik perhatian Anda pada keterbatasan.  Saya telah berulang kali melihat bagaimana mereka mencoba memberikan keunikan dengan pemicu.  Anda tidak akan memberikan keunikan dalam tabel dengan pemicu.  Entah Anda harus memblokir seluruh tabel, atau melakukan beberapa gerakan kompleks lainnya.  Anda akan menemukan ini cepat atau lambat. <br><br><img src="https://habrastorage.org/webt/ih/wo/ql/ihwoqlt5ysrheu4x4hqv5-pk1by.jpeg"><br><br>  Beberapa kali saya menemukan hal yang benar-benar mengerikan: layanan web eksternal dipanggil dari database.  Ada beberapa operasi yang mengubah entitas eksternal.  Ini buruk karena transaksi dapat digulirkan kembali ke dalam basis data, tetapi operasi pada layanan jarak jauh tidak akan ditolak. <br><br>  Titik yang bahkan lebih halus adalah jalan buntu.  Mari kita bayangkan: kita memproses transaksi, memanggil layanan web eksternal, mengubah sesuatu, setelah itu kita menemui jalan buntu, dan kita memutar balik, lalu kita mencoba melakukan operasi lagi, menelepon lagi, dalam keadaan baik, kebuntuan terjadi lagi, lagi putar kembali - itu bisa <br>  terjadi berkali-kali (saya menemukan beberapa ratus pengulangan).  Dan sekarang Anda memproses kebuntuan ini kurang lebih dengan benar, ulangi operasi dan tiba-tiba menemukan bahwa Anda telah membayar jumlah ganda kepada seseorang dalam waktu dua bulan. <br><br><img src="https://habrastorage.org/webt/sp/lj/-v/splj-vecns-wphpahy3oqig9wuw.jpeg"><br><br>  Saya bertemu dengan layanan pembayaran yang memiliki API yang buruk: "bayar jumlah ini dan itu untuk pengguna ini dan itu";  fungsi mengembalikan hasilnya - dibayar / tidak dibayar.  Pertama, ada masalah dalam hal pengulangan, dan kedua, tidak jelas apa yang harus dilakukan jika koneksi terputus.  Untuk beberapa alasan, sangat sedikit orang yang peduli dengan masalah ini. <br><br><img src="https://habrastorage.org/webt/z7/wt/pu/z7wtpuektoi3jxhedlabwntji-a.jpeg"><br><br>  Contohnya ada di slide: operasi seperti itu harus dilakukan dalam dua tahap: seolah-olah peringatan - "kita akan melakukan sesuatu sekarang";  operasi itu sendiri. <br><br><img src="https://habrastorage.org/webt/gl/49/jl/gl49jl1nror_ototnhr13hwpt8q.jpeg"><br><br>  Jika kami tiba-tiba menyela - Anda tidak pernah tahu, mematikan daya - kami dapat kembali menjalankan operasi.  Jika kita mati pada tahap kedua, maka, di seluruh dunia, kedua kalinya kita tidak akan melakukannya, dan ini dapat dibongkar secara manual.  Sebenarnya, sebagian besar operasi seperti itu biasanya berhasil untuk pertama kalinya, tetapi langkah-langkah ini bukan rekayasa teoritis.  Semuanya bisa berfungsi normal selama berbulan-bulan, dan tiba-tiba admin mulai lebih bijak dengan jaringan, layanan mulai berkedip aktif - dan masalah dimulai. <br><br><img src="https://habrastorage.org/webt/sd/rd/ii/sdrdiiksbqdpczcux786fux_wik.jpeg"><br>  Ada 4 jenis operasi yang tidak dapat dibatalkan pada slide.  Yang terakhir adalah operasi non-idempoten.  Ini adalah kasus yang sangat menyedihkan.  Pada awalnya saya berbicara tentang seorang kawan yang melakukan semuanya dengan pemicu tepat untuk memastikan idempotensi operasinya. <br><br><img src="https://habrastorage.org/webt/1z/1k/i4/1z1ki4ljohxetbual3kekohv_uu.jpeg"><br>  Pada konferensi tersebut, orang-orang akan berbicara tentang Common Table Expressions, tentang betapa baiknya itu.  Sayangnya, CTE PostgreSQL tidak gratis: mereka memerlukan work_mem sendiri.  Jika Anda memiliki sampel kecil, maka secara umum tidak apa-apa.  Dan jika Anda tiba-tiba memilikinya besar, maka masalah Anda mulai.  Orang sangat sering menggunakan CTE sebagai semacam tampilan mini - sehingga Anda dapat membuat struktur aplikasi.  CTE sangat diminati. <br><br><img src="https://habrastorage.org/webt/gx/tp/m8/gxtpm8kn0aplloqxdenlq2_hm8m.jpeg"><br><br><img src="https://habrastorage.org/webt/wq/eo/bp/wqeobptq8vshxvzc0fhvryxqf00.jpeg"><br><br>  Anda dapat membuat tampilan sementara, tetapi, sayangnya, masing-masing mengambil baris di pg_class, dan jika ini sangat aktif digunakan, maka mungkin ada masalah dengan pembengkakan direktori. <br>  Dalam hal ini, Anda dapat menyarankan untuk membuat tampilan parameter, atau secara dinamis membentuk kueri, tetapi, sayangnya, di PostgreSQL dari dalam, ini tidak terlalu keren. <br><br><img src="https://habrastorage.org/webt/8s/1s/eg/8s1seg0zjkz85dhp_gdf56p4u1q.jpeg"><br><br>  JSON biasanya dibicarakan dengan nada yang sangat baik, tetapi ada kecenderungan dalam aplikasi di JSON untuk mendorong apa saja.  Pada prinsipnya, semuanya bekerja dengan baik.  Di sisi lain, data diambil dari JSON, meskipun cepat, tetapi tidak secepat dari kolom.  Lebih buruk lagi, jika Anda memiliki JSON besar, dan diterbitkan dalam TOAST.  Untuk mendapatkan JSON dari sana, Anda harus mengambilnya dari TOAST. <br><br>  Jika semua kolom di JSON, indeks fungsional bahkan dibangun di atasnya, maka Anda masih perlu mengeluarkannya dari sana.  Semakin buruk dengan volume besar, ketika database besar, ketika Anda memiliki <b>scan indeks bitmap</b> .  Kemudian kita memiliki tautan bukan ke string, tetapi ke seluruh halaman, dan untuk memahami apa yang harus diambil dari halaman, PostgreSQL akan membuat <b>Periksa ulang</b> , yaitu, mengangkat garis dari TOAST dan memeriksa apakah nilai ini ada atau tidak, dan karenanya sudah melompat atau tidak melompat.  Jika dengan kolom kecil ini berfungsi dengan baik, maka dengan JSON ini adalah masalah besar.  Tidak perlu terlalu terbawa dengan JSON. <br><br><img src="https://habrastorage.org/webt/i1/sx/et/i1sxeth5byhikfdkucqwy8uswk4.jpeg"><br><br>  <i>- Bagaimana cara memeriksa ketika beberapa pengguna bekerja dengan string?</i>  <i>Opsi apa yang ada?</i> <br><br>  - Pertama, Anda dapat mengurangi nilai semua kolom dan memastikan bahwa mereka tidak berubah sebelum menampilkan baris dalam formulir.  Opsi kedua, lebih nyaman: hitung hash sama sekali <br>  kolom, terutama karena kolom mungkin ada yang besar dan tebal.  Dan hash tidak begitu besar. <br><br>  <i>- Anda mengatakan bahwa kendala harus disebut nama baik sehingga pengguna dapat memahami apa yang terjadi.</i>  <i>Tetapi ada batas 60 karakter per nama kendala.</i>  <i>Ini seringkali tidak cukup.</i>  <i>Bagaimana cara mengatasinya?</i> <br><br>  - Saya pikir untuk bertarung dengan menahan diri.  Di PostgreSQL, ini adalah tipe khusus panjang 64. Pada prinsipnya, Anda dapat mengkompilasi ulang ke panjang yang lebih panjang, tetapi ini tidak terlalu baik. <br><br>  <i>- Dalam laporan itu, Anda membuat kami penasaran dengan fakta bahwa kami perlu melakukan sesuatu dengan arsip.</i>  <i>Mekanisme apa yang dianggap paling benar untuk pengarsipan yang ketinggalan zaman?</i> <br><br>  - Seperti yang saya katakan di awal, dengan ketekunan semuanya bekerja.  Metode mana yang paling nyaman bagi Anda, jadi gunakan saja. <br><br><iframe width="560" height="315" src="https://www.youtube.com/embed/sdVfBkoz_Fc" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>  <b>Waktu: Bagian 2 dari laporan ini dimulai pada 25:16</b> <br><br>  <i>- Ada prosedur tertentu yang dilakukan beberapa pengguna secara paralel.</i>  <i>Bagaimana membatasi eksekusi paralel dari prosedur ini, yaitu, untuk membangun semua</i> <i><br></i>  <i>pengguna dalam antrian sehingga sampai prosedur selesai, yang berikutnya tidak dapat mulai menggunakannya?</i> <br><br>  - Justru prosedurnya?  Atau cukup transaksi? <br><br>  <i>- Ini adalah prosedur yang disebut dalam beberapa transaksi.</i> <br><br>  - Anda bisa meletakkan kunci pada objek.  Akan sulit jika Anda memiliki kondisi, katakanlah, tidak lebih dari 3 pada saat yang sama.  Tapi ini bisa diwujudkan.  Saya biasanya menggunakan kunci transaksional, tetapi yang non-transaksional juga dimungkinkan. <br><br>  <i>- Saya masih ingin sekali lagi kembali ke data arsip.</i>  <i>Kamu berbicara tentang</i> <i><br></i>  <i>opsi penyimpanan arsip sehingga data dari aplikasi juga tersedia.</i>  <i>Terpikir oleh saya untuk hanya membuat database arsip terpisah.</i>  <i>Opsi apa lagi yang ada?</i> <br><br>  - Ya, Anda bisa membuat database arsip.  Anda dapat menulis fungsi dan membungkusnya dalam tampilan.  Dalam suatu fungsi, Anda dapat melakukan apapun yang diperlukan: Anda dapat pergi ke database arsip, Anda dapat mengambil beberapa file dari disk, Anda dapat pergi ke layanan web eksternal, Anda dapat menggabungkan semua ini, Anda dapat menghasilkan beberapa data acak sendiri - pilihan hanya dibatasi oleh imajinasi. <br><br>  <i>- Untuk pertanyaan tentang data arsip: Anda dapat menggunakan partisi - chip baru dari versi ke-11, saat kami membuat seluruh tabel dipartisi, dan kemudian cukup merinci partisi dan membiarkannya sebagai arsip.</i>  <i>Itu juga dapat diakses.</i> <br><br>  "Tentu saja, mengapa tidak."  Saya memberi jalan kepada pembicara berikutnya. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id443792/">https://habr.com/ru/post/id443792/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id443780/index.html">Proyek MCDM. Bagian 1. Konsep</a></li>
+<li><a href="../id443782/index.html">Pengembang sekarang dapat menggunakan API jaringan Valve untuk game Steam mereka</a></li>
+<li><a href="../id443786/index.html">Analisis kontes kuis Android kedua dari stand HeadHunter di Mobius 2018 Moscow</a></li>
+<li><a href="../id443788/index.html">Dasar-dasar routing statis di Mikrotik RouterOS</a></li>
+<li><a href="../id443790/index.html">Kesalahan Survivor</a></li>
+<li><a href="../id443794/index.html">Arahan utama untuk startup IT di bidang penjualan real estat</a></li>
+<li><a href="../id443798/index.html">Zotero hacks: penyimpanan yang disinkronkan tanpa batas dan penggunaannya yang mulus dengan rmarkdown</a></li>
+<li><a href="../id443804/index.html">C # adalah bahasa tingkat rendah?</a></li>
+<li><a href="../id443808/index.html">Analisis gadis dengan tanggung jawab sosial yang rendah (Dibebankan dengan Power BI, Qlik Sense, Tableau)</a></li>
+<li><a href="../id443810/index.html">Berapa penghasilan para pengembang dari berbagai kualifikasi, 2018</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

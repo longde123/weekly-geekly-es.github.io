@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦍 ⏩ 👼🏼 Mengoptimalkan waktu startup Prometheus 2.6.0 dengan pprof 📐 😯 👒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Prometheus 2.6.0 dioptimalkan memuat WAL, yang mempercepat proses startup. 
+
+
+ Tujuan tidak resmi dari pengembangan Prometheus 2.x TSDB adalah untuk m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Mengoptimalkan waktu startup Prometheus 2.6.0 dengan pprof</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/436922/"><p>  Prometheus <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">2.6.0</a> dioptimalkan memuat WAL, yang mempercepat proses startup. </p><br><p>  Tujuan tidak resmi dari pengembangan Prometheus 2.x TSDB adalah untuk mempercepat peluncuran sehingga dibutuhkan tidak lebih dari satu menit.  Dalam beberapa bulan terakhir, ada laporan bahwa prosesnya memakan waktu sedikit lebih lama, dan jika Prometheus restart karena alasan tertentu, maka ini sudah menjadi masalah.  Hampir sepanjang waktu ini, WAL (pra-perekaman rekaman) dimuat, yang mencakup sampel dari beberapa jam terakhir yang belum dikompres menjadi blok.  Pada akhir Oktober, saya akhirnya berhasil mengatasinya;  hasilnya adalah <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">PR # 440</a> , yang mengurangi waktu CPU sebesar 6,5 kali dan waktu perhitungan sebanyak 4 kali.  Mari kita lihat bagaimana saya melakukan perbaikan ini. </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/b59/bb0/1f7/b59bb01f785b863d244cb527c6b27632.png" alt="gambar"></p><a name="habracut"></a><br><p> Pertama, pengaturan tes diperlukan.  Saya membuat program Go kecil yang menghasilkan TSDB dengan WAL dengan satu miliar sampel yang tersebar di 10.000 seri waktu.  Kemudian saya membuka TSDB ini dan melihat berapa lama waktu yang dibutuhkan untuk menggunakan utilitas <code>time</code> (bukan struktur <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">bawaan</a> , karena tidak termasuk statistik memori), dan juga membuat profil CPU menggunakan paket <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">runtime / pprof</a> : </p><br><pre> <code class="plaintext hljs">f, err := os.Create("cpu.prof") if err != nil { log.Fatal(err) } pprof.StartCPUProfile(f) defer pprof.StopCPUProfile()</code> </pre> <br><p>  Profil CPU tidak memungkinkan kami untuk secara langsung menentukan waktu perhitungan yang menarik bagi kami, namun ada korelasi yang signifikan.  Hasilnya, pada komputer desktop saya (prosesor i7-3770 dengan 16 GB RAM dan solid state drive), pengunduhan memakan waktu sekitar 4 menit dan sedikit kurang dari 6 GB RAM pada puncaknya: </p><br><pre> <code class="plaintext hljs">1727.50user 16.61system 4:01.12elapsed 723%CPU (0avgtext+0avgdata 5962812maxresident)k 23625165inputs+95outputs (196major+2042817minor)pagefaults 0swaps</code> </pre> <br><p>  Ini bukan buzz, jadi mari kita memuat profil menggunakan <code>go tool pprof cpu.prof</code> dan lihat berapa lama prosesnya jika Anda menggunakan perintah <code>top</code> . </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/562/0e1/996/5620e19968ec33e73d42238e1ed1e909.png" alt="gambar"></p><br><p>  Di sini <code>flat</code> adalah jumlah waktu yang dihabiskan untuk fungsi yang diberikan, dan <code>cum</code> adalah waktu yang dihabiskan untuk fungsi ini dan semua fungsi yang dipanggil olehnya.  Mungkin juga berguna untuk melihat data ini dalam grafik untuk mendapatkan gagasan tentang pertanyaan itu.  Saya lebih suka menggunakan perintah <code>web</code> untuk ini, tetapi ada opsi lain, termasuk file svg, png dan pdf. </p><br><p>  Dapat dilihat bahwa sekitar sepertiga dari CPU kami dihabiskan untuk menambahkan sampel ke database internal, sekitar dua pertiga pada pemrosesan WAL secara umum, dan seperempat untuk membersihkan memori ( <code>runtime.scanobject</code> ).  Mari kita lihat kode untuk yang pertama dari proses ini menggunakan <code>list memSeries.*append</code> : </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/208/454/263/208454263da34943818a5f89ca2112da.png" alt="gambar"></p><br><p>  Berikut ini mencolok di sini: lebih dari separuh waktu dihabiskan untuk mendapatkan potongan kepala data untuk seri pada baris 1443. Juga, tidak sedikit waktu yang dihabiskan untuk mengatur jumlah sampel dalam bagian data ini pada baris 1449. Waktu yang dibutuhkan untuk menyelesaikan baris 1465 - Diharapkan, karena ini adalah inti dari tindakan fungsi ini.  Oleh karena itu, saya berharap operasi membutuhkan sebagian besar waktu. </p><br><p>  Lihatlah elemen <code>memSeries.head</code> : ini menghitung sepotong data yang dikembalikan setiap kali.  Fragmen data berubah hanya setelah setiap 120 penambahan, dan dengan demikian, kita dapat <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">menyimpan fragmen head saat ini dalam struktur data seri</a> .  Ini memakan sebagian RAM ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">yang akan saya bahas nanti</a> ), tetapi menghemat sejumlah besar CPU.  Dan secara keseluruhan, itu juga mempercepat Prometheus. </p><br><p>  Kemudian mari kita lihat <code>Head.processWALSamples</code> : </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/df3/677/ce9/df3677ce990c5d263a0790d88c4da721.png" alt="gambar"></p><br><p>  Add-on ini telah dioptimalkan di atas, jadi lihat pelakunya yang jelas berikutnya, <code>getByID</code> on line 252: <br>  (kode) </p><br><p>  Tampaknya ada semacam pemblokiran konflik, dan waktu terbuang untuk melakukan pencarian peta dua tingkat.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Tembolok untuk setiap pengidentifikasi</a> secara signifikan mengurangi indikator ini. </p><br><p>  Layak <code>Head.processWALSamples</code> melihat <code>Head.processWALSamples</code> , dan Anda akan terkejut dengan berapa banyak waktu yang dihabiskan pada saluran 249. Mari kita kembali sedikit ke pertanyaan tentang bagaimana cara memuat WAL bekerja: Head.processWALSamples <code>Head.processWALSamples</code> dibuat untuk setiap CPU yang tersedia, di samping yang lain untuk membaca dan decoding WAL dari disk.  Baris tersegmentasi oleh goroutine ini, sehingga konkurensi dapat menjadi keuntungan.  Metode implementasi adalah sebagai berikut: semua sampel dikirim ke gorutin pertama, yang memproses elemen-elemen yang dibutuhkannya.  Kemudian dia mengirimkan semua sampel ke gorutin kedua, yang memproses elemen-elemen yang dia butuhkan, dan seterusnya, sampai gorutin terakhir, <code>Head.processWALSamples</code> mengirimkan semua data kembali ke kontrol gorutin. </p><br><p>  Sementara itu, add-on didistribusikan di seluruh kernel - yang Anda butuhkan - dan banyak tugas rangkap dilakukan di setiap gorutin, yang harus memproses semua sampel dan menghitung modul.  Bahkan, semakin banyak core, semakin banyak pekerjaan yang digandakan.  Saya membuat perubahan untuk mengelompokkan data dalam controller gourutin, sehingga setiap gorutin dari <code>Head.processWALSamples</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">sekarang hanya mendapatkan sampel yang dibutuhkan</a> .  Di komputer saya - 8 menjalankan gorutin - waktu kalkulasi sedikit dihemat, tetapi volume CPU-nya lumayan.  Untuk komputer dengan sejumlah besar inti, manfaatnya harus lebih besar. </p><br><p>  Dan lagi kita kembali ke pertanyaan: waktu untuk menghapus memori.  Kami tidak dapat (biasanya) menentukan ini melalui profil CPU.  Alih-alih, perhatikan profil memori dinamis untuk menemukan elemen yang menonjol.  Ini membutuhkan beberapa perluasan kode di akhir program: </p><br><pre> <code class="plaintext hljs">runtime.GC() hf, err := os.Create("heap.prof") if err != nil { log.Fatal(err) } pprof.WriteHeapProfile(hf)</code> </pre> <br><p>  Pembersihan memori formal dikaitkan dengan beberapa informasi dalam memori dinamis, pengumpulan dan pembersihannya hanya dilakukan selama pembersihan memori. </p><br><p>  Kami kembali menggunakan alat yang sama, tetapi menentukan label <code>-alloc_space</code> , karena kami tertarik pada semua operasi alokasi memori, dan bukan hanya operasi yang menggunakan memori pada saat tertentu;  dengan demikian, jalankan <code>go tool pprof -alloc_space heap.prof</code> .  Jika Anda melihat distributor atas, pelakunya jelas: </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/8ba/0ba/cbf/8ba0bacbf8231b7fdac52a657212ee22.png" alt="gambar"></p><br><p>  Lihatlah kodenya: </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/453/531/ca4/453531ca4cda944db146ce07c20edc2f.png" alt="gambar"></p><br><p>  Susunan <code>samples</code> dapat diperluas tampaknya menjadi masalah.  Jika kita dapat menggunakan kembali array pada saat yang sama dengan memanggil <code>RecordDecoder.Samples</code> . <code>RecordDecoder.Samples</code> , ini akan menghemat sejumlah besar memori.  Ternyata kode itu dibuat dengan cara ini, tetapi kesalahan pengkodean kecil menyebabkan fakta bahwa itu tidak berfungsi.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Jika Anda memperbaikinya</a> , memori dihapus dalam 8 detik dari CPU, bukan 151 detik. </p><br><p>  Hasil keseluruhan cukup nyata: </p><br><pre> <code class="plaintext hljs">269.18user 10.69system 1:05.58elapsed 426%CPU (0avgtext+0avgdata 3529556maxresident)k 23174929inputs+70outputs (815major+1083172minor)pagefaults 0swap</code> </pre> <br><p>  Kami tidak hanya mengurangi waktu perhitungan hingga 4 kali, dan waktu CPU - sebesar 6,5 kali, tetapi juga jumlah memori yang digunakan berkurang lebih dari 2 GB. </p><br><p>  Sepertinya semuanya sederhana, tetapi triknya adalah ini: Saya dengan sopan mencari-cari di basis kode dan menganalisis semuanya seolah-olah di belakang.  Mempelajari kode, saya menemui jalan buntu beberapa kali, misalnya, ketika menghapus panggilan <code>NumSamples</code> , membaca dan mendekode di utas yang terpisah, serta dalam beberapa cara untuk melakukan segmentasi <code>processWALSamples</code> .  Saya hampir yakin bahwa dengan mengatur jumlah gorutin, lebih banyak yang dapat dicapai, tetapi untuk tes ini harus dilakukan pada mesin yang lebih kuat daripada milikku, sehingga ada lebih banyak inti.  Saya mencapai tujuan saya: produktivitas meningkat, dan saya menyadari bahwa lebih baik tidak membuat registri program terlalu besar, dan karena itu memutuskan untuk berhenti di sana. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id436922/">https://habr.com/ru/post/id436922/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id436912/index.html">2019 Tren CRM: menyenangkan untuk dibaca, berbahaya untuk dipercaya</a></li>
+<li><a href="../id436914/index.html">Masalah Pertumbuhan Startup - Pemantauan</a></li>
+<li><a href="../id436916/index.html">VShard - penskalaan horizontal di Tarantool</a></li>
+<li><a href="../id436918/index.html">Membuat Game untuk Game Boy, Bagian 2</a></li>
+<li><a href="../id436920/index.html">Transpiler PAS2JS dari Pascal ke JavaScript: tidak kompatibel dengan Delphi dan solusi</a></li>
+<li><a href="../id436924/index.html">Beberapa kata tentang organisasi kompetisi robot</a></li>
+<li><a href="../id436926/index.html">Pahlawan autentikasi dua faktor, atau cara "berjalan di posisi orang lain"</a></li>
+<li><a href="../id436928/index.html">WebRTC - lebih mudah (EasyRTC)</a></li>
+<li><a href="../id436934/index.html">Naïve Math: motor Mendocino dan teorema Earnshaw</a></li>
+<li><a href="../id436936/index.html">Gudang nuklir Jepang di Primorye atau tempat pembuangan kapal selam nuklir Armada Pasifik</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

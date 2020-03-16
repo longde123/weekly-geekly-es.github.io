@@ -1,0 +1,129 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔌 🌒 👩🏼‍🏫 Kami sedang mempersiapkan pencarian teks lengkap di Postgres. Bagian 1 👨🏼‍🔧 ⛸️ 👩🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="UPD Bagian 2 
+
+
+ Artikel ini adalah yang pertama dari serangkaian kecil artikel tentang cara mengkonfigurasi pencarian teks lengkap secara optimal di ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kami sedang mempersiapkan pencarian teks lengkap di Postgres. Bagian 1</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/442170/"><p>  <strong>UPD</strong>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Bagian 2</a> </p><br><p>  Artikel ini adalah yang pertama dari serangkaian kecil artikel tentang cara mengkonfigurasi pencarian teks lengkap <em>secara optimal</em> di PostgreSQL.  Saya baru-baru ini harus menyelesaikan masalah yang sama di tempat kerja - dan saya sangat terkejut dengan tidak adanya setidaknya beberapa bahan waras tentang hal ini.  Pengalaman saya berjuang di bawah luka. </p><a name="habracut"></a><br><h2 id="zavyazka">  Dasi </h2><br><p>  Saya mendukung proyek yang relatif besar yang memiliki pencarian publik pada dokumen.  Basis data berisi ~ 500 ribu dokumen dengan total volume ~ 3,6 GB.  Inti dari pencarian adalah ini: pengguna mengisi formulir di mana ada permintaan teks lengkap dan pemfilteran oleh berbagai bidang dalam database, termasuk dengan join-s. </p><br><p>  Pekerjaan pencarian (atau lebih tepatnya, bekerja) melalui Sphinx, dan tidak bekerja dengan baik.  Masalah utama adalah sebagai berikut: </p><br><ol><li>  Pengindeksan mengkonsumsi sekitar 8 GB RAM.  Pada server dengan 8 GB RAM, ini merupakan masalah.  Memori bertukar, itu menyebabkan kinerja yang <em>mengerikan</em> . </li><li>  Indeks dibangun sekitar 40 menit.  Tidak ada pertanyaan tentang konsistensi hasil pencarian, pengindeksan diluncurkan sekali sehari. </li><li> Pencarian berhasil untuk waktu yang <em>lama</em> .  Permintaan untuk waktu yang sangat lama dilakukan, yang berhubungan dengan sejumlah besar dokumen: sejumlah besar id-shnik harus ditransfer dari sphinx ke database, dan diurutkan berdasarkan relevansi pada backend. </li></ol><br><p>  Karena masalah ini, tugas muncul - untuk mengoptimalkan pencarian teks lengkap.  Tugas ini memiliki dua solusi: </p><br><ol><li>  Kencangkan Sphinx: konfigurasikan indeks waktu nyata, simpan atribut untuk penyaringan dalam indeks. </li><li>  Gunakan FTS PostgreSQL bawaan. </li></ol><br><p>  Diputuskan untuk mengimplementasikan solusi kedua: dengan cara ini Anda dapat secara otomatis menyediakan pembaruan indeks secara otomatis, menyingkirkan komunikasi <em>panjang</em> antara dua layanan dan memantau satu layanan, bukan dua. </p><br><p>  Tampaknya menjadi solusi yang bagus.  Tapi masalah ada di depan. </p><br><p>  Mari kita mulai dari awal. </p><br><h2 id="naivno-ispolzuem-polnotekstovyy-poisk">  Kami secara naif menggunakan pencarian teks lengkap </h2><br><p> Seperti yang dikatakan dalam dokumentasi, pencarian teks lengkap membutuhkan penggunaan tipe <code>tsvector</code> dan <code>tsquery</code> .  Yang pertama menyimpan teks dokumen dalam bentuk pencarian yang dioptimalkan, yang kedua menyimpan kueri teks lengkap. </p><br><p>  Untuk mencari PostgreSQL, ada fungsi <code>to_tsvector</code> , <code>plainto_tsquery</code> , <code>to_tsquery</code> .  Untuk memberi peringkat hasil ada <code>ts_rank</code> .  Penggunaannya intuitif dan dijelaskan dengan baik dalam <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">dokumentasi</a> , jadi kami tidak akan membahas detail penggunaannya. </p><br><p>  Kueri pencarian tradisional yang menggunakan mereka akan terlihat seperti ini: </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> id, ts_rank(to_tsvector("document_text"), plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> to_tsvector("document_text") @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> ts_rank(to_tsvector("document_text"), plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> <br><p>  Kami menyimpulkan id dokumen dalam teks yang ada kata "kueri", dan mengurutkannya dalam urutan relevansi yang menurun.  Segalanya tampak baik-baik saja?  Tidak. </p><br><p>  Pendekatan di atas memiliki banyak kelemahan: </p><br><ol><li>  Kami tidak menggunakan indeks untuk pencarian. </li><li>  Fungsi ts_vector dipanggil untuk setiap baris tabel. </li><li>  Fungsi ts_rank dipanggil untuk setiap baris tabel. </li></ol><br><p>  Ini semua mengarah pada fakta bahwa pencarian membutuhkan waktu yang <em>sangat</em> lama.  <code>EXPLAIN</code> hasil di pangkalan tempur: </p><br><pre> <code class="plaintext hljs">Gather Merge (actual time=420289.477..420313.969 rows=58742 loops=1) Workers Planned: 2 Workers Launched: 2 -&gt; Sort (actual time=420266.150..420267.935 rows=19581 loops=3) Sort Key: (ts_rank(to_tsvector(document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 2278kB -&gt; Parallel Seq Scan on documents_document (actual time=65.454..420235.446 rows=19581 loops=3) Filter: (to_tsvector(document_text) @@ plainto_tsquery(''::text)) Rows Removed by Filter: 140636 Planning time: 3.706 ms Execution time: 420315.895 ms</code> </pre> <br><p>  420 detik!  Untuk satu permintaan! </p><br><p>  Basis ini juga menghasilkan banyak vorings dari bentuk <code>[54000] word is too long to be indexed</code> .  Tidak ada yang perlu dikhawatirkan.  Alasannya adalah bahwa dalam database saya adalah dokumen yang dibuat di editor WYSIWYG.  Ini menyisipkan banyak <code>&amp;nbsp;</code>  sedapat mungkin, dan ada 54 ribu berturut-turut.  Postgres mengabaikan kata-kata panjang ini dan menulis vorning yang tidak dapat dinonaktifkan. </p><br><p>  Kami akan mencoba memperbaiki semua masalah yang dicatat dan mempercepat pencarian. </p><br><h2 id="naivno-optimiziruem-poisk">  Kami secara naif mengoptimalkan pencarian </h2><br><p>  Kami tidak akan bermain dengan pangkalan tempur, tentu saja - kami akan membuat basis tes.  Ini berisi ~ 12 ribu dokumen.  Permintaan dari contoh dijalankan di sana ~ 35 detik.  Sangat panjang! </p><br><div class="spoiler">  <b class="spoiler_title">MENJELASKAN Hasil</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">Sort (actual time=35431.874..35432.208 rows=3593 loops=1) Sort Key: (ts_rank(to_tsvector(document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Seq Scan on documents_document (actual time=8.470..35429.261 rows=3593 loops=1) Filter: (to_tsvector(document_text) @@ plainto_tsquery(''::text)) Rows Removed by Filter: 9190 Planning time: 0.200 ms Execution time: 35432.294 ms</code> </pre> </div></div><br><h3 id="indeks">  Indeks </h3><br><p>  Pertama-tama, tentu saja, Anda perlu menambahkan indeks.  Cara termudah: indeks fungsional. </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_gin_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> gin (to_tsvector(<span class="hljs-string"><span class="hljs-string">'russian'</span></span>, "document_text"));</code> </pre> <br><p>  Indeks semacam itu akan dibuat untuk waktu yang lama - butuh ~ 26 detik pada basis tes.  Dia harus melalui database dan memanggil fungsi to_tsvector untuk setiap record.  Meskipun masih mempercepat pencarian hingga 12 detik, itu masih sangat panjang! </p><br><div class="spoiler">  <b class="spoiler_title">MENJELASKAN Hasil</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">Sort (actual time=12213.943..12214.327 rows=3593 loops=1) Sort Key: (ts_rank(to_tsvector('russian'::regconfig, document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Bitmap Heap Scan on documents_document (actual time=3.849..12212.248 rows=3593 loops=1) Recheck Cond: (to_tsvector('russian'::regconfig, document_text) @@ plainto_tsquery(''::text)) Heap Blocks: exact=946 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.427..0.427 rows=3593 loops=1) Index Cond: (to_tsvector('russian'::regconfig, document_text) @@ plainto_tsquery(''::text)) Planning time: 0.109 ms Execution time: 12214.452 ms</code> </pre> </div></div><br><h3 id="mnogokratnyy-vyzov-to_tsvector">  Panggilan <code>to_tsvector</code> berulang </h3><br><p>  Untuk mengatasi masalah ini, Anda perlu menyimpan <code>tsvector</code> dalam database.  Saat mengubah data dalam tabel dengan dokumen, tentu saja, Anda perlu memperbaruinya - melalui pemicu dalam database, menggunakan backend. </p><br><p>  Ada dua cara untuk melakukan ini: </p><br><ol><li>  Tambahkan kolom tipe <code>tsvector</code> ke tabel dengan dokumen. </li><li>  Buat tabel terpisah dengan komunikasi satu-ke-satu dengan tabel dokumen, dan simpan vektor di sana. </li></ol><br><p>  Keuntungan dari pendekatan pertama: kurangnya bergabung dalam pencarian. <br>  Keuntungan dari pendekatan kedua: kurangnya data tambahan dalam tabel dengan dokumen, ukurannya tetap sama seperti sebelumnya.  Dengan cadangan, Anda tidak perlu membuang waktu dan memakai <code>tsvector</code> , yang tidak perlu Anda <code>tsvector</code> sama sekali. </p><br><p>  Kedua perjalanan menyebabkan fakta bahwa data pada disk menjadi dua kali lipat: teks dokumen dan vektornya disimpan. </p><br><p>  Saya memilih pendekatan kedua untuk diri saya sendiri, keuntungannya lebih signifikan bagi saya. </p><br><div class="spoiler">  <b class="spoiler_title">Pembuatan indeks</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_gin_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> gin ("document_text");</code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Permintaan pencarian baru</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> documents_document.id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.id = documents_documentvector.document_id <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> </div></div><br><p>  Tambahkan data ke tabel yang ditautkan dan buat indeks.  Menambahkan data membutuhkan waktu 24 detik berdasarkan pengujian, dan membuat indeks hanya membutuhkan <em>2,7 detik</em> .  Memperbarui indeks dan data, seperti yang kita lihat, tidak mempercepat secara signifikan, tetapi indeks itu sendiri sekarang dapat diperbarui dengan <em>sangat</em> cepat. </p><br><p>  Dan berapa kali pencarian dipercepat? </p><br><pre> <code class="plaintext hljs">Sort (actual time=48.147..48.432 rows=3593 loops=1) Sort Key: (ts_rank(documents_documentvector.text, plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Hash Join (actual time=2.281..47.389 rows=3593 loops=1) Hash Cond: (documents_document.id = documents_documentvector.document_id) -&gt; Seq Scan on documents_document (actual time=0.003..2.190 rows=12783 loops=1) -&gt; Hash (actual time=2.252..2.252 rows=3593 loops=1) Buckets: 4096 Batches: 1 Memory Usage: 543kB -&gt; Bitmap Heap Scan on documents_documentvector (actual time=0.465..1.641 rows=3593 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=577 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.404..0.404 rows=3593 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.410 ms Execution time: 48.573 ms</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Metrik tanpa bergabung</b> <div class="spoiler_text"><p>  Minta: </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><p>  Hasil: </p><br><pre>  Sortir (waktu aktual = 44.339..44.487 baris = 3593 putaran = 1)
+   Sortir Kunci: (ts_rank (teks, plainto_tsquery ('query' :: text)))
+   Metode Sortir: memori cepat: 265kB
+   -&gt; Bitmap Heap Scan pada document_documentvector (waktu aktual = 0.692..43.682 baris = 3593 loop = 1)
+         Periksa kembali Cond: (text @@ plainto_tsquery ('query' :: text))
+         Heap Blocks: tepat = 577
+         -&gt; Pemindaian Indeks Bitmap pada idx_gin_document (waktu aktual = 0,577..0.577 baris = 3593 loop = 1)
+               Indeks Cond: (teks @@ plainto_tsquery ('query' :: text))
+ Waktu perencanaan: 0,182 ms
+ Waktu pelaksanaan: 44.610 ms
+</pre></div></div><br><p>  Luar biasa!  Dan ini meskipun bergabung dan <code>ts_rank</code> .  Sudah hasil yang cukup dapat diterima, sebagian besar waktu akan <code>ts_rank</code> bukan oleh pencarian, tetapi dengan perhitungan <code>ts_rank</code> untuk setiap baris. </p><br><h3 id="mnogokratnyy-vyzov-ts_rank">  <code>ts_rank</code> beberapa panggilan </h3><br><p>  Tampaknya kami telah berhasil menyelesaikan semua masalah kami, kecuali yang ini.  44 milidetik adalah waktu yang layak.  Happy ending sepertinya dekat?  Itu dia! </p><br><p>  Jalankan kueri yang sama tanpa <code>ts_rank</code> dan bandingkan hasilnya. </p><br><div class="spoiler">  <b class="spoiler_title">Tanpa ts_rank</b> <div class="spoiler_text"><p>  Minta: </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><p>  Hasil: </p><br><pre> <code class="plaintext hljs">Bitmap Heap Scan on documents_documentvector (actual time=0.503..1.609 rows=3593 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=577 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.439..0.439 rows=3593 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.147 ms Execution time: 1.715 ms</code> </pre> </div></div><br><p>  1,7 md!  Tiga puluh kali lebih cepat!  Untuk pangkalan tempur, hasilnya ~ 150 ms dan 1,5 detik.  Perbedaan dalam hal apa pun adalah urutan besarnya, dan 1,5 detik bukanlah waktu yang Anda inginkan untuk menunggu jawaban dari pangkalan.  Apa yang harus dilakukan </p><br><p>  Anda tidak dapat mematikan penyortiran berdasarkan relevansi; Anda tidak dapat mengurangi jumlah baris untuk penghitungan (database harus menghitung <code>ts_rank</code> untuk semua dokumen yang <code>ts_rank</code> , jika tidak mereka tidak dapat disortir). </p><br><p>  Di beberapa tempat di Internet, disarankan untuk melakukan cache permintaan yang paling sering (dan, karenanya, hubungi ts_rank).  Tapi saya tidak suka pendekatan ini: cukup sulit untuk memilih kueri yang benar, dan pencarian akan tetap melambat pada kueri yang salah. </p><br><p>  Saya akan sangat menyukai itu setelah melalui indeks data datang dalam bentuk yang sudah diurutkan, seperti yang dilakukan Sphinx.  Sayangnya, tidak ada yang dapat dilakukan dari kotak di PostgreSQL. </p><br><p>  Tapi kami beruntung - indeks RUM dapat melakukan ini.  Rincian tentang hal itu dapat ditemukan, misalnya, dalam <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">presentasi penulisnya</a> .  Ini menyimpan informasi tambahan tentang permintaan, yang memungkinkan Anda untuk secara langsung mengevaluasi apa yang disebut.  "jarak" antara <code>tsvector</code> dan <code>tsquery</code> dan menghasilkan hasil yang diurutkan segera setelah memindai indeks. </p><br><p>  Tetapi melempar GIN dan menginstal RUM tidak segera berarti.  Ini memiliki minus, plus dan batas aplikasi - saya akan menulis tentang ini di artikel berikutnya. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id442170/">https://habr.com/ru/post/id442170/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id442158/index.html">Pahlawan III - 20 tahun</a></li>
+<li><a href="../id442162/index.html">STM32 mulai cepat. Bagian 1 perangkat lunak, bahan, Cube MX</a></li>
+<li><a href="../id442164/index.html">Roskomnadzor berencana untuk mendenda Facebook karena ketidakpatuhan</a></li>
+<li><a href="../id442166/index.html">Skema metro alternatif Minsk</a></li>
+<li><a href="../id442168/index.html">Habra megarating: artikel terbaik dan statistik Habr selama 12 tahun. Bagian 2/2</a></li>
+<li><a href="../id442176/index.html">Para ilmuwan menumbuhkan pasukan universal T-limfosit untuk menghancurkan kanker</a></li>
+<li><a href="../id442178/index.html">Mayhem - mesin yang dapat mendeteksi kerentanan dalam program dan memperbaikinya</a></li>
+<li><a href="../id442180/index.html">Kami membagikan "besi" secara gratis</a></li>
+<li><a href="../id442182/index.html">Emergency Room: Kehidupan Rahasia Moderator Facebook di AS</a></li>
+<li><a href="../id442184/index.html">Hacking BISA bus otomatis. Dasbor virtual</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

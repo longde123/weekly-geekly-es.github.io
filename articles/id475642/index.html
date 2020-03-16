@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦒 😜 👨🏼‍⚕️ Heap hanya mekanisme tuple di PostgreSQL 🧓🏻 🥉 👷</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Postgresql berbeda dari DBMS lain dalam hal bahwa selama operasi UPDATE, perubahan pada baris yang ada tidak terjadi, dan sebagai gantinya salinan dar...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Heap hanya mekanisme tuple di PostgreSQL</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/475642/"><p>  Postgresql berbeda dari DBMS lain dalam hal bahwa selama operasi UPDATE, perubahan pada baris yang ada tidak terjadi, dan sebagai gantinya salinan dari baris dibuat yang berbeda dari aslinya dengan nilai-nilai kolom yang dipengaruhi oleh pembaruan - mereka sudah tua dalam aslinya dan diubah dalam salinan.  Pendekatan ini, di satu sisi, memungkinkan Anda untuk menghindari kunci saat menjalankan permintaan baca dan tulis, dan di sisi lain, itu menciptakan kebutuhan untuk terus-menerus menghapus string versi lama yang tak seorang pun akan pernah membaca.  Sehubungan dengan fitur arsitektur ini, pertanyaan yang sering muncul tentang apa yang akan terjadi jika Anda perlu menyimpan dalam database, seperti waktu akses terakhir ke data yang tidak berubah.  Apakah akan merespons kinerja?  Apakah akan mengarah pada restrukturisasi indeks yang konstan? </p><br><p>  Singkatnya, ya, Copy On Write tidak akan pergi ke mana pun, tetapi dalam banyak kasus indeks tidak dapat dibangun kembali, terima kasih kepada HOT. </p><a name="habracut"></a><br><p>  Heap only tuple, juga dikenal sebagai HOT, adalah optimasi yang digunakan Postgres untuk mengurangi jumlah I / O yang diperlukan untuk pembaruan.  Karena MVCC, pembaruan di Postgres terdiri dari menemukan baris untuk pembaruan dan memasukkan versi baru dari baris ke dalam database.  Kelemahan utama dari prosedur ini adalah kebutuhan untuk menambahkan kembali satu baris ke setiap indeks. <br>  Ini membutuhkan lebih banyak I / O karena baris perlu dimasukkan kembali ke setiap indeks dalam tabel.  Perlunya memasukkan kembali muncul karena posisi fisik dari versi baru dari baris pada disk berbeda dari posisi fisik versi lama. </p><br><p>  Untuk mengurangi jumlah I / O yang diperlukan untuk UPDATE, tim Postgres menambahkan HOT ke Postgres.  Gagasan di balik HOT relatif sederhana.  Saat memperbarui baris, jika memungkinkan, Postgres akan segera menyalin baris tersebut setelah salinan lama baris tersebut.  Plus, dalam salinan string yang lama, label khusus ditempel sehingga Postgres tahu bahwa salinan string yang baru segera setelah yang lama.  Karena itu, memperbarui semua indeks tidak diperlukan. </p><br><p>  Selama pemindaian oleh indeks yang salinan string baru dilewati, filter Postgres akan menemukan salinan string yang lama.  Karena ada label khusus pada salinan lama dari baris, Postgres akan mengerti bahwa salinan baru dari baris terletak segera setelah yang lama dan akan menemukan versi baru dan menggunakannya.  Ternyata Postgres dalam kasus seperti itu dapat berperilaku seolah-olah semua indeks menunjuk ke salinan baru dari string, dan mereka tidak perlu dibangun kembali. </p><br><p>  Sekarang HOT hanya terlibat ketika hanya kolom yang tidak dapat diindeks terlibat dalam pembaruan.  Jika setidaknya satu kolom yang berpartisipasi dalam pembaruan termasuk dalam indeks, HOT tidak dapat diterapkan.  Dalam hal ini, ada beberapa masalah dengan menggunakan HOT.  Misalnya, ketika indeks pada kolom yang perlu diperbarui diindeks oleh pemindaian dan salinan lama dari garis jatuh ke dalam predikat pemindaian, tetapi yang baru tidak.  Dalam situasi ini, Postgres akan mencoba menggunakan indeks untuk dengan cepat menemukan semua baris yang cocok untuk predikat kueri, dan dalam kasus kolom yang diperbarui menggunakan HOT, itu akan menghasilkan salinan baru dari baris yang tidak cocok dengan predikat kueri.  Karena batasan ini (bahwa HOT tidak berfungsi ketika kolom yang dapat diindeks dimasukkan dalam pembaruan), Postgres dapat menjamin bahwa ketika ia mencoba untuk menemukan baris yang sesuai untuk predikat yang dilalui indeks, maka jika predikat cocok dengan versi lama dari baris, maka versi baru dari baris juga cocok untuknya dan sebaliknya. </p><br><p>  Saat ini sedang dikembangkan adalah ekstensi HOT yang disebut WARM, yang juga berfungsi ketika memperbarui kolom di mana indeks dibuat.  Gagasan di balik WARM adalah untuk menempatkan baris baru segera setelah yang lama dan memperbarui baris untuk indeks yang telah mengubah kolom.  Ini sangat menyulitkan situasi yang dijelaskan, karena sekarang Postgres membutuhkan cara untuk menentukan apakah baris melewati filter untuk indeks atau tidak. </p><br><p>  <strong>NB</strong> Dalam artikel asli, mekanisme HOT dijelaskan, tetapi di sini kita memiliki mekanisme di mana tumpukan hanya tuple yang terlibat, dan istilah itu sendiri memiliki arti yang terpisah. </p><br><p>  Heap only tuple hanyalah versi baru dari baris tersebut.  Anehnya, Heap adalah sebuah tabel, dan Heap hanya berarti bahwa baris ini hanya dapat ditemukan oleh rantai yang mengarah dari versi lama dari garis yang disebut root. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id475642/">https://habr.com/ru/post/id475642/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id475624/index.html">PHP-Watcher: alat yang menyederhanakan pengembangan aplikasi berumur panjang</a></li>
+<li><a href="../id475626/index.html">Bisakah autotests menggantikan seseorang dalam mencari kerentanan: wawancara dengan Alexandra Svatikova</a></li>
+<li><a href="../id475630/index.html">Knative - platform berbasis k8s sebagai layanan dengan dukungan serverless</a></li>
+<li><a href="../id475636/index.html">Elemen Vektor Bertambah</a></li>
+<li><a href="../id475640/index.html">Jika Anda membuat sesuatu, hindari jadwal manajer.</a></li>
+<li><a href="../id475646/index.html">Yuri Ryabtsev: "Pencegatan pertama rudal balistik adalah peristiwa yang kira-kira sama dengan penerbangan Gagarin"</a></li>
+<li><a href="../id475652/index.html">Bagaimana kami mengembangkan aplikasi seluler di Aurora OS (Sailfish Mobile OS RUS)</a></li>
+<li><a href="../id475654/index.html">"Bulan pertama tiga pria sehat takut menyalakan turbin" - bagaimana Alexei Statsenko membuat jetpack dari awal</a></li>
+<li><a href="../id475656/index.html">Tinjauan aktivitas virus untuk perangkat seluler pada Oktober 2019</a></li>
+<li><a href="../id475658/index.html">Mengapa pergi ke DevOpsDays? Dan mengapa ini bukan konferensi DevOps lain</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🖇️ 🦃 🧑🏼‍🤝‍🧑🏻 Replikasi logis dari PostgreSQL ke Erlang 🐣 📣 🔇</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Skema yang cukup khas dalam pengembangan sistem, ketika logika pemrosesan utama terkonsentrasi dalam aplikasi (dalam kasus kami, Erlang), dan data unt...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Replikasi logis dari PostgreSQL ke Erlang</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/482398/"><p> Skema yang cukup khas dalam pengembangan sistem, ketika logika pemrosesan utama terkonsentrasi dalam aplikasi (dalam kasus kami, Erlang), dan data untuk aplikasi ini (pengaturan, profil pengguna, dll.) Dalam database (PostgreSQL).  Aplikasi Erlang melakukan cache pengaturan di ETS untuk mempercepat pemrosesan dan mengurangi beban pada database dengan menolak permintaan persisten.  Pada saat yang sama, perubahan data ini terjadi melalui layanan yang terpisah (mungkin eksternal). </p><br><p>  Dalam situasi seperti itu, tantangan muncul untuk menjaga agar data cache tidak diperbarui.  Ada berbagai pendekatan untuk menyelesaikan masalah ini.  Salah satunya adalah replikasi logis PostgreSQL.  Tentang itu dan akan dibahas di bawah. </p><a name="habracut"></a><br><h1>  Protokol Replikasi Logika Stream </h1><br><p>  <a href="https://www.postgresql.org/docs/10/logical-replication.html">Replikasi logis</a> menggunakan protokol replikasi streaming PostgreSQL untuk mengambil perubahan data dalam tabel PostgreSQL dengan membaca log WAL, memfilter tabel yang diinginkan, dan mengirimkan perubahan ini ke pelanggan.  Mekanisme ini mirip dengan yang digunakan untuk replikasi fisik untuk membuat database siaga. </p><br><p>  Replikasi logis memberikan manfaat berikut: </p><br><ul><li>  menerima perubahan tanpa penundaan dalam waktu nyata; </li><li>  memfilter perubahan berdasarkan tabel dan operasi (INSERT / DELETE / UPDATE); </li><li>  kelengkapan dan integritas data yang diterima oleh pelanggan.  Pelanggan menerima perubahan dalam urutan yang sama seperti yang terjadi dalam database; </li><li>  tidak ada kehilangan data jika terjadi penghentian sementara pelanggan.  PostgreSQL mengingat di mana replikasi berhenti; </li></ul><br><h1>  Persiapan Basis Data </h1><br><p>  Untuk bekerja dengan replikasi logis, Anda memerlukan plugin yang menerjemahkan kode WAL dari server dalam format yang lebih nyaman. <br>  Sebelum PostgreSQL 10, Anda dapat menggunakan <a href="https://2ndquadrant.com/en/resources/pglogical">plugin</a> / extension <a href="https://2ndquadrant.com/en/resources/pglogical">pglogical_output</a> . <br>  Dimulai dengan <a href="https://www.postgresql.org/docs/10/static/protocol-logicalrep-message-formats.html">plugin</a> PostgreSQL 10 <a href="https://www.postgresql.org/docs/10/static/protocol-logicalrep-message-formats.html">pgoutput</a> . <br>  Artikel ini akan membahas plugin pgoutput. </p><br><p>  Di sisi PostgreSQL, Anda harus menyelesaikan langkah-langkah berikut: </p><br><ul><li><p>  Tetapkan parameter untuk mendukung replikasi logis di <br>  <a href="https://www.postgresql.org/docs/10/static/logical-replication-config.html">postgresql.conf</a> </p><br><pre><code class="plaintext hljs">wal_level = 'logical' max_replication_slots = 5 max_wal_senders = 5</code> </pre> <br></li><li><p>  Buat peran yang akan digunakan untuk replikasi.  Peran harus memiliki <code>SUPERUSER</code> <code>REPLICATION</code> atau <code>SUPERUSER</code> . </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">USER</span></span> epgl_test <span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REPLICATION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PASSWORD</span></span> <span class="hljs-string"><span class="hljs-string">'epgl_test'</span></span>;</code> </pre> <br></li><li><p>  Izinkan akses untuk peran ini di pg_hba.conf dengan <code>database = replication</code> </p><br><pre> <code class="plaintext hljs">host replication epgl_test 127.0.0.1/32 trust</code> </pre> <br></li><li><p>  Buat <a href="https://www.postgresql.org/docs/10/sql-createpublication.html">publikasi</a> .  Saat membuat publikasi, kami menunjukkan tabel yang kami rencanakan untuk terima di aplikasi Erlang </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> PUBLICATION epgl_test <span class="hljs-keyword"><span class="hljs-keyword">FOR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> public.test_table1, public.test_table3; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> PUBLICATION epgl_test <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> public.test_table2; <span class="hljs-comment"><span class="hljs-comment">--      </span></span></code> </pre> <br></li></ul><br><h1>  Bagian erlang </h1><br><p>  Belum lama ini, dukungan <a href="https://www.postgresql.org/docs/10/protocol-replication.html">untuk protokol replikasi streaming</a> telah ditambahkan ke perpustakaan Erlang yang populer untuk bekerja dengan PostgreSQL <a href="">EPGSQL</a> .  Berdasarkan pustaka ini, kami akan membangun logika untuk menerima perubahan di Erlang. <br>  Karena format data langsung dalam pesan <code>XlogData</code> dari protokol tergantung pada plug-in mana yang digunakan untuk slot replikasi, perpustakaan <code>EPGSQL</code> tidak men-decode data, tetapi memanggil metode Callback atau mengirim pesan ke proses secara tidak sinkron. </p><br><h2>  Koneksi DB </h2><br><p>  Koneksi replikasi khusus ke database harus dibuat, untuk ini Anda harus melewati bendera <code>replication</code> . <br>  Dalam koneksi basis data replikasi, hanya perintah replikasi yang dapat dijalankan (misalnya, DROP_REPLICATION_SLOT, CREATE_REPLICATION_SLOT). <br>  Anda tidak dapat menjalankan permintaan reguler melalui koneksi ini. </p><br><h2>  Buat slot replikasi </h2><br><p>  Slot replikasi digunakan untuk melacak posisi saat log WAL yang ditransfer. <br>  Saat membuat slot replikasi, sebuah plug-in untuk decoding ditentukan. </p><br><p>  PostgreSQL 10 memperkenalkan kemampuan untuk membuat slot replikasi sementara yang secara otomatis dihapus ketika koneksi replikasi ditutup. </p><br><p>  Jika aplikasi membaca keadaan awal tabel setiap kali dimulai, maka saya sarankan menggunakan slot replikasi sementara, dalam hal ini Anda tidak perlu khawatir menghapus slot replikasi yang dibuat (DROP_REPLICATION_SLOT).  Menghapus slot replikasi lama / tidak terpakai sangat penting karena PostgreSQL tidak menghapus log WAL sampai pelanggan dari semua slot replikasi menerima perubahan.  Jika masih ada slot replikasi tidak aktif, maka log WAL akan mulai menumpuk dan cepat atau lambat sistem file akan meluap. </p><br><h2>  Mendapatkan status awal tabel </h2><br><p>  Saat membuat slot replikasi (lihat langkah sebelumnya), sebuah snapshot dibuat secara otomatis yang menunjukkan keadaan database pada saat slot tersebut dibuat.  Cuplikan ini dapat digunakan untuk memuat kondisi awal tabel, yang berada di awal replikasi. </p><br><p>  Snapshot hanya tersedia sampai koneksi replikasi di mana perintah <code>CREATE_REPLICATION_SLOT</code> dieksekusi ditutup. </p><br><p>  Untuk memuat data awal, koneksi reguler / non-replikasi ke database harus dibuat, karena SELECT tidak dapat dilakukan pada koneksi replikasi.  Dalam koneksi ini, atur snapshot <code>SET TRANSACTION SNAPSHOT SnapshotName</code> dan ekstrak data yang diperlukan. </p><br><h2>  Mulai replikasi </h2><br><p>  Kami memulai replikasi untuk slot replikasi yang dibuat.  Saat memulai replikasi, kami memberikan parameter tambahan untuk plugin, untuk pgoutput ini adalah nama publikasi yang dibuat. </p><br><p>  Semua langkah bersama </p><br><pre> <code class="erlang hljs"><span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start_replication</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> -&gt;</span></span> <span class="hljs-comment"><span class="hljs-comment">%%    {ok, ReplConn} = epgsql:connect(Host, User, Password, [{database, DBName}, {port, Port}, {replication, "database"}]), %%    {ok, _, [{_, _, SnapshotName}|_]} = epgsql:squery(ReplConn, "CREATE_REPLICATION_SLOT epgl_repl_slot TEMPORARY LOGICAL pgoutput"). %%     {ok, NormalConn} = epgsql:connect(Host, User, Password, [{database, DBName}, {port, Port}]), {ok, _, _} = epgsql:squery(NormalConn, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ"), {ok, _, _} = epgsql:squery(NormalConn, ["SET TRANSACTION SNAPSHOT '", SnapshotName, "'"]), %% select/load data epgsql:equery(NormalConn,... epgsql:close(NormalConn), %%   ReplSlot = "epgl_repl_slot", Callback = ?MODULE, CbInitState = #{}, WALPosition = "0/0", PluginOpts = "proto_version '1', publication_names '\"epgl_test\"'", ok = epgsql:start_replication(ReplConn, ReplSlot, Callback, CbInitState, WALPosition, PluginOpts). handle_x_log_data(StartLSN, EndLSN, Data, CbState) -&gt; io:format("~p~n", [{StartLSN, EndLSN, Data}]), {ok, EndLSN, EndLSN, CbState}.</span></span></code> </pre> <br><p>  Ada dua opsi untuk berinteraksi dengan perpustakaan <code>EPGSQL</code> : </p><br><ul><li><p>  Sinkron.  Nama modul dilewatkan sebagai Callback.  Pustaka untuk data yang diterima akan memanggil fungsi <code>CallbackModule:handle_x_log_data</code> .  Fungsi harus mengembalikan LastFlushedLSN, LastAppliedLSN, yang dikirim dalam respons PostgreSQL untuk melacak posisi saat ini dari slot replikasi.  Dalam proyek kami, kami hanya menggunakan opsi ini; </p><br></li><li><p>  Tidak sinkron.  Callback adalah pid dari proses, yang akan menerima pesan dalam bentuk <code>{epgsql, self(), {x_log_data, StartLSN, EndLSN, WALRecord}}</code> .  Setelah diproses, proses tersebut harus melaporkan LSN yang diproses melalui panggilan <code>epgsql:standby_status_update(Conn, FlushedLSN, AppliedLSN)</code> ; </p><br></li></ul><br><h1>  Alih-alih sebuah kesimpulan </h1><br><p>  Selain itu, untuk menggunakan pendekatan yang dijelaskan, perlu untuk mengimplementasikan decoding pesan dari <a href="https://www.postgresql.org/docs/10/static/protocol-logicalrep-message-formats.html">format plug-in</a> slot replikasi ke dalam struktur yang lebih akrab dengan Erlang.  Atau gunakan pustaka dengan <a href="https://github.com/SifoxDevTeam/epgl">GitHub</a> , yang mengimplementasikan decoding untuk dua plug-in dan menyederhanakan eksekusi perintah replikasi. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id482398/">https://habr.com/ru/post/id482398/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id482384/index.html">Proyek saya yang belum direalisasi. Jaringan 200 MikroTik Router</a></li>
+<li><a href="../id482386/index.html">Visual Studio untuk Mac: Kendalikan IDE Anda dengan Keybindings</a></li>
+<li><a href="../id482390/index.html">Tutorial dari tutorial Ember.js. Aplikasi Super Rentals. Bagian 1.2</a></li>
+<li><a href="../id482392/index.html">Trik ELF di Go</a></li>
+<li><a href="../id482396/index.html">Bagaimana memilih kursus komersial yang mengajarkan profesi IT</a></li>
+<li><a href="../id482402/index.html">Pola pabrik. Contoh aplikasi dalam Unity</a></li>
+<li><a href="../id482404/index.html">Mnemonik: menjelajahi metode untuk meningkatkan memori otak</a></li>
+<li><a href="../id482406/index.html">Buku DLC Teratas untuk Seri Fiksi Ilmiah Modern</a></li>
+<li><a href="../id482420/index.html">JavaFX - belum mati</a></li>
+<li><a href="../id482426/index.html">Väterchen Frost atau enam digit untuk Habr</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

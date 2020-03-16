@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👈🏿 ✍🏽 👒 Sebagai Redash memperhatikan dan memperbaiki masalah yang menyebabkan penurunan kinerja kode Python 🕺🏾 👈🏻 😑</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Redash baru-baru ini mulai berubah dari satu sistem eksekusi tugas ke yang lain. Yakni, mereka memulai transisi dari Celery ke RQ. Pada tahap pertama,...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Sebagai Redash memperhatikan dan memperbaiki masalah yang menyebabkan penurunan kinerja kode Python</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ruvds/blog/475250/">  Redash baru-baru ini mulai berubah dari satu sistem eksekusi tugas ke yang lain.  Yakni, mereka memulai transisi dari Celery ke RQ.  Pada tahap pertama, hanya tugas-tugas yang tidak melakukan permintaan secara langsung yang ditransfer ke platform baru.  Di antara tugas-tugas ini adalah mengirim email, mencari tahu permintaan mana yang harus diperbarui, merekam acara pengguna, dan tugas pendukung lainnya. <br><br> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><img src="https://habrastorage.org/webt/0h/9y/wb/0h9ywbok79_xnw71erdzqpiydzq.jpeg"></a> <br><br>  Setelah menyebarkan semua ini, diketahui bahwa pekerja RQ membutuhkan lebih banyak sumber daya komputasi untuk menyelesaikan volume tugas yang sama dengan yang digunakan Selery untuk menyelesaikannya. <br><br>  Bahan, terjemahan yang kami terbitkan hari ini, didedikasikan untuk kisah bagaimana Redash menemukan penyebab masalah dan mengatasinya. <br><a name="habracut"></a><br><h2>  <font color="#3AC1EF">Beberapa kata tentang perbedaan antara Seledri dan RQ</font> </h2><br>  Seledri dan RQ memiliki konsep pekerja proses.  Baik di sana maupun di sana untuk organisasi pelaksanaan paralel tugas menggunakan penciptaan garpu.  Ketika pekerja Seledri dimulai, beberapa proses garpu dibuat, masing-masing secara mandiri memproses tugas.  Dalam kasus RQ, turunan pekerja hanya mengandung satu subproses (dikenal sebagai "pekerja keras"), yang melakukan satu tugas, dan kemudian dihancurkan.  Ketika pekerja mengunduh tugas berikutnya dari antrian, ia menciptakan "pekerja keras" baru. <br><br>  Saat bekerja dengan RQ, Anda dapat mencapai tingkat paralelisme yang sama seperti ketika bekerja dengan Celery, hanya dengan menjalankan lebih banyak proses pekerja.  Namun, ada satu perbedaan halus antara Seledri dan RQ.  Di Seledri, seorang pekerja membuat banyak instance dari subproses pada saat startup, dan kemudian menggunakannya berulang kali untuk menyelesaikan banyak tugas.  Dan dalam kasus RQ, untuk setiap pekerjaan Anda perlu membuat garpu baru.  Kedua pendekatan memiliki pro dan kontra, tetapi di sini kita tidak akan membicarakan hal ini. <br><br><h2>  <font color="#3AC1EF">Pengukuran kinerja</font> </h2><br>  Sebelum saya mulai membuat profil, saya memutuskan untuk mengukur kinerja sistem dengan mencari tahu berapa lama wadah pekerja perlu memproses 1000 pekerjaan.  Saya memutuskan untuk fokus pada tugas <code>record_event</code> , karena ini adalah operasi ringan yang umum.  Untuk mengukur kinerja, saya menggunakan perintah <code>time</code> .  Ini memerlukan beberapa perubahan pada kode proyek: <br><br><ol><li>  Untuk mengukur kinerja melakukan 1000 tugas, saya memutuskan untuk menggunakan mode batch RQ, di mana, setelah memproses tugas, proses keluar. </li><li>  Saya ingin menghindari mempengaruhi pengukuran saya dengan tugas-tugas lain yang mungkin telah dijadwalkan untuk waktu saya mengukur kinerja sistem.  Jadi saya memindahkan <code>record_event</code> ke antrian terpisah yang disebut <code>benchmark</code> , menggantikan <code>@job('default')</code> dengan <code>@job('benchmark')</code> .  Ini dilakukan tepat sebelum <code>record_event</code> dalam <code>tasks/general.py</code> . </li></ol><br>  Sekarang dimungkinkan untuk memulai pengukuran.  Sebagai permulaan, saya ingin tahu berapa lama untuk memulai dan menghentikan pekerja tanpa beban.  Waktu ini bisa dikurangkan dari hasil akhir yang didapat nanti. <br><br><pre> <code class="python hljs">$ docker-compose <span class="hljs-keyword"><span class="hljs-keyword">exec</span></span> worker bash -c <span class="hljs-string"><span class="hljs-string">"time ./manage.py rq workers 4 benchmark"</span></span> real <span class="hljs-number"><span class="hljs-number">0</span></span>m14<span class="hljs-number"><span class="hljs-number">.728</span></span>s user <span class="hljs-number"><span class="hljs-number">0</span></span>m6<span class="hljs-number"><span class="hljs-number">.810</span></span>s sys <span class="hljs-number"><span class="hljs-number">0</span></span>m2<span class="hljs-number"><span class="hljs-number">.750</span></span>s</code> </pre> <br>  Butuh 14,7 detik untuk menginisialisasi pekerja di komputer saya.  Saya ingat itu. <br><br>  Lalu saya menempatkan 1000 <code>record_event</code> uji dalam antrian <code>benchmark</code> : <br><br><pre> <code class="python hljs">$ docker-compose run --rm server manage shell &lt;&lt;&lt; <span class="hljs-string"><span class="hljs-string">"from redash.tasks.general import record_event; [record_event.delay({ 'action': 'create', 'timestamp': 0, 'org_id': 1, 'user_id': 1, 'object_id': 0, 'object_type': 'dummy' }) for i in range(1000)]"</span></span></code> </pre> <br>  Setelah itu, saya memulai sistem dengan cara yang sama seperti yang saya lakukan sebelumnya, dan menemukan berapa lama untuk memproses 1000 pekerjaan. <br><br><pre> <code class="python hljs">$ docker-compose <span class="hljs-keyword"><span class="hljs-keyword">exec</span></span> worker bash -c <span class="hljs-string"><span class="hljs-string">"time ./manage.py rq workers 4 benchmark"</span></span> real <span class="hljs-number"><span class="hljs-number">1</span></span>m57<span class="hljs-number"><span class="hljs-number">.332</span></span>s user <span class="hljs-number"><span class="hljs-number">1</span></span>m11<span class="hljs-number"><span class="hljs-number">.320</span></span>s sys <span class="hljs-number"><span class="hljs-number">0</span></span>m27<span class="hljs-number"><span class="hljs-number">.540</span></span>s</code> </pre> <br>  Mengurangkan 14,7 detik dari apa yang terjadi, saya menemukan bahwa 4 pekerja memproses 1000 tugas dalam 102 detik.  Sekarang mari kita coba mencari tahu mengapa demikian.  Untuk melakukan ini, kami, sementara para pekerja sibuk, akan meneliti mereka menggunakan <code>py-spy</code> . <br><br><h2>  <font color="#3AC1EF">Pembuatan profil</font> </h2><br>  Kami menambahkan 1.000 tugas lagi ke antrian (ini harus dilakukan karena fakta bahwa selama pengukuran sebelumnya semua tugas diproses), jalankan pekerja dan memata-matai mereka. <br><br><pre> <code class="python hljs">$ docker-compose run --rm server manage shell &lt;&lt;&lt; <span class="hljs-string"><span class="hljs-string">"from redash.tasks.general import record_event; [record_event.delay({ 'action': 'create', 'timestamp': 0, 'org_id': 1, 'user_id': 1, 'object_id': 0, 'object_type': 'dummy' }) for i in range(1000)]"</span></span> $ docker-compose <span class="hljs-keyword"><span class="hljs-keyword">exec</span></span> worker bash -c <span class="hljs-string"><span class="hljs-string">'nohup ./manage.py rq workers 4 benchmark &amp; sleep 15 &amp;&amp; pip install py-spy &amp;&amp; rq info -u "redis://redis:6379/0" | grep busy | awk "{print $3}" | grep -o -P "\s\d+" | head -n 1 | xargs py-spy record -d 10 --subprocesses -o profile.svg -p'</span></span> $ open -a <span class="hljs-string"><span class="hljs-string">"Google Chrome"</span></span> profile.svg</code> </pre> <br>  Saya tahu bahwa tim sebelumnya sangat panjang.  Idealnya, untuk meningkatkan keterbacaannya, ada baiknya memecahnya menjadi beberapa bagian terpisah, membaginya di tempat-tempat di mana urutan karakter <code>&amp;&amp;</code> ditemukan.  Tetapi perintah harus dieksekusi secara berurutan di dalam sesi <code>docker-compose exec worker bash</code> , jadi semuanya tampak seperti itu.  Berikut adalah deskripsi tentang apa yang dilakukan perintah ini: <br><br><ol><li>  Meluncurkan 4 pekerja batch di latar belakang. </li><li>  Itu menunggu 15 detik (kira-kira sangat dibutuhkan untuk menyelesaikan unduhan mereka). </li><li>  Menginstal <code>py-spy</code> . </li><li>  Jalankan <code>rq-info</code> dan temukan PID salah satu pekerja. </li><li>  Merekam informasi tentang pekerjaan pekerja dengan PID yang diterima sebelumnya selama 10 detik dan menyimpan data dalam file <code>profile.svg</code> </li></ol><br>  Hasilnya, “jadwal berapi-api” berikut diperoleh. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/456/89a/2f6/45689a2f6406fe5659d7417396665c6d.jpg"><br>  <i><font color="#999999">Visualisasi data yang dikumpulkan oleh py-spy</font></i> <br><br>  Setelah menganalisis data ini, saya perhatikan bahwa tugas <code>record_event</code> menghabiskan waktu lama dalam menjalankannya di <code>sqlalchemy.orm.configure_mappers</code> .  Ini terjadi selama setiap tugas.  Dari dokumentasi saya mengetahui bahwa pada saat itu menarik minat saya, hubungan semua pembuat peta yang dibuat sebelumnya diinisialisasi. <br><br>  Hal-hal semacam itu sama sekali tidak diperlukan untuk terjadi pada setiap garpu.  Kami dapat menginisialisasi hubungan sekali dalam pekerja induk dan menghindari mengulangi tugas ini di "workhorses". <br><br>  Akibatnya, saya menambahkan panggilan ke <code>sqlalchemy.org.configure_mappers()</code> ke kode sebelum memulai "pekerja keras" dan melakukan pengukuran lagi. <br><br><pre> <code class="python hljs">$ docker-compose run --rm server manage shell &lt;&lt;&lt; <span class="hljs-string"><span class="hljs-string">"from redash.tasks.general import record_event; [record_event.delay({ 'action': 'create', 'timestamp': 0, 'org_id': 1, 'user_id': 1, 'object_id': 0, 'object_type': 'dummy' }) for i in range(1000)] $ docker-compose exec worker bash -c "</span></span>time ./manage.py rq workers <span class="hljs-number"><span class="hljs-number">4</span></span> benchmark<span class="hljs-string"><span class="hljs-string">" real 0m39.348s user 0m15.190s sys 0m10.330s</span></span></code> </pre> <br>  Jika Anda mengurangi 14,7 detik dari hasil ini, ternyata kami telah meningkatkan waktu yang diperlukan untuk 4 pekerja untuk memproses 1000 tugas dari 102 detik menjadi 24,6 detik.  Ini adalah peningkatan kinerja empat kali lipat!  Berkat perbaikan ini, kami dapat melipatgandakan sumber daya produksi RQ dan mempertahankan bandwidth sistem yang sama. <br><br><h2>  <font color="#3AC1EF">Ringkasan</font> </h2><br>  Dari semua ini, saya membuat kesimpulan berikut: perlu diingat bahwa aplikasi berperilaku berbeda jika itu adalah satu-satunya proses, dan jika itu datang ke garpu.  Jika selama setiap tugas itu perlu untuk menyelesaikan beberapa tugas resmi yang sulit, maka lebih baik untuk menyelesaikannya terlebih dahulu, setelah melakukan ini sekali sebelum garpu selesai.  Hal-hal seperti itu tidak terdeteksi selama pengujian dan pengembangan, oleh karena itu, setelah merasa bahwa ada sesuatu yang salah dengan proyek, mengukur kecepatannya dan mencapai akhir sambil mencari penyebab masalah dengan kinerjanya. <br><br>  <b>Pembaca yang budiman!</b>  Apakah Anda mengalami masalah kinerja dalam proyek Python yang dapat Anda selesaikan dengan menganalisis sistem kerja dengan cermat? <br><br><div style="text-align:center;"> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><img src="https://habrastorage.org/webt/-o/2e/tu/-o2etuqogwhmdnmysb9_vivc9v4.png"></a> </div><br> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><img src="https://habrastorage.org/files/1ba/550/d25/1ba550d25e8846ce8805de564da6aa63.png"></a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id475250/">https://habr.com/ru/post/id475250/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id475240/index.html">Menggunakan modul ketat dalam proyek Python skala besar: pengalaman Instagram. Bagian 1</a></li>
+<li><a href="../id475242/index.html">Menggunakan modul ketat dalam proyek Python skala besar: pengalaman Instagram. Bagian 2</a></li>
+<li><a href="../id475244/index.html">Fitur JavaScript Baru yang Diharapkan Harus Anda Ketahui</a></li>
+<li><a href="../id475246/index.html">Pemrograman Asinkron Python: Tinjauan Singkat</a></li>
+<li><a href="../id475248/index.html">Penggunaan polyfill saat menulis aplikasi lintas-browser</a></li>
+<li><a href="../id475252/index.html">Cara mengkritik Microsoft</a></li>
+<li><a href="../id475254/index.html">AERODISK vAIR arsitektur atau fitur bangunan cluster nasional</a></li>
+<li><a href="../id475258/index.html">Representasi visual dari pemilihan di St. Petersburg - keajaiban pembungkus suara</a></li>
+<li><a href="../id475260/index.html">Perbedaan antara fungsi asinkron dan fungsi yang mengembalikan janji</a></li>
+<li><a href="../id475262/index.html">Intisari bahan-bahan segar dari dunia front-end untuk minggu terakhir No. 388 (4 - 10 November, 2019)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

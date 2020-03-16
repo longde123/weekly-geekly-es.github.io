@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👵🏼 👂🏿 👩🏻‍🎤 Sejarah investigasi SQL tunggal 🧕🏿 👩🏼‍🤝‍👨🏻 😝</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Desember lalu, saya menerima laporan bug yang menarik dari tim dukungan VWO. Waktu pemuatan untuk salah satu laporan analitik untuk klien korporat bes...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Sejarah investigasi SQL tunggal</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/455832/"><p>  Desember lalu, saya menerima laporan bug yang menarik dari tim dukungan VWO.  Waktu pemuatan untuk salah satu laporan analitik untuk klien korporat besar tampaknya mahal.  Dan karena ini adalah area tanggung jawab saya, saya segera fokus untuk menyelesaikan masalah. </p><br><h2>  Latar belakang </h2><br><p>  Untuk memperjelas apa yang saya bicarakan, saya akan memberi tahu Anda sedikit tentang VWO.  Ini adalah platform tempat Anda dapat menjalankan berbagai kampanye bertarget di situs Anda: melakukan eksperimen A / B, melacak pengunjung dan konversi, menganalisis saluran penjualan, menampilkan peta panas dan memutar rekaman kunjungan. </p><br><p>  Tetapi hal terpenting dalam platform adalah pelaporan.  Semua fungsi di atas saling berhubungan.  Dan untuk klien korporat, sejumlah besar informasi tidak akan berguna tanpa platform yang kuat yang menghadirkan mereka dalam bentuk analitik. </p><br><p> Menggunakan platform, Anda dapat membuat permintaan sewenang-wenang pada kumpulan data besar.  Ini adalah contoh sederhana: </p><br><pre>  Tampilkan semua klik di abc.com
+ DARI &lt;date d1&gt; TO &lt;date d2&gt;
+ untuk orang yang
+ menggunakan Chrome OR
+ (berada di Eropa dan menggunakan iPhone) </pre><br><p>  Perhatikan operator boolean.  Mereka tersedia untuk klien di antarmuka kueri untuk membuat kueri kompleks yang sewenang-wenang untuk mengambil sampel. </p><br><h2>  Permintaan lambat </h2><br><p>  Klien yang dimaksud sedang mencoba melakukan sesuatu yang secara intuitif harus bekerja dengan cepat: </p><br><pre>  Tampilkan semua catatan sesi
+ untuk pengguna yang mengunjungi halaman apa pun
+ dengan url di mana ada "/ pekerjaan" </pre><br><p>  Ada banyak lalu lintas di situs ini, dan kami menyimpan lebih dari satu juta URL unik hanya untuk itu.  Dan mereka ingin menemukan templat url yang cukup sederhana terkait dengan model bisnis mereka. </p><br><a name="habracut"></a><h2>  Investigasi awal </h2><br><p>  Mari kita lihat apa yang terjadi di database.  Berikut ini adalah query SQL lambat asli: </p><br><pre><code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND sessions.referrer_id = recordings_urls.id AND ( urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[] ) AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ;</code> </pre> <br><p>  Dan inilah waktunya: </p><br><pre>  Waktu yang direncanakan: 1,480 ms
+ Waktu pimpin: 1431924.650 ms </pre><br><p>  Permintaan melewati 150 ribu baris.  Perencana permintaan menunjukkan beberapa detail menarik, tetapi tidak ada hambatan yang jelas. </p><br><p>  Mari kita pelajari pertanyaan lebih lanjut.  Seperti yang Anda lihat, itu membuat tiga tabel <code>JOIN</code> : </p><br><ol><li>  <strong>sesi</strong> : untuk menampilkan informasi sesi: browser, agen pengguna, negara, dan sebagainya. </li><li>  <strong>recording_data</strong> : url yang direkam, halaman, durasi kunjungan </li><li>  <strong>url</strong> : untuk menghindari duplikasi url yang sangat besar, kami menyimpannya di tabel terpisah. </li></ol><br><p>  Perhatikan juga bahwa semua tabel kami sudah dibagi oleh <code>account_id</code> .  Dengan demikian, suatu situasi dikecualikan ketika, karena satu akun yang sangat besar, yang lain memiliki masalah. </p><br><h2>  Mencari bukti </h2><br><p>  Pada pemeriksaan lebih dekat, kita melihat bahwa sesuatu dalam permintaan tertentu tidak benar.  Layak dilihat pada baris ini: </p><br><pre> <code class="plaintext hljs">urls &amp;&amp; array( select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%' )::text[]</code> </pre> <br><p>  Pikiran pertama adalah bahwa mungkin karena <code>ILIKE</code> di semua URL panjang ini (kami memiliki lebih dari 1,4 juta URL <strong>unik yang</strong> dikumpulkan untuk akun ini), kinerjanya mungkin berkurang. </p><br><p>  Tapi tidak - bukan itu intinya! </p><br><pre> <code class="plaintext hljs">SELECT id FROM urls WHERE url ILIKE '%enterprise_customer.com/jobs%'; id -------- ... (198661 rows) Time: 5231.765 ms</code> </pre> <br><p>  Permintaan pencarian template itu sendiri hanya membutuhkan waktu 5 detik.  Mencari pola pada sejuta URL unik jelas bukan masalah. </p><br><p>  Tersangka berikutnya dalam daftar adalah beberapa <code>JOIN</code> .  Mungkin berlebihan mereka menyebabkan perlambatan?  <code>JOIN</code> biasanya merupakan kandidat yang paling jelas untuk masalah kinerja, tetapi saya tidak yakin kasus kami tipikal. </p><br><pre> <code class="plaintext hljs">analytics_db=# SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data_0 as recording_data, acc_{account_id}.sessions_0 as sessions WHERE recording_data.usp_id = sessions.usp_id AND sessions.referrer_id = recordings_urls.id AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ; count ------- 8086 (1 row) Time: 147.851 ms</code> </pre> <br><p>  Dan ini juga bukan kasus kami.  <code>JOIN</code> ternyata cukup cepat. </p><br><h2>  Kami mempersempit lingkaran tersangka </h2><br><p>  Saya siap untuk mulai mengubah kueri untuk mencapai setiap peningkatan kinerja yang mungkin.  Tim saya dan saya mengembangkan 2 ide utama: </p><br><ul><li>  <strong>Gunakan EXISTS untuk URL subquery</strong> : Kami ingin memeriksa lagi apakah ada masalah dengan subquery untuk url.  Salah satu cara untuk mencapai ini adalah dengan hanya menggunakan <code>EXISTS</code> .  <code>EXISTS</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">dapat</a> sangat meningkatkan kinerja karena segera berakhir segera setelah ditemukan satu baris berdasarkan kondisi. </li></ul><br><pre> <code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND (exists(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')) AND r_time &gt; to_timestamp(1547585600) AND r_time &lt; to_timestamp(1549177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 ; count 32519 (1 row) Time: 1636.637 ms</code> </pre> <br><p>  Ya benar.  Subquery, ketika dibungkus dalam <code>EXISTS</code> , membuat semuanya super cepat.  Pertanyaan logis berikutnya adalah mengapa kueri dengan BERGABUNG dan subquery itu sendiri cepat secara individual, tetapi sangat lambat bersama? </p><br><ul><li>  <strong>Kami memindahkan subquery ke CTE</strong> : jika permintaan cepat dengan sendirinya, kami hanya dapat menghitung hasil cepat terlebih dahulu dan kemudian memberikannya ke permintaan utama </li></ul><br><pre> <code class="plaintext hljs">WITH matching_urls AS ( select id::text from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%' ) SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions, matching_urls WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND (urls &amp;&amp; array(SELECT id from matching_urls)::text[]) AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545107599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0;</code> </pre> <br><p>  Tapi itu masih sangat lambat. </p><br><h2>  Temukan pelakunya </h2><br><p>  Selama ini, satu hal kecil melintas di depan mataku, yang darinya aku terus-menerus menyingkir.  Tetapi karena tidak ada yang tersisa, saya memutuskan untuk melihatnya.  Saya berbicara tentang operator <code>&amp;&amp;</code> .  Sementara <code>EXISTS</code> hanya meningkatkan kinerja, <code>&amp;&amp;</code> adalah satu-satunya faktor umum yang tersisa di semua versi permintaan lambat. </p><br><p>  Melihat <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">dokumentasi</a> , kita melihat bahwa <code>&amp;&amp;</code> digunakan ketika Anda perlu menemukan elemen umum di antara dua array. </p><br><p>  Dalam permintaan asli, ini adalah: </p><br><pre> <code class="plaintext hljs">AND ( urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[] )</code> </pre> <br><p>  Yang berarti bahwa kami melakukan pencarian templat untuk url kami, lalu kami menemukan persimpangan dengan semua url dengan catatan bersama.  Ini agak membingungkan, karena "url" di sini tidak merujuk ke tabel yang berisi semua URL, tetapi ke kolom "url" di tabel <code>recording_data</code> . </p><br><p>  Ketika kecurigaan <code>&amp;&amp;</code> , saya mencoba menemukan konfirmasi dalam rencana kueri yang dihasilkan oleh <code>EXPLAIN ANALYZE</code> (Saya sudah memiliki rencana tersimpan, tetapi biasanya lebih mudah untuk bereksperimen dengan SQL daripada mencoba memahami opacity dari perencana kueri). </p><br><pre> <code class="plaintext hljs">Filter: ((urls &amp;&amp; ($0)::text[]) AND (r_time &gt; '2018-12-17 12:17:23+00'::timestamp with time zone) AND (r_time &lt; '2018-12-18 23:59:59+00'::timestamp with time zone) AND (duration &gt;= '5'::double precision) AND (num_of_pages &gt; 0)) Rows Removed by Filter: 52710</code> </pre> <br><p>  Ada beberapa baris filter dari <code>&amp;&amp;</code> saja.  Yang berarti bahwa operasi ini tidak hanya mahal, tetapi juga dilakukan beberapa kali. </p><br><p>  Saya memeriksa ini dengan mengisolasi kondisinya </p><br><pre> <code class="plaintext hljs">SELECT 1 FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data_30 as recording_data_30, acc_{account_id}.sessions_30 as sessions_30 WHERE urls &amp;&amp; array(select id from acc_{account_id}.urls where url ILIKE '%enterprise_customer.com/jobs%')::text[]</code> </pre> <br><p>  Permintaan ini lambat.  Karena <code>JOIN</code> cepat dan subkueri cepat, hanya operator <code>&amp;&amp;</code> tersisa. </p><br><p>  Ini hanya operasi kunci.  Kami selalu perlu mencari di seluruh tabel utama URL untuk mencari berdasarkan pola, dan kami selalu perlu menemukan persimpangan.  Kami tidak dapat mencari entri url secara langsung, karena ini hanya pengidentifikasi yang menautkan ke <code>urls</code> . </p><br><h2>  Menuju solusi </h2><br><p>  <code>&amp;&amp;</code> lambat karena kedua set sangat besar.  Operasi akan relatif cepat jika saya mengganti <code>urls</code> dengan <code>{ "http://google.com/", "http://wingify.com/" }</code> . </p><br><p>  Saya mulai mencari cara untuk membuat persimpangan set di Postgres tanpa menggunakan <code>&amp;&amp;</code> , tetapi tanpa banyak keberhasilan. </p><br><p>  Pada akhirnya, kami memutuskan untuk menyelesaikan masalah secara terpisah: beri saya semua <code>urls</code> string yang url cocok dengan pola.  Tanpa syarat tambahan, itu akan menjadi - </p><br><pre> <code class="plaintext hljs">SELECT urls.url FROM acc_{account_id}.urls as urls, (SELECT unnest(recording_data.urls) AS id) AS unrolled_urls WHERE urls.id = unrolled_urls.id AND urls.url ILIKE '%jobs%'</code> </pre> <br><p>  Alih-alih <code>JOIN</code> sintaks, saya hanya menggunakan subquery dan memperluas array <code>recording_data.urls</code> sehingga kondisinya dapat langsung diterapkan ke <code>WHERE</code> . </p><br><p>  Yang paling penting di sini adalah <code>&amp;&amp;</code> digunakan untuk memeriksa apakah entri yang diberikan berisi URL yang sesuai.  Menyipitkan mata sedikit, Anda dapat melihat dalam operasi ini bergerak melalui elemen-elemen dari array (atau baris tabel) dan berhenti ketika kondisi (pencocokan) terpenuhi.  Tidak menyerupai apa pun?  Ya, <code>EXISTS</code> . </p><br><p>  Karena <code>recording_data.urls</code> dapat direferensikan dari luar konteks subquery ketika ini terjadi, kita dapat kembali ke teman lama kita <code>EXISTS</code> dan membungkusnya dengan subquery. </p><br><p>  Menggabungkan semuanya bersama-sama, kami mendapatkan permintaan final yang dioptimalkan: </p><br><pre> <code class="plaintext hljs">SELECT count(*) FROM acc_{account_id}.urls as recordings_urls, acc_{account_id}.recording_data as recording_data, acc_{account_id}.sessions as sessions WHERE recording_data.usp_id = sessions.usp_id AND ( 1 = 1 ) AND sessions.referrer_id = recordings_urls.id AND r_time &gt; to_timestamp(1542585600) AND r_time &lt; to_timestamp(1545177599) AND recording_data.duration &gt;=5 AND recording_data.num_of_pages &gt; 0 AND EXISTS( SELECT urls.url FROM acc_{account_id}.urls as urls, (SELECT unnest(urls) AS rec_url_id FROM acc_{account_id}.recording_data) AS unrolled_urls WHERE urls.id = unrolled_urls.rec_url_id AND urls.url ILIKE '%enterprise_customer.com/jobs%' );</code> </pre><br><p>  Dan <code>Time: 1898.717 ms</code> time terakhir <code>Time: 1898.717 ms</code> Saatnya untuk merayakan?!? </p><br><p>  Tidak secepat itu!  Pertama, Anda perlu memeriksa kebenarannya.  Saya sangat curiga dengan optimasi <code>EXISTS</code> , karena mengubah logika ke tujuan sebelumnya.  Kami harus yakin bahwa kami belum menambahkan kesalahan yang tidak jelas pada permintaan. </p><br><p>  Pemeriksaan sederhana adalah untuk melakukan <code>count(*)</code> pada permintaan lambat dan cepat untuk sejumlah besar kumpulan data yang berbeda.  Kemudian, untuk sebagian kecil dari data, saya memeriksa semua hasil secara manual. </p><br><p>  Semua cek memberi hasil positif secara konsisten.  Kami memperbaikinya! </p><br><h2>  Pelajaran yang Dipetik </h2><br><p>  Ada banyak pelajaran yang bisa dipetik dari kisah ini: </p><br><ol><li>  Rencana kueri tidak menceritakan keseluruhan cerita, tetapi dapat memberikan petunjuk </li><li>  Para tersangka utama tidak selalu menjadi penyebab utama </li><li>  Permintaan lambat dapat dipecah untuk mengisolasi kemacetan </li><li>  Tidak semua optimasi bersifat reduktif </li><li>  Menggunakan <code>EXIST</code> , jika memungkinkan, dapat menyebabkan peningkatan tajam dalam produktivitas. </li></ol><br><h2>  Kesimpulan </h2><br><p>  Kami beralih dari waktu permintaan ~ 24 menit menjadi 2 detik - peningkatan kinerja yang sangat serius!  Meskipun artikel ini ternyata besar, semua percobaan yang kami lakukan terjadi pada hari yang sama, dan menurut perkiraan, butuh 1,5 hingga 2 jam untuk optimasi dan pengujian. </p><br><p>  SQL adalah bahasa yang indah, jika tidak takut, tetapi cobalah untuk belajar dan menggunakannya.  Memiliki pemahaman yang baik tentang bagaimana query SQL dieksekusi, bagaimana database menghasilkan rencana query, cara kerja indeks, dan hanya ukuran data yang Anda hadapi, Anda dapat sangat berhasil dalam optimasi query.  Namun sama pentingnya, untuk terus mencoba pendekatan yang berbeda dan perlahan-lahan memecah masalah, menemukan kemacetan. </p><br><p>  Bagian terbaik dalam mencapai hasil seperti itu adalah peningkatan kecepatan yang terlihat - ketika laporan yang bahkan belum diunduh sebelumnya sekarang dimuat hampir secara instan. </p><br><p>  <strong>Terima kasih khusus kepada</strong> rekan satu tim saya <em>Aditya Misra</em> , <em>Aditya Gauru</em> dan <em><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Varun Malhotra</a></em> untuk brainstorming dan <em>Dinkar Pandir</em> karena menemukan kesalahan penting dalam permintaan terakhir kami sebelum akhirnya kami mengucapkan selamat tinggal kepadanya! </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id455832/">https://habr.com/ru/post/id455832/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id455816/index.html">Cara membuat aksi keren untuk Google Assistant. Lifehacks dari Just AI</a></li>
+<li><a href="../id455820/index.html">Analisis kinerja VM di VMware vSphere. Bagian 2: Memori</a></li>
+<li><a href="../id455826/index.html">Penyiraman Otomatis yang dikendalikan dari jarak jauh</a></li>
+<li><a href="../id455828/index.html">Para ilmuwan telah menemukan bentuk sinkronisasi baru yang eksotis</a></li>
+<li><a href="../id455830/index.html">Pandangan melalui mata pengembang .NET. Minggu # 1</a></li>
+<li><a href="../id455834/index.html">Tolok ukur untuk server Linux: 5 alat terbuka</a></li>
+<li><a href="../id455840/index.html">Cara bekerja dengan beberapa kueri. Komposisi, Peredam, FP</a></li>
+<li><a href="../id455842/index.html">Sebarkan daftar yang terhubung sendiri. Edisi cepat</a></li>
+<li><a href="../id455844/index.html">Membuat penganalisis Roslyn menggunakan pengujian enkapsulasi sebagai contoh</a></li>
+<li><a href="../id455846/index.html">Komputasi Terdistribusi di Julia</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

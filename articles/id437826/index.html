@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌋 🐹 🏢 Bagaimana kami memigrasi database dari Redis dan Riak KV ke PostgreSQL. Bagian 1: proses ☃️ 🤮 🎶</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Ini adalah bagian pertama dari artikel di mana saya akan berbicara tentang bagaimana kami membangun proses bekerja pada proyek migrasi basis data yang...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Bagaimana kami memigrasi database dari Redis dan Riak KV ke PostgreSQL. Bagian 1: proses</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/miro/blog/437826/">  Ini adalah bagian pertama dari artikel di mana saya akan berbicara tentang bagaimana kami membangun proses bekerja pada proyek migrasi basis data yang besar: tentang eksperimen yang aman, perencanaan tim, dan interaksi lintas tim.  Dalam artikel berikut, saya akan berbicara lebih detail tentang masalah teknis yang kami selesaikan: tentang penskalaan dan toleransi kesalahan PostgreSQL dan pengujian beban. <br><br><img src="https://habrastorage.org/webt/h3/cq/xn/h3cqxnvyiw1x3frzzx_tzfwlxzw.png"><br><br>  Untuk waktu yang lama, basis data utama di Miro (ex-RealtimeBoard) adalah Redis.  Kami menyimpan di dalamnya semua informasi dasar: data tentang pengguna, akun, papan, dll.  Semuanya bekerja dengan cepat, tetapi kami mengalami sejumlah masalah. <br><br>  <b>Masalah dengan Redis</b> <br><br><ol><li>  Ketergantungan pada latensi jaringan.  Sekarang di cloud kami sekitar 20 waktu Moskow, tetapi ketika Anda meningkatkannya, aplikasi akan mulai bekerja sangat lambat. </li><li>  Kurangnya indeks yang kita butuhkan di level logika bisnis.  Implementasi independen mereka dapat menyulitkan logika bisnis dan menyebabkan inkonsistensi data. </li><li>  Kompleksitas kode juga membuatnya sulit untuk mempertahankan konsistensi data. </li><li>  Intensitas sumber daya kueri dengan pilihan. </li></ol><br>  Masalah-masalah ini, bersama dengan peningkatan jumlah data di server, menyebabkan migrasi basis data. <br><a name="habracut"></a><br><h2>  Pernyataan masalah </h2><br>  Keputusan tentang migrasi telah dibuat.  Langkah selanjutnya adalah memahami basis data mana yang cocok untuk model data kami. <br><br>  Kami melakukan penelitian untuk memilih database yang optimal untuk kami, dan menetap di PostgreSQL.  Model data kami sangat cocok dengan database relasional: PostgreSQL memiliki alat bawaan untuk memastikan konsistensi data, ada tipe JSONB dan kemampuan untuk mengindeks bidang-bidang tertentu di JSONB.  Itu cocok untuk kita. <br><br>  Arsitektur aplikasi kami yang disederhanakan tampak seperti ini: ada Server Aplikasi yang mengakses Redis dan RiakKV melalui lapisan data. <br><br>  Server Aplikasi kami adalah aplikasi Java monolitik.  Logika bisnis ditulis dalam kerangka kerja yang disesuaikan untuk NoSQL.  Aplikasi ini memiliki sistem transaksinya sendiri, yang memungkinkan Anda menyediakan lebih dari satu pengguna di papan kami. <br><br>  Kami menggunakan RiakKV untuk menyimpan data dari papan arsip yang tidak terbuka selama 7 hari. <br><br>  Tambahkan PostgreSQL ke skema ini.  Kami membuat server Aplikasi berfungsi dengan database baru.  Salin data dari Redis dan RiakKV ke PostgreSQL.  Masalahnya terpecahkan! <br><br>  <b>Tidak ada yang rumit, tetapi ada nuansa:</b> <br><br><ul><li>  Kami memiliki 2,2 juta pengguna terdaftar.  Setiap hari, Miro mempekerjakan 50 ribu pengguna, beban puncaknya mencapai 14 ribu sekaligus.  Pengguna seharusnya tidak mengalami kesalahan karena pekerjaan kami, mereka umumnya tidak akan memperhatikan saat pindah ke basis baru. </li><li>  1 TB data dalam database atau 410 juta objek. </li><li>  Pelepasan berkelanjutan fitur baru oleh tim lain, yang pekerjaannya tidak boleh kita campur tangan </li></ul><br><h2>  Opsi untuk memecahkan masalah </h2><br>  Kami menghadapi pilihan dua opsi untuk migrasi data: <br><br><ol><li>  Hentikan pengembangan layanan → tulis ulang kode di server → uji fungsionalitas → luncurkan versi baru. </li><li>  Lakukan migrasi yang lancar: secara bertahap mentransfer bagian-bagian produk ke database baru, mendukung PostgreSQL dan Redis, dan tidak mengganggu pengembangan fitur-fitur baru. </li></ol><br>  Menghentikan pengembangan layanan adalah hilangnya waktu yang bisa kita gunakan untuk pertumbuhan, yang berarti hilangnya pengguna dan pangsa pasar.  Ini penting bagi kami, jadi kami memilih opsi dengan migrasi yang lancar.  Terlepas dari kenyataan bahwa dalam kerumitan proses ini dapat dibandingkan dengan mengganti roda pada mobil saat mengemudi. <br><br><iframe width="560" height="315" src="https://www.youtube.com/embed/Rrjgk1PksgU" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>  Saat mengevaluasi pekerjaan, kami membagi produk kami menjadi blok utama: pengguna, akun, papan, dan sebagainya.  Secara terpisah, pekerjaan dilakukan untuk membuat infrastruktur PostgreSQL.  Dan mereka menempatkan risiko dalam penilaian jika ada yang tidak beres (cara itu terjadi). <br><br><h2>  Sprint dan Gol </h2><br>  Langkah selanjutnya adalah membangun tim yang terdiri dari lima orang sehingga setiap orang bergerak dengan kecepatan yang tepat ke tujuan bersama. <br><br>  Kami memiliki dua poin: awal mengerjakan tugas dan tujuan akhir.  Ideal ketika kita bergerak menuju tujuan dengan cara langsung.  Tetapi sering terjadi bahwa kita ingin jalan lurus, tetapi ternyata seperti ini: <br><br><img src="https://habrastorage.org/webt/td/ab/5p/tdab5prpw4exyylbudctzzzcp8s.png"><br><br>  Misalnya, karena kesulitan dan masalah yang tidak dapat diramalkan sebelumnya. <br><br>  Suatu situasi mungkin terjadi di mana kita tidak akan mencapai tujuan sama sekali.  Misalnya, jika kita masuk ke refactoring yang dalam atau menulis ulang seluruh aplikasi. <br><br><img src="https://habrastorage.org/webt/9v/ef/66/9vef66oubzjo89rj7rtedo2a89u.png"><br><br>  Kami membagi tugas menjadi sprint mingguan untuk meminimalkan kesulitan yang dijelaskan di atas.  Jika tim tiba-tiba pergi ke samping, itu dapat dengan cepat kembali dengan kerugian minimal untuk proyek, karena iterasi pendek tidak memungkinkan Anda untuk pergi terlalu jauh "jalan yang salah". <br><br>  Setiap iterasi memiliki tujuan sendiri, yang menggerakkan tim ke hasil besar akhir. <br><br><img src="https://habrastorage.org/webt/ci/lv/z6/cilvz6zsakszbtskmwkc9ipt-w8.png"><br><br>  Jika tugas baru muncul selama sprint, kami mengevaluasi apakah implementasinya membawa kami lebih dekat ke tujuan.  Ya - ambil sprint berikutnya atau ubah prioritas saat ini, jika tidak - jangan ambil.  Jika kesalahan muncul, kami memberi mereka prioritas tinggi dan segera memperbaikinya. <br><br>  Itu terjadi bahwa pengembang dalam sprint harus melakukan tugas dalam urutan yang ditentukan secara ketat.  Atau, misalnya, pengembang menyerahkan tugas yang sudah selesai kepada insinyur QA untuk pengujian mendesak.  Pada tahap perencanaan, kami mencoba membangun hubungan serupa antara tugas untuk setiap anggota tim.  Ini memungkinkan seluruh tim untuk melihat siapa yang akan melakukan apa, dan kapan, tidak melupakan ketergantungan pada orang lain. <br><br>  Tim memiliki sinkronisasi harian dan mingguan.  Setiap pagi, kita membahas siapa, apa, dan prioritas apa yang akan dilakukan hari ini.  Setelah setiap sprint, kami menyinkronkan satu sama lain untuk memastikan bahwa semua orang bergerak ke arah yang benar.  Pastikan untuk merencanakan rilis besar atau kompleks.  Kami menunjuk pengembang yang bertugas yang, jika perlu, hadir selama rilis dan memantau bahwa semuanya beres. <br><br>  Perencanaan dan sinkronisasi dalam tim memungkinkan melibatkan semua peserta dalam semua tahap proyek.  Rencana dan evaluasi tidak datang kepada kita dari atas, kita membuatnya sendiri.  Ini meningkatkan tanggung jawab dan minat tim dalam menyelesaikan tugas. <br><br>  Ini adalah salah satu sprint kami.  Kami membawa semua yang ada di papan Miro: <br><br><img src="https://habrastorage.org/webt/fq/uz/l2/fquzl2taefgfyi0ge6w4q8x52qm.png"><br><br><h2>  Mode dan Eksperimen Aman </h2><br>  Selama migrasi, kami harus menjamin operasi layanan yang stabil dalam kondisi pertempuran.  Untuk melakukan ini, Anda harus memastikan bahwa semuanya telah diuji dan tidak ada kesalahan di mana pun.  Untuk mencapai tujuan ini, kami memutuskan untuk membuat migrasi yang lancar menjadi lebih lancar. <br><br>  Idenya adalah untuk secara bertahap mengalihkan blok produk ke database baru.  Untuk melakukan ini, kami datang dengan serangkaian mode. <br><br>  <b>Dalam mode "Redis Baca / Tulis" pertama,</b> hanya database lama, Redis, yang berfungsi. <br><br><img src="https://habrastorage.org/webt/aq/zs/rc/aqzsrc1smjopt9khha7zrkxfg_c.png"><br><br>  <b>Dalam mode "PostgreSQL Passive Write" kedua,</b> kita dapat memastikan bahwa menulis ke database baru sudah benar dan databasenya konsisten. <br><br><img src="https://habrastorage.org/webt/rl/gj/2v/rlgj2vmdvm2efjihl-dfccsmitq.png"><br><br>  <b>Mode ketiga "PostgreSQL Read / Write, Redis Passive Write"</b> memungkinkan Anda memverifikasi kebenaran membaca data dari PostgreSQL dan melihat bagaimana database baru berperilaku dalam kondisi pertempuran.  Pada saat yang sama, Redis tetap menjadi pangkalan utama, yang memungkinkan kami menemukan kasus-kasus spesifik yang bekerja dengan dewan yang dapat menyebabkan kesalahan. <br><br><img src="https://habrastorage.org/webt/0n/77/23/0n7723633vpttzrti6pp6kajjui.png"><br><br>  <b>Dalam mode "PostgreSQL Baca / Tulis" terakhir,</b> hanya database baru yang berjalan. <br><br><img src="https://habrastorage.org/webt/p4/c7/go/p4c7gokfrrvxrn-c-ltg7fhtvts.png"><br><br>  Pekerjaan migrasi dapat memengaruhi fungsi-fungsi utama produk, jadi kami harus 100% yakin bahwa kami tidak akan memecahkan apa pun dan bahwa database baru berfungsi setidaknya selambat yang lama.  Oleh karena itu, kami mulai melakukan eksperimen yang aman dengan beralih mode. <br><br>  Kami mulai beralih mode pada akun perusahaan kami, yang kami gunakan setiap hari dalam pekerjaan.  Setelah kami memastikan bahwa tidak ada kesalahan di dalamnya, kami mulai beralih mode pada beberapa pilihan pengguna eksternal. <br><br>  Garis waktu peluncuran percobaan dengan mode adalah sebagai berikut: <br><br><ul><li>  Januari-Februari: Redis baca / tulis </li><li>  Maret-April: PostgreSQL menulis pasif </li><li>  Mei-Juni: PostgreSQL baca / tulis, basis data utama - Redis </li><li>  Juli-Agustus: PostgreSQL baca / tulis </li><li>  September-Desember: migrasi penuh. </li></ul><br>  Jika kesalahan terjadi, kami memiliki kesempatan untuk memperbaikinya dengan cepat, karena kami sendiri dapat membuat rilis di server tempat pengguna yang berpartisipasi dalam percobaan bekerja.  Kami tidak bergantung pada rilis utama, jadi kami memperbaiki kesalahan dengan cepat dan kapan saja. <br><br><h2>  Kolaborasi lintas tim </h2><br>  Selama migrasi, kami sering bersinggungan dengan tim yang merilis fitur baru.  Kami memiliki basis kode tunggal, dan sebagai bagian dari pekerjaan mereka, tim dapat mengubah struktur yang ada dalam database baru atau membuat yang baru.  Pada saat yang sama, persimpangan tim untuk pengembangan dan penarikan fitur baru dapat terjadi.  Misalnya, salah satu tim produk berjanji kepada tim pemasaran untuk merilis fitur baru pada tanggal tertentu;  tim pemasaran telah merencanakan kampanye iklan untuk periode ini;  Tim penjualan sedang menunggu fitur dan kampanye untuk mulai berkomunikasi dengan pelanggan baru.  Ternyata semua orang saling bergantung, dan menunda tenggat waktu oleh satu tim mengganggu rencana yang lain. <br><br>  Untuk menghindari situasi seperti itu, kami, bersama dengan tim lain, menyusun peta jalan bahan makanan, yang disinkronkan beberapa kali dalam seperempat, dan dengan beberapa tim setiap minggu. <br><br><h2>  Kesimpulan </h2><br>  Apa yang kami pelajari selama proyek ini: <br><br><ol><li>  Jangan takut untuk mengerjakan proyek yang rumit.  Setelah dekomposisi, evaluasi dan pengembangan pendekatan untuk bekerja, proyek-proyek kompleks tidak lagi tampak mustahil. </li><li>  Jangan luangkan waktu dan upaya untuk perkiraan awal, penguraian, dan perencanaan.  Ini membantu untuk memahami masalah lebih dalam sebelum Anda mulai mengatasinya, dan untuk memahami volume dan kompleksitas pekerjaan. </li><li>  Letakkan risiko dalam proyek teknis dan organisasi yang sulit.  Dalam proses kerja, Anda pasti akan menemui masalah yang tidak diperhitungkan saat perencanaan. </li><li>  Jangan bermigrasi kecuali jika diperlukan. </li></ol><br>  Dalam artikel berikut ini saya akan berbicara lebih banyak tentang masalah teknis yang kami selesaikan selama migrasi. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id437826/">https://habr.com/ru/post/id437826/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id437814/index.html">Xcode 10.2, macOS Mojave 10.14.4, iOS 12.1 dan versi beta lainnya</a></li>
+<li><a href="../id437816/index.html">MPLS ada di mana-mana. Bagaimana infrastruktur jaringan Yandex.Cloud</a></li>
+<li><a href="../id437818/index.html">Kami mengajarkan komputer untuk membedakan suara: mengenal kontes DCASE dan merakit klasifikasi audio Anda dalam 30 menit</a></li>
+<li><a href="../id437820/index.html">50 nuansa keamanan Drupal</a></li>
+<li><a href="../id437824/index.html">Ekstensi 1C universal untuk Google Sheets dan Documents - ambil dan gunakan</a></li>
+<li><a href="../id437828/index.html">Buka webinar "SELECT pesanan eksekusi permintaan dan rencana permintaan di MS SQL Server"</a></li>
+<li><a href="../id437830/index.html">Pemrograman yang andal berdasarkan bahasa - review noob. Bagian 1</a></li>
+<li><a href="../id437832/index.html">Sumber terbuka: humor kode, trik kode, BUKAN kode</a></li>
+<li><a href="../id437834/index.html">Dua cerita tentang bagaimana acara pemrograman berlangsung di Yekaterinburg</a></li>
+<li><a href="../id437836/index.html">Di bawah tenda Screeps - virtualisasi di kotak pasir MMO untuk programmer</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👈🏻 🅰️ 🖖🏾 Migrasi RabbitMQ yang sempurna ke Kubernetes 🐡 👩🏿‍🤝‍👨🏼 🧑🏼‍🤝‍🧑🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="RabbitMQ adalah broker pesan yang ditulis dalam Erlang yang memungkinkan Anda untuk mengatur kluster failover dengan replikasi data lengkap ke beberap...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Migrasi RabbitMQ yang sempurna ke Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/450662/"><img src="https://habrastorage.org/webt/9j/vy/0w/9jvy0wqwfj4agrnnjerepzcv4qw.png"><br><br>  RabbitMQ adalah broker pesan yang ditulis dalam Erlang yang memungkinkan Anda untuk mengatur kluster failover dengan replikasi data lengkap ke beberapa node, di mana setiap node dapat melayani permintaan baca dan tulis.  Dengan banyak kluster Kubernet dalam produksi, kami mendukung sejumlah besar instalasi RabbitMQ dan dihadapkan dengan kebutuhan untuk memigrasikan data dari satu cluster ke yang lain tanpa downtime. <a name="habracut"></a><br><br>  Operasi ini diperlukan bagi kami setidaknya dalam dua kasus: <br><br><ol><li>  Mentransfer data dari kluster RabbitMQ, yang tidak ada di Kubernetes, ke kluster baru yang sudah "disetel keluar" (artinya, berfungsi di pod K8s). </li><li>  Migrasi RabbitMQ dalam Kubernetes dari satu namespace ke yang lain (misalnya, jika jalur dibatasi oleh ruang nama, maka untuk mentransfer infrastruktur dari satu jalur ke yang lain). </li></ol><br>  Resep yang diusulkan dalam artikel ini difokuskan pada situasi (tetapi tidak terbatas pada mereka), di mana ada cluster RabbitMQ lama (misalnya, dari 3 node), yang terletak di K8 atau di beberapa server lama.  Aplikasi yang dihosting di Kubernet berfungsi dengan itu (sudah ada atau di masa depan): <br><br><img src="https://habrastorage.org/webt/0t/nv/vw/0tnvvwspr5t-cwbvwzae5p2h9re.png"><br><br>  ... dan kami menghadapi tantangan untuk memigrasikannya ke produksi baru di Kubernetes. <br><br>  Pertama, pendekatan umum untuk migrasi itu sendiri akan dijelaskan, dan setelah itu, rincian teknis tentang implementasinya. <br><br><h2>  Algoritma migrasi </h2><br>  Langkah pertama, pendahuluan, sebelum tindakan apa pun adalah memverifikasi bahwa mode ketersediaan tinggi ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">HA</a> ) diaktifkan di instalasi RabbitMQ yang lama.  Alasannya jelas - kami tidak ingin kehilangan data apa pun.  Untuk melakukan pemeriksaan ini, Anda dapat pergi ke panel admin RabbitMQ dan di tab Admin → Kebijakan pastikan bahwa nilai <code>ha-mode: all</code> : <br><br><img src="https://habrastorage.org/webt/fz/sj/cc/fzsjcc5rvcdzqvzrwklrkomoqny.png"><br><br>  Langkah selanjutnya adalah meningkatkan cluster RabbitMQ baru di pod Kubernetes (dalam kasus kami, misalnya, terdiri dari 3 node, tetapi jumlahnya mungkin berbeda). <br><br>  Setelah itu, kami menggabungkan cluster RabbitMQ lama dan baru, memperoleh satu cluster (dari 6 node): <br><br><img src="https://habrastorage.org/webt/br/ds/wx/brdswxtjfd97eg1jc6yuy0m6w6c.png"><br><br>  Proses sinkronisasi data antara kluster RabbitMQ lama dan baru telah dimulai.  Setelah semua data disinkronkan di antara semua node di cluster, kita bisa beralih aplikasi untuk menggunakan cluster baru: <br><br><img src="https://habrastorage.org/webt/mh/wu/py/mhwupy0059dj_m8xn-guonlq_i0.png"><br><br>  Setelah operasi ini, cukup untuk menghapus node lama dari cluster RabbitMQ, dan langkah tersebut dapat dianggap selesai: <br><br><img src="https://habrastorage.org/webt/_2/_q/cr/_2_qcrxnt_1j4hzazxfsagyr9i8.png"><br><br>  Kami telah berulang kali menggunakan skema ini dalam produksi kami.  Namun, untuk kenyamanan mereka sendiri, mereka mengimplementasikannya dalam kerangka sistem khusus yang mendistribusikan konfigurasi RMQ pada kumpulan cluster Kubernet <i>(bagi mereka yang penasaran: kita berbicara tentang <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">operator tambahan</a> , yang <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">baru saja</a> kita <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">bicarakan</a> )</i> .  Di bawah ini disajikan instruksi individual yang dapat diterapkan siapa pun pada instalasi mereka untuk mencoba solusi yang diusulkan dalam tindakan. <br><br><h2>  Kami mencoba dalam praktik </h2><br><h3>  Persyaratan </h3><br>  Detailnya sangat sederhana: <br><br><ol><li>  Cluster Kubernetes (minikube juga cocok); </li><li>  Cluster RabbitMQ (dapat digunakan pada bare metal, dan dibuat sebagai cluster reguler di Kubernetes dari grafik Helm resmi). </li></ol><br>  Untuk contoh yang dijelaskan di bawah ini, saya menggunakan RMQ ke Kubernetes dan menamainya <code>rmq-old</code> . <br><br><h3>  Persiapan berdiri </h3><br>  1. Unduh grafik Helm dan edit sedikit: <br><br><pre> <code class="bash hljs">helm fetch --untar stable/rabbitmq-ha</code> </pre> <br>  Untuk kenyamanan, kami menetapkan kata sandi, <code>ErlangCookie</code> dan menetapkan kebijakan <code>ha-all</code> sehingga secara default antrian disinkronkan di antara semua node dari cluster RMQ: <br><br><pre> <code class="plaintext hljs">rabbitmqPassword: guest rabbitmqErlangCookie: mae9joopaol7aiVu3eechei2waiGa2we definitions: policies: |- { "name": "ha-all", "pattern": ".*", "vhost": "/", "definition": { "ha-mode": "all", "ha-sync-mode": "automatic", "ha-sync-batch-size": 81920 } }</code> </pre> <br>  2. Atur grafik: <br><br><pre> <code class="bash hljs">helm install . --name rmq-old --namespace rmq-old</code> </pre> <br>  3. Buka panel admin RabbitMQ, buat antrean baru dan tambahkan beberapa pesan.  Mereka akan diperlukan sehingga setelah migrasi kami dapat memastikan bahwa semua data telah disimpan dan bahwa kami tidak kehilangan apa pun: <br><br><img src="https://habrastorage.org/webt/de/pb/_o/depb_oq1aa_rpozeaymiik6acqm.png"><br><br>  Bangku tes siap: kami memiliki RabbitMQ "lama" dengan data yang perlu ditransfer. <br><br><h3>  Migrasi Cluster RabbitMQ </h3><br>  1. Pertama, gunakan RabbitMQ baru di ruang nama yang <b>berbeda</b> dengan <code>ErlangCookie</code> dan kata sandi yang sama untuk pengguna.  Untuk melakukan ini, kami melakukan operasi yang dijelaskan di atas, mengubah perintah instalasi RMQ akhir sebagai berikut: <br><br><pre> <code class="bash hljs">helm install . --name rmq-new --namespace rmq-new</code> </pre> <br>  2. Sekarang Anda perlu menggabungkan cluster baru dengan yang lama.  Untuk melakukan ini, buka setiap pod dari RabbitMQ <b>baru</b> dan jalankan perintah: <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">export</span></span> OLD_RMQ=rabbit@rmq-old-rabbitmq-ha-0.rmq-old-rabbitmq-ha-discovery.rmq-old.svc.cluster.local &amp;&amp; \ rabbitmqctl stop_app &amp;&amp; \ rabbitmqctl join_cluster <span class="hljs-variable"><span class="hljs-variable">$OLD_RMQ</span></span> &amp;&amp; \ rabbitmqctl start_app</code> </pre> <br>  Variabel <code>OLD_RMQ</code> alamat salah satu node dari cluster RMQ <b>lama</b> . <br><br>  Perintah-perintah ini akan menghentikan node saat ini dari RMQ cluster baru, melampirkannya ke cluster lama, dan restart itu. <br><br>  3. RMQ cluster 6 node siap: <br><br><img src="https://habrastorage.org/webt/1k/1z/cr/1k1zcrq3-hn-k_k6y10z-ktteqc.png"><br><br>  Anda harus menunggu sampai pesan disinkronkan antara semua node.  Mudah ditebak bahwa waktu sinkronisasi pesan tergantung pada kapasitas besi tempat cluster digunakan, dan pada jumlah pesan.  Dalam skenario yang dijelaskan hanya ada 10 di antaranya, sehingga data disinkronkan secara instan, tetapi dengan jumlah pesan yang cukup besar, sinkronisasi dapat berlangsung berjam-jam. <br><br>  Jadi, status sinkronisasi: <br><br><img src="https://habrastorage.org/webt/32/rb/gl/32rbglvg5f9vnxjaee0ewii0pmo.png"><br><br>  Di sini, <code>+5</code> berarti bahwa pesan <b>sudah ada</b> di 5 node lain (kecuali untuk apa yang ditentukan dalam bidang <code>Node</code> ).  Dengan demikian, sinkronisasi berhasil. <br><br>  4. Tinggal memindahkan alamat RMQ dalam aplikasi ke cluster baru (tindakan spesifik di sini tergantung pada tumpukan teknologi yang Anda gunakan dan spesifik aplikasi lainnya), setelah itu Anda bisa mengucapkan selamat tinggal pada yang lama. <br><br>  Untuk operasi terakhir (mis., <b>Setelah</b> mengalihkan aplikasi ke cluster baru), kami pergi ke setiap node dari cluster <b>lama</b> dan menjalankan perintah: <br><br><pre> <code class="bash hljs">rabbitmqctl stop_app rabbitmqctl reset</code> </pre> <br>  Cluster "lupa" tentang node lama: Anda dapat menghapus RMQ lama, yang akan menyelesaikan pemindahan. <br><br>  <i><b>Catatan</b> : Jika Anda menggunakan RMQ dengan sertifikat, pada dasarnya tidak ada perubahan - proses pemindahan akan dilakukan persis sama.</i> <br><br><h2>  Kesimpulan </h2><br>  Skema yang dijelaskan cocok untuk hampir semua kasus ketika kita perlu mentransfer RabbitMQ atau hanya pindah ke cluster baru. <br><br>  Dalam kasus kami, kesulitan hanya terjadi satu kali, ketika RMQ diakses dari banyak tempat, dan kami tidak memiliki kesempatan di mana-mana untuk mengubah alamat RMQ menjadi yang baru.  Kemudian kami meluncurkan RMQ baru di namespace yang sama dengan label yang sama, sehingga jatuh di bawah layanan dan Ingress yang ada, dan ketika kami memulai pod, kami memanipulasi label dengan tangan kami, menghapusnya di awal, sehingga permintaan tidak jatuh pada RMQ yang kosong, dan menambahkannya kembali setelah sinkronisasi pesan. <br><br>  Kami menggunakan strategi yang sama ketika memperbarui RabbitMQ ke versi baru dengan konfigurasi yang dimodifikasi - semuanya bekerja seperti jam. <br><br><h2>  PS </h2><br>  Sebagai kelanjutan logis dari materi ini, kami sedang menyiapkan artikel tentang MongoDB (migrasi dari server besi ke Kubernetes) dan MySQL (salah satu opsi untuk "mempersiapkan" DBMS ini di dalam Kubernetes).  Mereka akan diterbitkan dalam beberapa bulan mendatang. <br><br><h2>  PPS </h2><br>  Baca juga di blog kami: <br><br><ul><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Database dan Kubernetes (review dan laporan video)</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">K8 tips &amp; trik: Mempercepat bootstrap dari database besar.</a> " </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id450662/">https://habr.com/ru/post/id450662/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id450648/index.html">Emulator PS2 / PSP + Google Drive + YouTube = "kegilaan" berlanjut</a></li>
+<li><a href="../id450650/index.html">Infrastruktur Sentris Aplikasi. Arsitektur jaringan masa depan - mulai dari penalaran hingga bisnis</a></li>
+<li><a href="../id450652/index.html">Pesan untuk programmer masa depan</a></li>
+<li><a href="../id450658/index.html">Prosesor Intel megazap - penambahan peringkat</a></li>
+<li><a href="../id450660/index.html">Akankah pengenaan pajak 15% membunuh perdagangan online asing</a></li>
+<li><a href="../id450666/index.html">Apakah Bereaksi memiliki efek buruk pada Angular?</a></li>
+<li><a href="../id450672/index.html">Konstruksi situs logam di atas pondasi tiang pancang di SPDS</a></li>
+<li><a href="../id450674/index.html">Relokasi ke Armenia</a></li>
+<li><a href="../id450676/index.html">Pengerjaan logam 2019: solusi 3D canggih untuk perusahaan</a></li>
+<li><a href="../id450678/index.html">Citymobil - manual untuk meningkatkan ketersediaan di tengah pertumbuhan bisnis untuk startup. Bagian 4</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

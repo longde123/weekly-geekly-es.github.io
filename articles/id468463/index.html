@@ -1,0 +1,360 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙅🏻 ⛅️ ☃️ Meningkatkan Kinerja Zabbix + PostgreSQL dengan Partisi dan Pengindeksan 🧜🏿 👩🏿‍🎓 🕶️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Sekitar setahun yang lalu, kolega saya dan saya ditugaskan memilah-milah menggunakan sistem pemantauan infrastruktur jaringan yang populer - Zabbix. S...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Meningkatkan Kinerja Zabbix + PostgreSQL dengan Partisi dan Pengindeksan</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/468463/"> Sekitar setahun yang lalu, kolega saya dan saya ditugaskan memilah-milah menggunakan sistem pemantauan infrastruktur jaringan yang populer - Zabbix.  Setelah mempelajari dokumentasi, kami segera melanjutkan untuk memuat pengujian: kami ingin mengevaluasi berapa banyak parameter Zabbix dapat bekerja tanpa penurunan kinerja yang nyata.  Hanya PostgreSQL yang digunakan sebagai DBMS. <br><br>  Selama pengujian, beberapa fitur arsitektur dari tata letak basis data dan perilaku sistem pemantauan itu sendiri diidentifikasi, yang secara default tidak memungkinkan sistem pemantauan untuk mencapai daya maksimumnya.  Akibatnya, beberapa langkah optimasi dikembangkan, dilakukan, dan diuji terutama dalam hal menyetel basis data. <br><br>  Saya ingin membagikan hasil pekerjaan yang dilakukan dalam artikel ini.  Artikel ini akan berguna bagi administrator DBA Zabbix dan PostgreSQL, serta bagi semua orang yang ingin lebih memahami dan memahami DBMS PosgreSQL yang populer. <br><br>  Spoiler kecil: pada mesin yang lemah dengan beban 200 ribu parameter per menit, kami berhasil mengurangi CPU iowait dari 20% menjadi 2%, mengurangi waktu perekaman dalam porsi menjadi tabel data primer sebanyak 250 kali dan tabel data teragregasi hingga 32 kali, mengurangi ukuran indeks 5-10 kali dan mempercepat penerimaan sampel historis dalam beberapa kasus hingga 18 kali. <br><a name="habracut"></a><br><h4>  Uji beban </h4><br>  Pengujian beban dilakukan sesuai dengan skema: satu server Zabbix, satu proksi Zabbix aktif, dua agen.  Setiap agen dikonfigurasi untuk memberikan 50 ton integer dan 50 ton parameter string per menit (total 200 ton parameter per menit atau 3333 parameter per detik).  Untuk menghasilkan parameter agen, kami menggunakan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">plug-in untuk Zabbix.</a> Untuk memeriksa berapa banyak parameter yang bisa dihasilkan oleh agen, Anda perlu menggunakan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">skrip khusus dari pembuat plug-in yang sama zabbix_module_stress</a> .  Zabbix web-admin mengalami kesulitan mendaftarkan templat besar, jadi kami membagi parameter menjadi 20 templat dengan 5 ton parameter (2500 numerik dan 2500 string). <br><br><div class="spoiler">  <b class="spoiler_title">Template generator skrip untuk memuat pengujian dalam python</b> <div class="spoiler_text"><pre><code class="python hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> argparse <span class="hljs-string"><span class="hljs-string">"""     .   20   5000    ( 2500  :  echo,  ;  ping,  ) """</span></span> TEMP_HEAD = <span class="hljs-string"><span class="hljs-string">""" &lt;?xml version="1.0" encoding="UTF-8"?&gt; &lt;zabbix_export&gt; &lt;version&gt;2.0&lt;/version&gt; &lt;date&gt;2015-08-17T23:15:01Z&lt;/date&gt; &lt;groups&gt; &lt;group&gt; &lt;name&gt;Templates&lt;/name&gt; &lt;/group&gt; &lt;/groups&gt; &lt;templates&gt; &lt;template&gt; &lt;template&gt;Template Zabbix Srv Stress {count} passive {char}&lt;/template&gt; &lt;name&gt;Template Zabbix Srv Stress {count} passive {char}&lt;/name&gt; &lt;description/&gt; &lt;groups&gt; &lt;group&gt; &lt;name&gt;Templates&lt;/name&gt; &lt;/group&gt; &lt;/groups&gt; &lt;applications/&gt; &lt;items&gt; """</span></span> TEMP_END = <span class="hljs-string"><span class="hljs-string">"""&lt;/items&gt; &lt;discovery_rules/&gt; &lt;macros/&gt; &lt;templates/&gt; &lt;screens/&gt; &lt;/template&gt; &lt;/templates&gt; &lt;/zabbix_export&gt; """</span></span> TEMP_ITEM = <span class="hljs-string"><span class="hljs-string">"""&lt;item&gt; &lt;name&gt;{k}&lt;/name&gt; &lt;type&gt;0&lt;/type&gt; &lt;snmp_community/&gt; &lt;multiplier&gt;0&lt;/multiplier&gt; &lt;snmp_oid/&gt; &lt;key&gt;{k}&lt;/key&gt; &lt;delay&gt;1m&lt;/delay&gt; &lt;history&gt;3&lt;/history&gt; &lt;trends&gt;365&lt;/trends&gt; &lt;status&gt;0&lt;/status&gt; &lt;value_type&gt;{t}&lt;/value_type&gt; &lt;allowed_hosts/&gt; &lt;units/&gt; &lt;delta&gt;0&lt;/delta&gt; &lt;snmpv3_contextname/&gt; &lt;snmpv3_securityname/&gt; &lt;snmpv3_securitylevel&gt;0&lt;/snmpv3_securitylevel&gt; &lt;snmpv3_authprotocol&gt;0&lt;/snmpv3_authprotocol&gt; &lt;snmpv3_authpassphrase/&gt; &lt;snmpv3_privprotocol&gt;0&lt;/snmpv3_privprotocol&gt; &lt;snmpv3_privpassphrase/&gt; &lt;formula&gt;1&lt;/formula&gt; &lt;delay_flex/&gt; &lt;params/&gt; &lt;ipmi_sensor/&gt; &lt;data_type&gt;0&lt;/data_type&gt; &lt;authtype&gt;0&lt;/authtype&gt; &lt;username/&gt; &lt;password/&gt; &lt;publickey/&gt; &lt;privatekey/&gt; &lt;port/&gt; &lt;description/&gt; &lt;inventory_link&gt;0&lt;/inventory_link&gt; &lt;applications/&gt; &lt;valuemap/&gt; &lt;logtimefmt/&gt; &lt;/item&gt; """</span></span> TMP_FNAME_DEFAULT = <span class="hljs-string"><span class="hljs-string">"Template_App_Zabbix_Server_Stress_{count}_passive_{char}.xml"</span></span> chars = <span class="hljs-string"><span class="hljs-string">"ABCDEFGHIJKLMNOPQRSTUVWXYZ"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> __name__ == <span class="hljs-string"><span class="hljs-string">"__main__"</span></span>: parser = argparse.ArgumentParser( description=<span class="hljs-string"><span class="hljs-string">'     zabbix'</span></span>) parser.add_argument(<span class="hljs-string"><span class="hljs-string">'--items'</span></span>, dest=<span class="hljs-string"><span class="hljs-string">'items'</span></span>, type=int, default=<span class="hljs-number"><span class="hljs-number">1000</span></span>, help=<span class="hljs-string"><span class="hljs-string">'-   (default: 1000)'</span></span>) parser.add_argument(<span class="hljs-string"><span class="hljs-string">'--templates'</span></span>, dest=<span class="hljs-string"><span class="hljs-string">'templates'</span></span>, type=int, default=<span class="hljs-number"><span class="hljs-number">1</span></span>, help=<span class="hljs-string"><span class="hljs-string">f'-  [1-</span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{len(chars)}</span></span></span><span class="hljs-string">] (default: 1)'</span></span>) args = parser.parse_args() items_count = args.items tmps_count = args.templates <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> (tmps_count &gt;= <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> tmps_count &lt;= len(chars)): sys.exit(<span class="hljs-string"><span class="hljs-string">f"Templates must be in range 1 - </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{len(chars)}</span></span></span><span class="hljs-string">"</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> i <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> range(tmps_count): fname = TMP_FNAME_DEFAULT.format(count=items_count, char=chars[i]) <span class="hljs-keyword"><span class="hljs-keyword">with</span></span> open(fname, <span class="hljs-string"><span class="hljs-string">"w"</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> output: output.write(TEMP_HEAD.format(count=items_count, char=chars[i])) <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> k,t <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> [(<span class="hljs-string"><span class="hljs-string">'stress.ping[{}-I-{:06d}]'</span></span>,<span class="hljs-number"><span class="hljs-number">3</span></span>), (<span class="hljs-string"><span class="hljs-string">'stress.echo[{}-S-{:06d}]'</span></span>,<span class="hljs-number"><span class="hljs-number">4</span></span>)]: <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> j <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> range(int(items_count/<span class="hljs-number"><span class="hljs-number">2</span></span>)): output.write(TEMP_ITEM.format(k=k.format(chars[i],j),t=t)) output.write(TEMP_END)</code> </pre> <br></div></div><br>  Metrik cpu iostat adalah indikator kinerja Zabbix yang baik - ini mencerminkan sebagian kecil dari satuan waktu selama prosesor menunggu akses disk.  Semakin tinggi, semakin banyak disk ditempati dengan operasi baca dan tulis, yang secara tidak langsung mempengaruhi penurunan kinerja sistem pemantauan secara keseluruhan.  Yaitu  ini adalah pertanda pasti bahwa ada sesuatu yang salah dengan pemantauan.  Ngomong-ngomong, di ruang terbuka jaringan, pertanyaan yang agak populer adalah "bagaimana menghapus pemicu iostat di Zabbix", jadi ini adalah titik pahit, karena ada banyak alasan untuk meningkatkan nilai metrik iowait. <br><br>  Berikut adalah gambar untuk metrik cpu iowait yang kami dapatkan tiga hari kemudian pada awalnya: <br><br><img src="https://habrastorage.org/webt/dc/md/yo/dcmdyote_ghzxca-o9sft88ptxq.png"><br><br>  Namun gambaran apa untuk metrik yang sama yang juga kami dapatkan dalam tiga hari pada akhirnya setelah semua langkah optimasi yang telah dilakukan, yang akan dibahas di bawah: <br><br><img src="https://habrastorage.org/webt/do/cs/fc/docsfcjjczkhgxoubjayslrohuw.png"><br><br>  Seperti dapat dilihat dari grafik, indikator cpu iowait turun dari hampir 20% menjadi 2%, yang secara tidak langsung mempercepat waktu eksekusi semua permintaan untuk menambah dan membaca data.  Sekarang mari kita lihat mengapa, dengan pengaturan basis data standar, kinerja keseluruhan sistem pemantauan turun dan bagaimana cara memperbaikinya. <br><br><h4>  Alasan untuk Penurunan Kinerja Zabbix </h4><br>  Dengan akumulasi lebih dari 10 juta nilai parameter di setiap tabel data primer, terlihat bahwa kinerja sistem pemantauan turun tajam, karena alasan berikut: <br><br><ul><li>  metrik iowait untuk CPU server meningkat lebih dari 20%, yang menunjukkan peningkatan waktu selama CPU mengharapkan akses ke operasi baca dan tulis disk </li><li>  indeks tabel di mana data pemantauan sangat meningkat </li><li>  metrik pemanfaatan ditingkatkan menjadi 100% untuk disk dengan data pemantauan, yang menunjukkan muatan penuh disk dengan operasi baca dan tulis </li><li>  nilai-nilai usang tidak punya waktu untuk dihapus dari tabel sejarah saat membersihkan sesuai dengan jadwal pembantu rumah tangga </li></ul><br>  Situasi ini diperburuk pada awal setiap jam, ketika selain itu, statistik per jam agregat dihitung - pada saat yang sama, membaca dan menulis halaman indeks dari disk secara aktif, penghapusan data yang sudah ketinggalan zaman dari sejarah dilakukan, yang mengarah pada hasil yang sama - penurunan kinerja database dan peningkatan waktu eksekusi permintaan (dalam batas, permintaan yang bertahan hingga 5 menit telah dicatat!). <br><br>  Sedikit bantuan dalam mengatur gudang data pemantauan di Zabbix.  Ini menyimpan data primer dan data teragregasi dalam tabel yang berbeda, apalagi, dengan pemisahan jenis parameter.  Setiap tabel menyimpan bidang itemid (referensi implisit ke item data terdaftar dalam sistem), cap waktu untuk mendaftarkan nilai jam dalam format cap waktu unix (milidetik dalam kolom terpisah) dan nilai dalam kolom terpisah (pengecualiannya adalah tabel log, memiliki lebih banyak bidang - seperti log peristiwa) ): <br><div class="scrollable-table"><table><tbody><tr><th>  Nama tabel </th><th>  Janji temu </th><th>  Tipe data </th></tr><tr><td>  sejarah </td><td>  Data Pemantauan Primer </td><td>  numerik (16,4) </td></tr><tr><td>  history_uint </td><td>  Data Pemantauan Primer </td><td>  numerik (20,0) </td></tr><tr><td>  history_str </td><td>  Data Pemantauan Primer </td><td>  varchar (255) </td></tr><tr><td>  history_text </td><td>  Data Pemantauan Primer </td><td>  teks </td></tr><tr><td>  history_logs </td><td>  Data Pemantauan Primer </td><td>  teks dan bidang int </td></tr><tr><td>  tren </td><td>  Data Pemantauan Gabungan </td><td>  numerik (16,4) </td></tr><tr><td>  tren_uint </td><td>  Data Pemantauan Gabungan </td><td>  numerik (20,0) </td></tr></tbody></table></div><h4>  Kegiatan Optimasi </h4><br>  Untuk meningkatkan kinerja database PostgreSQL, berbagai langkah optimasi dilakukan, yang utamanya adalah mempartisi dan mengubah indeks.  Namun, perlu disebutkan beberapa kata tentang beberapa langkah penting dan berguna yang dapat mempercepat pekerjaan setiap basis data di bawah sistem manajemen basis data PostgreSQL. <br><br>  <b>Catatan penting.</b>  Pada saat mengumpulkan materi artikel, kami menggunakan Zabbix versi 4.0, meskipun versi 4.2 telah dirilis dan versi 4.4 sedang disiapkan untuk rilis.  Mengapa penting untuk menyebutkan ini?  Karena mulai dari versi 4.2, Zabbix mulai mendukung ekstensi kuat khusus untuk bekerja dengan seri waktu TimescaleDB, tetapi sejauh ini dalam mode eksperimental: untuk semua keuntungan menggunakan ekstensi ini, diyakini bahwa beberapa permintaan mulai bekerja lebih lambat dan masih ada masalah kinerja yang belum terpecahkan (akan ada diselesaikan dalam versi 4.4) - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">baca artikel ini</a> .  <i>Pada artikel selanjutnya saya berencana untuk menulis tentang hasil pengujian beban yang sudah menggunakan ekstensi TimescaleDB dibandingkan dengan kasus solusi ini.</i>  Versi PostgreSQL digunakan 10, tetapi semua informasi yang diberikan relevan untuk versi 11 dan 12 (kami menunggu!). <br><br>  Karena itu, hal pertama yang pertama: <br><br><ul><li>  mengatur file konfigurasi menggunakan utilitas pgtune </li><li>  menempatkan database ke disk fisik yang terpisah </li><li>  mempartisi tabel sejarah dengan pg_pathman </li><li>  mengubah tipe indeks tabel histori menjadi brin (clock) dan btree-gin (itemid) </li><li>  pengumpulan dan analisis statistik eksekusi permintaan pg_stat_statements </li><li>  mengatur parameter pemantauan disk fisik </li><li>  peningkatan kinerja perangkat keras </li><li>  pembuatan cluster terdistribusi (materi di luar lingkup artikel ini) </li></ul><br><br><h4>  Mengkonfigurasi file konfigurasi menggunakan utilitas pgtune </h4><br>  Padahal, PostgreSQL adalah DBMS yang cukup ringan.  File konfigurasi defaultnya dikonfigurasi sehingga, seperti kata rekan saya, "bahkan bekerja di mesin kopi", yaitu  pada besi yang sangat sederhana.  Oleh karena itu, perlu untuk mengonfigurasi PostgreSQL untuk konfigurasi server, dengan mempertimbangkan jumlah memori, jumlah prosesor, jenis tujuan penggunaan basis data, jenis disk (HDD atau SSD) dan jumlah koneksi. <br><br>  Sayangnya, tidak ada formula tunggal untuk mengatur semua DBMS, tetapi ada aturan dan pola tertentu yang cocok untuk sebagian besar konfigurasi (penyetelan yang lebih halus sudah merupakan pekerjaan seorang ahli).  Untuk menyederhanakan kehidupan DBA, utilitas <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">pgtune</a> ditulis, yang dilengkapi oleh <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">versi web</a> oleh <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=" class="user_link">le0pard</a> , penulis buku yang menarik dan bermanfaat tentang administrasi PostgreSQL. <br><br>  Contoh menjalankan utilitas di konsol dengan 100 koneksi (Zabbix memiliki admin Web yang menuntut) untuk jenis aplikasi "Gudang data": <br><br><pre>  pgtune -i postgresql.conf -o new_postgresql.conf -T DW -c 100 </pre><br><div class="spoiler">  <b class="spoiler_title">Parameter konfigurasi yang utilitas pgtune berubah dengan deskripsi tujuan (nilai diberikan sebagai contoh)</b> <div class="spoiler_text"><pre> # Versi DB: 11
+ # Jenis OS: linux
+ # Jenis DB: web
+ # Total Memory (RAM): 8 GB
+ # CPU num: 1
+ # Koneksi num: 100
+ # Penyimpanan Data: hdd<font></font>
+<font></font>
+ max_connections = 100 # jumlah maksimum koneksi database bersamaan
+ shared_buffers = ukuran memori 2GB # untuk berbagai buffer (terutama cache blok tabel dan blok indeks) dalam memori bersama
+ effective_cache_size = 6GB # ukuran maksimum memori yang diperlukan untuk eksekusi permintaan menggunakan indeks
+ maintenance_work_mem = 512MB # memengaruhi kecepatan operasi VACUUM, ANALYZE, CREATE INDEX
+ checkpoint_completion_target = 0,7 # target waktu untuk menyelesaikan prosedur pos pemeriksaan
+ wal_buffers = 16 MB # jumlah memori yang digunakan oleh Memori Bersama untuk memelihara log transaksi
+ default_statistics_target = 100 # jumlah statistik yang dikumpulkan oleh perintah ANALYZE - ketika meningkat, optimizer membangun kueri lebih lambat, tetapi lebih baik
+ random_page_cost = 4 # biaya bersyarat dari akses indeks ke halaman data - memengaruhi keputusan untuk menggunakan indeks
+ effective_io_concurrency = 2 # jumlah operasi I / O asinkron yang akan dilakukan oleh DBMS dalam sesi terpisah
+ work_mem = 10485kB # jumlah memori yang digunakan untuk mengurutkan dan tabel hash sebelum menggunakan file sementara pada disk
+ min_wal_size = batas 1GB # di bawah jumlah file WAL yang akan didaur ulang untuk digunakan di masa mendatang
+ max_wal_size = batas 2GB # di atas jumlah file WAL yang akan didaur ulang untuk digunakan di masa mendatang </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">Beberapa opsi konfigurasi postgresql yang berguna</b> <div class="spoiler_text"><pre> # mengelola penangan permintaan bersamaan
+ max_worker_processes = 8 # jumlah maksimum proses latar belakang - setidaknya satu per basis data
+ max_parallel_workers_per_gather = 4 # jumlah maksimum proses paralel dalam satu permintaan
+ max_parallel_workers = 8 # jumlah maksimum proses kerja yang dapat didukung sistem untuk operasi paralel<font></font>
+<font></font>
+ # pengaturan logging (cara mudah untuk mengetahui tentang waktu eksekusi permintaan tanpa menggunakan ekstensi pg_stat_statements)
+ log_min_duration_statement = 3000 # tulis ke log, durasi pelaksanaan semua perintah yang waktu operasinya&gt; = dari nilai yang ditentukan dalam ms
+ log_duration = off # catat durasi setiap perintah yang diselesaikan
+ log_statement = 'tidak ada' # yang perintah SQL untuk menulis ke log, nilai: tidak ada (dinonaktifkan), ddl, mod dan semua (semua perintah)
+ debug_print_plan = off # output dari pohon rencana kueri untuk analisis lebih lanjut<font></font>
+<font></font>
+ # peras maksimal dari database dan bersiaplah untuk kegagalan apa pun (untuk yang paling tertekan, yang mengabaikan keberadaan ssd dan gugus terdistribusi)
+ #fsync = off # tulis fisik ke disk perubahan, menonaktifkan fsync memberikan peningkatan kecepatan, tetapi dapat menyebabkan kegagalan permanen
+ #synchronous_commit = off # memungkinkan Anda untuk merespons klien bahkan sebelum informasi transaksi ada di WAL - sebuah alternatif yang hampir aman untuk menonaktifkan fsync
+ #full_page_writes = off # shutdown mempercepat operasi normal, tetapi dapat menyebabkan korupsi data atau korupsi data jika sistem macet </pre></div></div><br><h4>  Daftar database pada disk fisik yang terpisah </h4><br>  <i>Item ini opsional dan lebih merupakan solusi transisi untuk cluster terdistribusi lengkap, tetapi akan berguna untuk mengetahui tentang kemungkinan ini.</i>  Untuk mempercepat database, Anda bisa meletakkannya di disk terpisah.  Kami memasang seluruh disk di direktori dasar, di mana semua database PostgreSQL disimpan, tetapi secara umum hal itu dapat dilakukan secara berbeda: membuat basis tabel baru dan mentransfer database (atau bahkan hanya sebagian darinya - tabel data pemantauan primer dan agregat) ke tablesbase ini pada disk terpisah. <br><br><div class="spoiler">  <b class="spoiler_title">Pasang contoh</b> <div class="spoiler_text">  Pertama, Anda perlu memformat disk dengan sistem file ext4 dan menghubungkannya ke server.  Pasang disk untuk database dengan label noatime: <br><br><pre>  mount / dev / sdc1 / var / lib / pgsql / 10 / data / base -o noatime </pre><br>  Untuk pemasangan permanen, tambahkan baris ke file / etc / fstab: <br><br><pre> # di mana UUID adalah pengidentifikasi disk, Anda dapat melihatnya menggunakan utilitas blkid
+ UUID = 121efe29-70bf-410b-bc71-90704568ce3b / var / lib / pgsql / 10 / data / base ext4 default, noatime 0 0 </pre><br></div></div><br><h4>  Mempartisi tabel sejarah dengan pg_pathman </h4><br>  Salah satu masalah yang kami temui selama pengujian stres Zabbix - PostgreSQL tidak berhasil menghapus data yang usang dari database.  Menggunakan partisi, Anda dapat membagi tabel menjadi bagian-bagian penyusunnya, sehingga mengurangi ukuran indeks dan bagian-bagian penyusun tabel super, yang secara positif mempengaruhi kecepatan basis data secara keseluruhan. <br><br>  Partisi memecahkan dua masalah sekaligus: <br><br>  1. mempercepat penghapusan data yang usang dengan menghapus seluruh tabel <br><br>  2. indeks pemisahan untuk setiap tabel komposit <br><br>  Ada empat mekanisme untuk mempartisi di PostgreSQL: <br><br>  1. constraint_exclusion standar <br><br>  2. ekstensi pg_partman ( <i>jangan bingung dengan pg_pathman</i> ) <br><br>  3. ekstensi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">pg_pathman</a> <br><br>  4. secara manual membuat dan memelihara partisi sendiri <br><br>  Solusi partisi yang paling nyaman, andal, dan optimal, menurut kami, adalah ekstensi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">pg_pathman</a> .  Dengan metode partisi ini, perencana kueri secara fleksibel menentukan di mana partisi untuk mencari data.  <i>Rumor mengatakan bahwa dalam versi 12 PostgreSQL akan ada partisi yang sangat baik sudah di luar kotak.</i> <br><br>  Dengan demikian, kami mulai menulis data pemantauan untuk setiap hari dalam tabel yang diwarisi terpisah dari supertable dan penghapusan nilai parameter usang mulai terjadi melalui penghapusan semua tabel usang sekaligus, yang jauh lebih mudah untuk DBMS untuk biaya tenaga kerja.  Penghapusan dilakukan dengan memanggil fungsi pengguna basis data sebagai parameter pemantauan server Zabbix pada jam 2 pagi dengan indikasi rentang penyimpanan statistik yang dapat diterima. <br><br><div class="spoiler">  <b class="spoiler_title">Instal dan konfigurasikan partisi untuk PostgreSQL 10</b> <div class="spoiler_text">  Instal dan konfigurasikan ekstensi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">pg_pathman</a> dari repositori OS standar (untuk instruksi tentang cara membangun versi terbaru ekstensi dari sumber, lihat di repositori yang sama di github): <br><br><pre> yum instal pg_pathman10
+ nano /var/pgsqldb/postgresql.conf
+ shared_preload_libraries = 'pg_pathman' # important - di sini tulis pg_pathman terakhir dalam daftar
+</pre><br>  Kami me-reboot DBMS, membuat ekstensi untuk database, dan mengkonfigurasi partisi (1 hari untuk data pemantauan utama dan 3 hari untuk data pemantauan agregat - ini dapat dilakukan selama 1 hari): <br><br><pre> systemctl restart postgresql-10.service
+ psql -d zabbix -U postgres
+ BUAT EXTENSION pg_pathman;
+ # konfigurasikan satu hari untuk tabel data pemantauan utama
+ # 1552424400 - hitung mundur sebagai cap waktu unix, 86400 - detik dalam beberapa hari
+ pilih create_range_partitions ('history', 'clock', 1552424400, 86400);
+ pilih create_range_partitions ('history_uint', 'clock', 1552424400, 86400);
+ pilih create_range_partitions ('history_text', 'clock', 1552424400, 86400);
+ pilih create_range_partitions ('history_str', 'clock', 1552424400, 86400);
+ pilih create_range_partitions ('history_log', 'clock', 1552424400, 86400);
+ # konfigurasikan selama tiga hari untuk tabel data pemantauan teragregasi
+ # 1552424400 - hitung mundur sebagai cap waktu unix, 259200 - detik dalam tiga hari
+ pilih create_range_partitions ('tren', 'jam', 1545771600, 259200);  
+ pilih create_range_partitions ('tren_uint', 'jam', 1545771600, 259200); 
+</pre><br>  <i>Jika belum ada data di salah satu tabel, maka saat memanggil fungsi create_range_partitions, satu argumen tambahan lagi p_count = 0_ harus dilewati.</i> <br><br>  Pertanyaan yang berguna untuk memantau dan mengelola partisi: <br><br><pre> # Daftar umum tabel yang dipartisi, penyimpanan konfigurasi utama:
+ pilih * dari pathman_config;
+ # representasi dengan semua bagian yang ada, serta orang tua dan batas jangkauan mereka:
+ pilih * dari pathman_partition_list;
+ # parameter tambahan yang menggantikan perilaku pg_pathman standar:
+ pilih * dari pathman_config_params;
+ # salin konten kembali ke tabel induk dan hapus partisi:
+ pilih drop_partitions ('table_name' :: regclass, false);
+</pre><br>  Skrip yang berguna untuk melihat statistik pada jumlah dan ukuran partisi: <br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">/*       */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> nspname <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> schemaname, relname, relkind, <span class="hljs-keyword"><span class="hljs-keyword">cast</span></span> (reltuples <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> <span class="hljs-built_in"><span class="hljs-built_in">int</span></span>), pg_size_pretty(pg_relation_size(C.oid)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-string"><span class="hljs-string">"size"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class C <span class="hljs-keyword"><span class="hljs-keyword">LEFT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> pg_namespace N <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (N.oid = C.relnamespace) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> nspname <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> (<span class="hljs-string"><span class="hljs-string">'pg_catalog'</span></span>, <span class="hljs-string"><span class="hljs-string">'information_schema'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> (relname <span class="hljs-keyword"><span class="hljs-keyword">like</span></span> <span class="hljs-string"><span class="hljs-string">'history%'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> relname <span class="hljs-keyword"><span class="hljs-keyword">like</span></span> <span class="hljs-string"><span class="hljs-string">'trends%'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> relkind = <span class="hljs-string"><span class="hljs-string">'r'</span></span> <span class="hljs-comment"><span class="hljs-comment">-- and reltuples &gt; 0 -- and pg_relation_size(C.oid) &gt;= 0 ORDER BY schemaname, relname</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">Setel otomatis untuk menghapus partisi usang (ahtung - fungsi SQL besar)</b> <div class="spoiler_text">  Untuk mengkonfigurasi penghapusan otomatis partisi, Anda perlu membuat fungsi di database <br>  (teks lebar, jadi saya harus menghapus penyorotan sintaks): <br><br><pre> BUAT ATAU GANTI FUNGSI public.delete_old_partitions (integer history_days, integer trend_days, str_days integer)
+  RETURNS teks
+  Plpgsql BAHASA
+ AS $ fungsi $
+ / *
+ Fungsi menghapus semua partisi yang lebih lama dari jumlah hari yang ditentukan:
+ history_days - untuk partisi history_x, history_uint_x
+ tren_hari - untuk partisi tren_x, tren_uint_x
+ str_days - untuk partisi history_str_x, history_text_x, history_log_x
+ * /
+ mendeklarasikan clock_today_start int;
+ mendeklarasikan clock_delete_less_history int = 0;
+ mendeklarasikan clock_delete_less_trends int = 0;
+ mendeklarasikan clock_delete_less_strings int = 0;
+ clock_delete_less int = 0;
+ mendeklarasikan iterator int = 0;
+ mendeklarasikan result_str text = '';
+ mendeklarasikan teks buf_table_size;
+ mendeklarasikan teks buf_table_len;
+ mendeklarasikan teks partisi_name;
+ mendeklarasikan teks clock_max;
+ mendeklarasikan err_detail teks;
+ mendeklarasikan t_start timestamp = clock_timestamp ();
+ mendeklarasikan cap waktu t_end;
+ mulai
+     jika $ 1 &lt;= 0 lalu mengembalikan 'up, sesuatu yang salah: argumen history_days harus berupa nilai integer positif';  berakhir jika;
+     jika $ 2 &lt;= 0 lalu mengembalikan 'up, sesuatu yang salah: argumen tren_days harus berupa nilai integer positif';  berakhir jika;
+     jika $ 3 &lt;= 0 lalu mengembalikan 'up, sesuatu yang salah: argumen str_days harus berupa nilai integer positif';  berakhir jika;
+     clock_today_start = ekstrak (epoch from date_trunc ('day', now ())) :: int;
+     clock_delete_less_history = ekstrak (epoch from date_trunc ('day', now ()) - ($ 1 :: teks || 'days') :: interval) :: int;
+     clock_delete_less_trends = ekstrak (epoch from date_trunc ('day', now ()) - ($ 2 :: teks || 'days') :: interval) :: int;
+     clock_delete_less_strings = ekstrak (zaman dari date_trunc ('hari', sekarang ()) - ($ 3 :: teks || 'hari') :: interval) :: int;
+     clock_delete_less = sedikitnya (clock_delete_less_history, clock_delete_less_trends, clock_delete_less_strings);
+     --meningkatkan pemberitahuan 'clock_today_start% (%)', to_timestamp (clock_today_start), clock_today_start;
+     --meningkatkan pemberitahuan 'clock_delete_less_history% (%)% days', to_timestamp (clock_delete_less_history), clock_delete_less_history, $ 1;
+     --meningkatkan pemberitahuan 'clock_delete_less_trends% (%)% days', to_timestamp (clock_delete_less_trends), clock_delete_less_trends, $ 2;
+     --meningkatkan pemberitahuan 'clock_delete_less_strings% (%)% days', to_timestamp (clock_delete_less_strings), clock_delete_less_strings, $ 3;
+     untuk partisi_name, clock_max di pilih partisi, range_max dari pathman_partition_list mana 
+     range_max :: int &lt;= terhebat (clock_delete_less_history, clock_delete_less_trends, clock_delete_less_strings) dan 
+     (partisi :: teks seperti 'history%' atau partisi :: teks seperti 'tren%') dipesan oleh partisi asc
+     lingkaran
+         if (partisi_name ~ 'history_uint_ \ d' dan clock_max :: int &lt;= clock_delete_less_history)
+         atau (partisi_name ~ 'history_ \ d' dan clock_max :: int &lt;= clock_delete_less_history)
+         atau (partisi_name ~ 'tren_ \ d' dan clock_max :: int &lt;= clock_delete_less_trends)
+         atau (partisi_name ~ 'history_log_ \ d' dan clock_max :: int &lt;= clock_delete_less_strings)
+         atau (partisi_name ~ 'history_str_ \ d' dan clock_max :: int &lt;= clock_delete_less_strings)
+         atau (partisi_name ~ 'history_text_ \ d' dan clock_max :: int &lt;= clock_delete_less_strings)
+         lalu 
+             iterator = iterator +1;
+             naikkan pemberitahuan '%', format ('!!! delete% s% s', partisi_name, clock_max);
+             pilih max (reltuples :: int), pg_size_pretty (jumlah (pg_relation_size (pg_class.oid)))) sebagai "size" dari pg_class di mana relname seperti partisi_name ||  '%' menjadi buf_table_len ketat, buf_table_size;
+             jika result_str! = '' maka result_str = result_str ||  ',';  berakhir jika;
+             result_str = result_str ||  format ('% s (dt &lt;% s, len% s,% s)', partisi_name, to_char (to_timestamp (clock_max :: int), 'YYYY-MM-DD'), buf_table_len, buf_table_size);
+             jalankan format ('drop table jika ada% s', partisi_name);
+         berakhir jika;
+     loop akhir;
+     jika iterator = 0 lalu result_str = format ('tidak ada partisi untuk dihapus yang lebih lama, lalu% s date', to_char (to_timestamp (clock_delete_less), 'YYYY-MM-DD')); 
+     else result_str = format ('dihapus% s partisi dalam% s detik:', iterator, trunc (ekstrak (detik dari (clock_timestamp () - t_start)) :: numeric, 3)) ||  result_str;
+     berakhir jika;
+     --menaikkan pemberitahuan '%', result_str;
+     return result_str;
+ pengecualian saat orang lain saat itu
+    dapatkan diagnosa bertumpuk err_detail = PG_EXCEPTION_CONTEXT;
+    format pengembalian ('ups, ada yang salah:% s [kode err% s],% s', sqlerrm, sqlstate, err_detail);
+ akhir; 
+ $ function $;
+</pre><br>  Untuk secara otomatis memanggil fungsi partisi pembersihan-otomatis, Anda perlu membuat satu item data untuk host server zabbix dari tipe "Database Monitor" dengan pengaturan berikut: <br><br><pre> - ketik: monitor basis data
+ - name: delete_old_history_partitions
+ - key: db.odbc.select [delete_old_history_partitions, zabbix]
+ - ekspresi sql: pilih delete_old_partitions (3, 30, 30);
+ # di sini, parameter panggilan fungsi delete_old_partitions menunjukkan waktu penyimpanan dalam beberapa hari 
+ # untuk nilai numerik, nilai numerik teragregasi, dan nilai string
+ - tipe data: Teks
+ - interval pembaruan: 0
+ - Interval pengguna: dijadwalkan dalam h2
+ - periode penyimpanan riwayat: 90 hari
+ - grup elemen data: Database
+</pre><br>  Sebagai hasilnya, kami akan memperoleh statistik tentang pembersihan partisi dari jenis ini: <br><br><pre>  2019-09-16 02:00:00, menghapus 3 partisi dalam 0,024 detik: tren_78 (dt &lt;2019-08-17, len 1, 48 kB), history_193 (dt &lt;2019-09-13, len 85343, 9448 kB ), history_uint_186 (dt &lt;2019-09-13, len 27969, 3480 kB)
+</pre><br>  <b>Penting!</b>  Setelah mengatur penghapusan otomatis partisi melalui elemen data dan fungsi pengguna, Anda perlu mematikan riwayat dan tren pembersihan dalam penjadwal tugas pembantu rumah tangga Zabbix: <i>melalui item menu zabbix, pilih "Administrasi" -&gt; "Umum" -&gt; pilih "Hapus riwayat" dari daftar di sudut -&gt; nonaktifkan semua kotak centang di bagian "Sejarah" dan "Dinamika perubahan".</i> <br></div></div><br><h4>  Mengubah tipe indeks dari tabel histori menjadi brin (clock) dan btree-gin (itemid) </h4><br>  Terima kasih khusus kepada <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=" class="user_link">erogov</a> untuk <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">serangkaian artikel ikhtisar yang luar biasa tentang indeks PostgreSQL</a> .  <i>Dan memang seluruh tim PostgresPRO.</i>                            . <br><br>  ,            btree(itemid, clock) —    ,     ,   «»  ,    —  10 . <br><br> <i>          ,              ,       .</i> <br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Selama pengujian berbagai indeks, kombinasi indeks yang paling berhasil terungkap: indeks brin pada bidang jam dan indeks btree-gin pada bidang itemid untuk semua tabel data pemantauan. </font></font><br><br> <i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Indeks brin sangat ideal untuk meningkatkan data secara monoton, seperti cap waktu fakta acara, yaitu </font><font style="vertical-align: inherit;">untuk deret waktu. </font><font style="vertical-align: inherit;">Dan indeks btree-gin pada dasarnya adalah indeks gin dibandingkan tipe data standar, yang umumnya jauh lebih cepat daripada indeks btree klasik karena </font><font style="vertical-align: inherit;">Indeks gin tidak dibangun kembali selama penambahan nilai baru, tetapi hanya ditambah oleh mereka. </font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Indeks btree-gin dimasukkan sebagai ekstensi ke PostgreSQL.</font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Perbandingan kecepatan pengambilan sampel untuk strategi pengindeksan ini dan untuk indeks dalam database Zabbix secara default diberikan di bawah ini. </font><font style="vertical-align: inherit;">Selama pengujian beban, kami mengumpulkan data selama tiga hari untuk tiga partisi:</font></font><br><div class="scrollable-table"><table><tbody><tr><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Nama partisi </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Jumlah baris dalam MLN </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Ukuran dalam MB </font></font></th></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> history_uint_1 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 81.3 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 4119 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> history_uint_2 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 74.9 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 4426 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> history_uint_3 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 100.7 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 5387 </font></font></td></tr></tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Tiga jenis pertanyaan dilakukan untuk mengevaluasi hasil: </font></font><br><br><ol><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> untuk satu itemid parameter tertentu, data untuk bulan lalu, bahkan tiga hari terakhir (total 1660 catatan) </font></font><br><br><pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">jelaskan analisis pilih * dari history_uint di mana itemid = 313300</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dan jam&gt; = ekstrak (zaman dari '2019-03-09 00:00:00' :: timestamp) :: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dan jam &lt;= ekstrak (zaman dari '2019-04-09 12:00:00' :: timestamp) :: int;</font></font><font></font>
+</pre></li><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> untuk satu data parameter spesifik selama 12 jam sehari (total 649 entri) </font></font><br><br><pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">jelaskan analisis pilih * dari history_text di mana itemid = 310650</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dan jam&gt; = ekstrak (zaman dari '2019-04-09 00:00:00' :: timestamp) :: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dan jam &lt;= ekstrak (zaman dari '2019-04-09 12:00:00' :: timestamp) :: int;</font></font><font></font>
+</pre></li><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> untuk satu data parameter khusus selama satu jam (total 61 catatan): </font></font><br><br><pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">jelaskan analisa pilih count (*) dari history_text di mana itemid = 336540</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dan jam&gt; = ekstrak (zaman dari '2019-04-08 11:00:00' :: timestamp) :: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dan jam &lt;= ekstrak (zaman dari '2019-04-08 12:00:00' :: timestamp) :: int;</font></font><font></font>
+</pre></li></ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Hasil tes ditabulasi di bawah ini: </font></font><br><div class="scrollable-table"><table><tbody><tr><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> tipe indeks </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ukuran dalam MB * </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> minta 1 ** dalam ms </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> meminta 2 ** dalam ms </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> meminta 3 ** dalam ms </font></font></th></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> btree (jam, itemid) </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 14741 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 7154.3 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2205.3 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1860.4 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">brin (jam), </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">btree-gin (itemid)</font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 0,42 dan 1329 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2958.2 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1820.4 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 102.1 </font></font></td></tr></tbody></table></div><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">* ukuran dalam MB ditunjukkan total untuk tiga partisi </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">** permintaan tipe 1 - data selama 3 hari, permintaan tipe 2 - data selama 12 jam, permintaan tipe 3 - data selama satu jam </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dari tabel perbandingan dapat dilihat bahwa untuk tabel data besar dengan jumlah catatan lebih dari 100 juta, jelas terlihat bahwa mengubah indeks komposit standar btree menjadi dua indeks brin dan btree-gin memiliki efek menguntungkan pada pengurangan ukuran indeks dan mempercepat waktu eksekusi permintaan. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Efisiensi pengindeksan dan partisi ditunjukkan di bawah ini pada contoh permintaan untuk menambahkan catatan baru ke tabel history_uint dan tren_uint (penambahan terjadi pada rata-rata nilai 2000 per kueri).</font></font><br><div class="scrollable-table"><table><tbody><tr><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Meja </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Waktu permintaan rata-rata untuk peningkatan, ms </font></font></th><th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Waktu permintaan rata-rata setelah peningkatan, ms </font></font></th></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> tren_uint </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2201.48 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 8.72 </font></font></td></tr><tr><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> tren_uint </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1997.27 </font></font></td><td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 62.16 </font></font></td></tr></tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Meringkas hasil pengujian berbagai konfigurasi indeks untuk tabel data pemantauan sistem zabbix, kita dapat mengatakan bahwa perubahan serupa dalam indeks standar untuk tabel data pemantauan zabbix secara positif mempengaruhi kinerja sistem secara keseluruhan, yang paling terasa ketika volume data lebih dari 10 juta diakumulasikan. Anda harus melupakan tentang efek tidak langsung dari "pembengkakan" dari indeks btree standar secara default - sering membangun kembali indeks multi-gigabyte menyebabkan beban besar pada hard disk (utiliz metric ation), yang pada akhirnya meningkatkan waktu operasi disk dan waktu untuk menunggu akses ke disk dari CPU (iowait metric). </font></font><br><br> <b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tapi</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> agar indeks btree-gin dapat bekerja dengan tipe data bigint (in8), yang merupakan kolom itemid, Anda perlu mendaftarkan keluarga operator tipe bigint untuk indeks btree-gin. </font></font><br><br><div class="spoiler"> <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mendaftarkan keluarga operator bigint untuk indeks btree-gin</font></font></b> <div class="spoiler_text"><pre>/*<font></font>
+     gin    biginteger  integer    .<font></font>
+ -   gin     int2, int4, int8,<font></font>
+       bigint     ,     bigint (&lt;= 2147483647)<font></font>
+        intger_ops,  :<font></font>
+create index on tablename using gin(columnname int8_family_ops) with (fastupdate = false);<font></font>
+*/<font></font>
+<font></font>
+--       btree_gin<font></font>
+CREATE EXTENSION btree_gin;<font></font>
+<font></font>
+CREATE OPERATOR FAMILY integer_ops using gin;<font></font>
+<font></font>
+CREATE OPERATOR CLASS int4_family_ops<font></font>
+FOR TYPE int4 USING gin FAMILY integer_ops<font></font>
+AS<font></font>
+    OPERATOR 1 &lt;,<font></font>
+    OPERATOR 2 &lt;=,<font></font>
+    OPERATOR 3 =,<font></font>
+    OPERATOR 4 &gt;=,<font></font>
+    OPERATOR 5 &gt;,<font></font>
+    FUNCTION 1 btint4cmp(int4,int4),<font></font>
+    FUNCTION 2 gin_extract_value_int4(int4, internal),<font></font>
+    FUNCTION 3 gin_extract_query_int4(int4, internal, int2, internal, internal),<font></font>
+    FUNCTION 4 gin_btree_consistent(internal, int2, anyelement, int4, internal, internal),<font></font>
+    FUNCTION 5 gin_compare_prefix_int4(int4,int4,int2, internal),<font></font>
+STORAGE int4;<font></font>
+<font></font>
+CREATE OPERATOR CLASS int8_family_ops<font></font>
+FOR TYPE int8 USING gin FAMILY integer_ops<font></font>
+AS<font></font>
+    OPERATOR 1 &lt;,<font></font>
+    OPERATOR 2 &lt;=,<font></font>
+    OPERATOR 3 =,<font></font>
+    OPERATOR 4 &gt;=,<font></font>
+    OPERATOR 5 &gt;,<font></font>
+    FUNCTION 1 btint8cmp(int8,int8),<font></font>
+    FUNCTION 2 gin_extract_value_int8(int8, internal),<font></font>
+    FUNCTION 3 gin_extract_query_int8(int8, internal, int2, internal, internal),<font></font>
+    FUNCTION 4 gin_btree_consistent(internal, int2, anyelement, int4, internal, internal),<font></font>
+    FUNCTION 5 gin_compare_prefix_int8(int8,int8,int2, internal),<font></font>
+STORAGE int8;<font></font>
+<font></font>
+ALTER OPERATOR FAMILY integer_ops USING gin add<font></font>
+  OPERATOR 1 &lt;(int4,int8),<font></font>
+  OPERATOR 2 &lt;=(int4,int8),<font></font>
+  OPERATOR 3 =(int4,int8),<font></font>
+  OPERATOR 4 &gt;=(int4,int8),<font></font>
+  OPERATOR 5 &gt;(int4,int8);<font></font>
+<font></font>
+ALTER OPERATOR FAMILY integer_ops USING gin add<font></font>
+  OPERATOR 1 &lt;(int8,int4),<font></font>
+  OPERATOR 2 &lt;=(int8,int4),<font></font>
+  OPERATOR 3 =(int8,int4),<font></font>
+  OPERATOR 4 &gt;=(int8,int4),<font></font>
+  OPERATOR 5 &gt;(int8,int4);<font></font>
+</pre><br></div></div><br><div class="spoiler"> <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Skrip ini mendistribusikan ulang semua indeks dalam database PostgreSQL untuk Zabbix dari konfigurasi default ke konfigurasi optimal yang dijelaskan di atas.</font></font></b> <div class="spoiler_text"><pre>/*<font></font>
+        <font></font>
+*/<font></font>
+<font></font>
+--   <font></font>
+drop index history_1;<font></font>
+drop index history_uint_1;<font></font>
+drop index history_str_1;<font></font>
+drop index history_text_1;<font></font>
+drop index history_log_1;<font></font>
+--          PK <font></font>
+-- (   ,         )<font></font>
+alter table trends drop constraint trends_pk;<font></font>
+alter table trends_uint drop constraint trends_uint_pk;<font></font>
+<font></font>
+--     bree-gin   itemid    <font></font>
+--   btree-gin  bigint       <font></font>
+-- https://habr.com/ru/company/postgrespro/blog/340978/#comment_10545932<font></font>
+--    create extension btree_gin;<font></font>
+create index on history using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_uint using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_str using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_text using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_log using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on trends using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on trends_uint using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+<font></font>
+--     bree-gin   itemid    <font></font>
+--     brin    128 ,    <font></font>
+--           ,<font></font>
+--      https://habr.com/ru/company/postgrespro/blog/346460/<font></font>
+create index on history using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_uint using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_str using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_text using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_log using brin(clock) with (pages_per_range = 128);<font></font>
+create index on trends using brin(clock) with (pages_per_range = 128);<font></font>
+create index on trends_uint using brin(clock) with (pages_per_range = 128);<font></font>
+</pre><br></div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Untuk indeks brin untuk volume data kami pada intensitas 100 ton parameter per menit (100 ton dalam sejarah dan 100 ton dalam history_uint), terlihat bahwa indeks bekerja pada tabel data pemantauan primer dengan ukuran zona 512 halaman dua kali lebih cepat dibandingkan dengan ukuran standar 128 halaman, tetapi ini bersifat individual dan tergantung pada ukuran tabel dan konfigurasi server. Bagaimanapun, indeks brin membutuhkan ruang yang sangat kecil, tetapi kecepatannya dapat sedikit ditingkatkan dengan memperbaiki ukuran zona, tetapi dengan ketentuan bahwa laju aliran data tidak banyak berubah.</font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Akibatnya, perlu dicatat bahwa ada batasan yang terkait dengan arsitektur Zabbix itu sendiri: pada tab "Data terbaru", dua nilai terakhir dikumpulkan untuk setiap parameter, dengan mempertimbangkan pemfilteran akun. Untuk setiap parameter, nilai diminta dalam database secara terpisah. Oleh karena itu, semakin banyak parameter yang dipilih, semakin lama kueri akan berjalan. Data terbaru dicari ketika indeks btree (itemid, clock desc) diatur pada tabel sejarah dengan penyortiran terbalik berdasarkan waktu, tetapi indeks itu sendiri tentu saja "membengkak" pada disk dan umumnya secara tidak langsung memperlambat database, yang menyebabkan masalah, dijelaskan di atas. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Karena itu, ada tiga jalan keluar:</font></font><br><br><ol><li>             « »      100  (..   ,     « »    ) </li><li>     Zabbix ,                  ,          « » </li><li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> biarkan indeks sebagaimana adanya secara default, dan batasi diri kita hanya untuk mempartisi hanya untuk mendapatkan pilihan yang cukup besar pada tab Data Terbaru pada saat yang sama untuk berbagai parameter (namun, diketahui bahwa server web Zabbix masih memiliki batasan pada jumlah nilai parameter yang ditampilkan secara bersamaan pada tab "Data Terbaru" - jadi, ketika saya mencoba menampilkan 5.000 nilai, database menghitung hasilnya, tetapi server tidak dapat menyiapkan halaman web dan menampilkan data dalam jumlah besar). </font></font></li></ol><br><h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Pengumpulan dan analisis statistik eksekusi permintaan pg_stat_statements </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pg_stat_statements adalah ekstensi untuk mengumpulkan statistik tentang kinerja kueri di seluruh server. </font><font style="vertical-align: inherit;">Keuntungan dari ekstensi ini adalah tidak perlu mengumpulkan dan mengurai log PostgreSQL.</font></font><br><br><div class="spoiler"> <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Menggunakan Ekstensi pg_stat_statements</font></font></b> <div class="spoiler_text">    psql: <br><br><pre> CREATE EXTENSION pg_stat_statements; </pre><br>       postgresql.conf: <br><br><pre>shared_preload_libraries = 'pg_stat_statements'<font></font>
+pg_stat_statements.max = 10000 #   sql ,     (     );<font></font>
+pg_stat_statements.track = all # all -   (    ), top -   /, none -  <font></font>
+pg_stat_statements.save = true #     <font></font>
+</pre><br>  : <br><br><pre> SELECT pg_stat_statements_reset(); </pre><br>          : <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> <span class="hljs-keyword"><span class="hljs-keyword">substring</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">query</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> <span class="hljs-string"><span class="hljs-string">'[^(]*'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> query_sub, <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(calls) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> calls, <span class="hljs-keyword"><span class="hljs-keyword">avg</span></span>(mean_time) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> mean_time <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pg_stat_statements <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> <span class="hljs-keyword"><span class="hljs-keyword">query</span></span> ~ <span class="hljs-string"><span class="hljs-string">'insert into'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">or</span></span> <span class="hljs-keyword"><span class="hljs-keyword">query</span></span> ~ <span class="hljs-string"><span class="hljs-string">'update trends'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">group</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> <span class="hljs-keyword"><span class="hljs-keyword">substring</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">query</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> <span class="hljs-string"><span class="hljs-string">'[^(]*'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">order</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> calls <span class="hljs-keyword"><span class="hljs-keyword">desc</span></span></code> </pre> </div></div><br><h4>      </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Untuk memantau hard drive di Zabbix, hanya parameter vfs.dev.read dan vfs.dev.write yang disediakan di luar kotak. Opsi ini tidak memberikan informasi tentang pemanfaatan disk. Kriteria yang berguna untuk menemukan masalah dengan kinerja hard drive Anda adalah tingkat pemanfaatan utilisasi, menunggu waktu eksekusi permintaan, dan beban antrian permintaan ke disk. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sebagai aturan, beban disk yang tinggi berkorelasi dengan iowait tinggi cpu itu sendiri dan dengan peningkatan waktu eksekusi kueri sql, yang ditemukan selama pengujian stres server zabbix dengan konfigurasi standar tanpa partisi dan tanpa menyiapkan indeks alternatif. Anda dapat menambahkan parameter ini untuk memantau hard drive menggunakan langkah-langkah berikut, yang mengintip dalam sebuah </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">artikel</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dari seorang teman</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">lesovsky</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dan ditingkatkan: sekarang parameter iostat dikumpulkan secara terpisah untuk setiap disk dalam parameter waktu json, dari mana, menurut pengaturan pasca-pemrosesan, mereka sudah didekomposisi menjadi parameter pemantauan akhir. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sementara permintaan Tarik sedang menunggu, Anda dapat mencoba memperluas pemantauan parameter disk sesuai dengan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">instruksi terperinci melalui garpu saya</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Setelah semua tindakan yang dijelaskan, Anda dapat menambahkan grafik khusus dengan iowait cpu dan parameter utilisasi ke disk sistem dan disk dari basis data (jika berbeda) di panel pemantauan server Zabbix utama </font><font style="vertical-align: inherit;">Hasilnya mungkin terlihat seperti ini (sda adalah disk utama, sdc adalah disk dengan database):</font></font><br><br><img src="https://habrastorage.org/webt/oa/nj/fa/oanjfa3hajssftbq22dk8njiwj0.png"><br><br><h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Peningkatan Kinerja Perangkat Keras </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Setelah mengatur DBMS, pengindeksan dan pemartisian, Anda dapat melanjutkan ke penskalaan vertikal - untuk meningkatkan karakteristik perangkat keras server: tambahkan RAM, ubah drive menjadi solid-state dan tambahkan core prosesor. </font><font style="vertical-align: inherit;">Ini adalah peningkatan kinerja yang dijamin, tetapi lebih baik melakukan ini hanya setelah optimasi perangkat lunak.</font></font><br><br><h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Membuat Cluster Terdistribusi </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Setelah penskalaan vertikal moderat, Anda harus mulai horisontal - membuat cluster terdistribusi: baik shard atau replikasi master slave. </font><font style="vertical-align: inherit;">Tapi ini adalah topik dan materi yang terpisah dari artikel yang terpisah </font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(bagaimana membentuk sekelompok kotoran dan tongkat)</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , serta perbandingan teknik optimasi basis data Zabbix yang dijelaskan di atas menggunakan pg_pathman dan pengindeksan dengan metode penerapan ekstensi TimescaleDB. </font></font><br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sementara itu, masih diharapkan bahwa materi dalam artikel ini bermanfaat dan informatif!</font></font></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id468463/">https://habr.com/ru/post/id468463/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id468447/index.html">Laragon - WAMP dengan domain lokal otomatis</a></li>
+<li><a href="../id468453/index.html">MBLT19 :: laporan, pertempuran dan pengujian produk</a></li>
+<li><a href="../id468455/index.html">GPS hebat dan sisi gelapnya</a></li>
+<li><a href="../id468457/index.html">Generator contoh aritmatika sederhana untuk boneka dan tidak hanya</a></li>
+<li><a href="../id468459/index.html">Ikhtisar pendeteksi radar tanda tangan: Playme Silent 2 andalan kami</a></li>
+<li><a href="../id468471/index.html">Tinjauan Umum AngularConnect 2019. Bagian 1</a></li>
+<li><a href="../id468479/index.html">“Orang-orang berpikir bahwa gratis itu tidak berharga. Sepertinya saya bisa meyakinkan mereka ”- Yuri Yartsev tentang sekolah Russol</a></li>
+<li><a href="../id468481/index.html">Bagaimana S7 adalah yang pertama di Rusia yang menjual tiket pesawat secara online</a></li>
+<li><a href="../id468485/index.html">Ketika Anda menginginkan GUI yang indah, tetapi GPU tidak</a></li>
+<li><a href="../id468487/index.html">Apa yang bisa terjadi (Vektor serangan tipikal)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

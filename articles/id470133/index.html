@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏽‍🤝‍👨🏾 🔧 🧖 Cara mengumpulkan metrik yang tidak terdistorsi berdasarkan referensi waktu dengan Prometheus 💅🏻 🙎🏾 🥑</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Banyak aplikasi jaringan terdiri dari server web yang memproses lalu lintas waktu nyata dan penangan tambahan yang berjalan di latar belakang secara t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Cara mengumpulkan metrik yang tidak terdistorsi berdasarkan referensi waktu dengan Prometheus</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/470133/"><p><img src="https://habrastorage.org/webt/-6/xs/ee/-6xseehi1ojmkxmb_phq6tr3h_a.jpeg"></p><br><p>  Banyak aplikasi jaringan terdiri dari server web yang memproses lalu lintas waktu nyata dan penangan tambahan yang berjalan di latar belakang secara tidak sinkron.  Ada banyak kiat bagus untuk memeriksa status lalu lintas, dan komunitas tidak berhenti mengembangkan alat seperti Prometheus yang membantu penilaian.  Tetapi penangan terkadang tidak kurang - dan bahkan lebih penting -.  Mereka juga membutuhkan perhatian dan evaluasi, tetapi ada sedikit panduan tentang bagaimana melakukan ini sambil menghindari perangkap umum. </p><br><p>  Artikel ini dikhususkan untuk jebakan yang paling umum dalam proses mengevaluasi penangan tak sinkron, menggunakan contoh insiden di lingkungan produksi di mana, bahkan dengan metrik, tidak mungkin untuk menentukan dengan tepat apa yang dilakukan penangan.  Penggunaan metrik telah mengubah fokus sehingga metrik itu sendiri secara terbuka berbohong, kata mereka, penangan Anda ke neraka. </p><br><p> Kami akan melihat cara menggunakan metrik sedemikian rupa untuk memberikan perkiraan yang akurat, dan sebagai kesimpulan kami akan menunjukkan implementasi referensi dari open source <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">prometheus-client-tracer</a> , yang dapat Anda gunakan dalam aplikasi Anda. </p><a name="habracut"></a><br><h3 id="incident">  Insiden </h3><br><p>  Peringatan tiba pada kecepatan senapan mesin: jumlah kesalahan HTTP meningkat tajam, dan panel kontrol mengkonfirmasi bahwa antrian permintaan bertambah dan waktu respons habis.  Sekitar 2 menit kemudian, antrian dibersihkan, dan semuanya kembali normal. </p><br><p>  Setelah diperiksa lebih dekat, ternyata server API kami berdiri, menunggu respons DB, yang menyebabkannya berhenti dan tiba-tiba mendapatkan semua aktivitas.  Dan ketika Anda menganggap bahwa beban terberat jatuh lebih sering pada tingkat prosesor asinkron, mereka telah menjadi tersangka utama.  Pertanyaan logisnya adalah: apa yang mereka lakukan di sana?! </p><br><p>  Metrik Prometheus menunjukkan proses yang membutuhkan waktu, ini dia: </p><br><pre><code class="plaintext hljs"># HELP job_worked_seconds_total Sum of the time spent processing each job class # TYPE job_worked_seconds_total counter job_worked_seconds_total{job}</code> </pre> <br><p>  Dengan melacak total waktu pelaksanaan setiap tugas dan frekuensi perubahan metrik, kami akan mengetahui berapa banyak waktu kerja yang telah dihabiskan.  Jika untuk jangka waktu 15 detik.  jumlahnya meningkat 15, ini berarti 1 penangan sibuk (satu detik untuk setiap detik terakhir), sementara peningkatan 30 berarti 2 penangan, dll. </p><br><p>  Jadwal kerja selama kejadian akan menunjukkan apa yang kita hadapi.  Hasilnya mengecewakan;  waktu kejadian (16: 02–16: 04) ditandai dengan garis merah yang mengkhawatirkan: </p><br><p><img src="https://habrastorage.org/webt/33/1u/bc/331ubcimex4xb4hm_zdondnxcnw.png"><br>  <em>Aktivitas pawang selama kejadian: celah yang nyata terlihat.</em> </p><br><p>  Sangat menyakitkan bagi saya, sebagai orang yang men-debug setelah mimpi buruk ini, untuk melihat bahwa kurva aktivitas berada di bagian paling bawah tepat selama insiden.  Ini adalah waktu untuk bekerja dengan kait web, di mana kami memiliki 20 penangan khusus.  Dari log, saya tahu bahwa mereka semua dalam bisnis, dan saya perkirakan kurva berada sekitar 20 detik, dan saya melihat garis yang hampir lurus.  Apalagi, lihat puncak biru besar ini jam 16:05?  Dilihat dari jadwal, 20 prosesor single-threaded menghabiskan waktu 45 detik.  untuk setiap detik aktivitas, tetapi apakah ini mungkin?! </p><br><h3 id="gde-i-chto-poshlo-ne-tak">  Dimana dan apa yang salah? </h3><br><p>  Jadwal kejadian itu bohong: itu menyembunyikan kegiatan kerja dan pada saat yang sama menunjukkan berlebihan - tergantung di mana harus mengukur.  Untuk mengetahui mengapa hal ini terjadi, Anda harus mempertimbangkan penerapan pelacakan metrik dan bagaimana interaksi dengan metrik pengumpul Prometheus. </p><br><p>  Dimulai dengan cara penangan mengumpulkan metrik, Anda dapat membuat sketsa perkiraan skema implementasi alur kerja (lihat di bawah).  Catatan: penangan <em>hanya</em> memperbarui metrik <em>setelah menyelesaikan tugas</em> . </p><br><pre> <code class="plaintext hljs">class Worker JobWorkedSecondsTotal = Prometheus::Client::Counter.new(...) def work job = acquire_job start = Time.monotonic_now job.run ensure # run after our main method block duration = Time.monotonic_now - start JobWorkedSecondsTotal.increment(by: duration, labels: { job: job.class }) end end</code> </pre> <br><p>  Prometheus (dengan filosofi penggalian metrik) mengirimkan permintaan GET ke setiap handler setiap 15 detik, mencatat nilai metrik pada saat permintaan.  Handler terus-menerus memperbarui metrik dari tugas yang diselesaikan, dan seiring waktu kami dapat secara grafik menampilkan dinamika perubahan nilai. </p><br><p>  Masalah dengan under- dan revaluasi mulai muncul setiap kali waktu yang dibutuhkan untuk menyelesaikan tugas melebihi waktu tunggu untuk permintaan yang tiba setiap 15 detik.  Misalnya, tugas dimulai 5 detik sebelum permintaan dan berakhir 1 detik setelah.  Secara keseluruhan dan umum, ini berlangsung 6 detik, tetapi waktu ini hanya terlihat ketika memperkirakan biaya waktu yang dibuat setelah permintaan, sedangkan 5 dari 6 detik ini dihabiskan sebelum permintaan. </p><br><p>  Indikator berbohong bahkan lebih tidak bertuhan jika tugas lebih lama dari periode pelaporan (15 detik). Selama pelaksanaan tugas selama 1 menit, Prometheus akan memiliki waktu untuk mengirim 4 permintaan ke prosesor, tetapi metrik akan diperbarui hanya setelah keempat. </p><br><p>  Setelah menggambar garis waktu aktivitas kerja, kita akan melihat bagaimana saat metrik diperbarui memengaruhi apa yang dilihat Prometheus.  Dalam diagram di bawah ini, kami memecah garis waktu dua penangan menjadi beberapa segmen yang menampilkan tugas dengan durasi berbeda.  Tag merah (15 detik) dan biru (30 detik) menunjukkan 2 sampel data Prometheus;  Tugas-tugas yang berfungsi sebagai sumber data untuk penilaian disorot masing-masing dalam warna. </p><br><p><img src="https://habrastorage.org/webt/ph/lc/z6/phlcz67lq7o3tpar3vgibp71h9o.png"></p><br><p>  Terlepas dari apa yang dilakukan pawang pada beban penuh, mereka akan melakukan pekerjaan 30 detik setiap interval 15 detik.  Karena Prometheus tidak melihat pekerjaan sampai selesai, dilihat dari metrik, 14 detik pekerjaan diselesaikan dalam interval waktu pertama dan 42 detik di detik.  Jika setiap pawang mengambil tugas yang banyak, maka bahkan setelah beberapa jam, sampai akhir, kami tidak akan melihat laporan bahwa pekerjaan sedang berlangsung. </p><br><p>  Untuk menunjukkan efek ini, saya melakukan percobaan dengan sepuluh penangan yang terlibat dalam tugas yang panjangnya berbeda dan semi normal didistribusikan antara 0,1 detik dan nilai yang sedikit lebih tinggi (lihat <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">tugas acak</a> ).  Di bawah ini adalah 3 grafik yang menggambarkan aktivitas kerja;  panjang waktu ditampilkan dalam urutan yang meningkat. </p><br><p><img src="https://habrastorage.org/webt/6o/bx/jh/6obxjhklfq8sxwhdbjrzpnsgcmm.png"><br>  <em>Tugas berlangsung hingga 1 detik.</em> </p><br><p>  Grafik pertama menunjukkan bahwa setiap penangan memenuhi sekitar 1 detik pekerjaan dalam setiap detik waktu - ini terlihat pada garis datar, dan jumlah total pekerjaan sama dengan kemampuan kami (10 penangan memberikan pekerjaan kedua per detik waktu).  Sebenarnya, ini, terlepas dari panjang tugas, kami berharap: hanya pada tugas pendek dan panjang, prosesor dengan beban konstan harus memberikan. </p><br><p><img src="https://habrastorage.org/webt/x-/lj/zp/x-ljzpfv-jdybqpk-osmcfd3rui.png"><br>  <em>Tugas berlangsung hingga 15 detik.</em> </p><br><p>  Durasi tugas bertambah, dan kekacauan muncul dalam jadwal: kami masih memiliki 10 prosesor, semuanya sudah terisi penuh, tetapi jumlah total lompatan pekerjaan - baik yang lebih rendah atau lebih tinggi dari batas kapasitas yang berguna (10 detik). </p><br><p><img src="https://habrastorage.org/webt/uo/cc/mh/uoccmht2erjrgjywbvlo7sn6-tk.png"><br>  <em>Tugas berlangsung hingga 30 detik.</em> </p><br><p>  Evaluasi karya yang berlangsung hingga 30 detik itu konyol.  Metrik terikat waktu menunjukkan nol aktivitas untuk tugas terlama dan, hanya ketika tugas selesai, menarik kami puncak aktivitas. </p><br><h3 id="vosstanovim-doverie">  Kembalikan Kepercayaan </h3><br><p>  Ini tidak cukup bagi kami, jadi ada masalah lain yang jauh lebih berbahaya dengan tugas jangka panjang yang merusak metrik kami.  Setiap kali tugas jangka panjang selesai - katakanlah, jika Kubernetes melempar pod keluar dari pool, atau ketika sebuah node mati - lalu apa yang terjadi pada metrik?  Layak memperbarui mereka segera setelah menyelesaikan tugas, karena mereka menunjukkan bahwa <strong>mereka tidak melakukan</strong> pekerjaan <strong>sama sekali</strong> . </p><br><p>  Metrik seharusnya tidak berbohong.  Laptop melolong tidak percaya, menyebabkan horor eksistensial, dan alat pengintai yang mendistorsi gambar dunia adalah jebakan dan tidak cocok untuk bekerja. </p><br><p>  Untungnya, masalahnya bisa diperbaiki.  Distorsi data terjadi karena Prometheus melakukan pengukuran terlepas dari kapan prosesor memperbarui metrik.  Jika kami meminta penangan untuk memperbarui metrik saat Prometheus mengirimkan permintaan, kami akan melihat bahwa Prometheus tidak lagi unik dan menunjukkan aktivitas saat ini. </p><br><h3 id="predstavlyaem-tracer">  Memperkenalkan ... Pelacak </h3><br><p>  Salah satu solusi untuk masalah metrik yang terdistorsi adalah <code>Tracer</code> , yang dirancang secara abstrak yang mengevaluasi aktivitas pada tugas-tugas jangka panjang dengan secara bertahap memperbarui metrik terkait Prometheus. </p><br><pre> <code class="plaintext hljs">class Tracer def trace(metric, labels, &amp;block) ... end def collect(traces = @traces) ... end end</code> </pre> <br><p>  Pelacak menyediakan metode penelusuran yang menggunakan metrik Prometheus dan tugas untuk dilacak.  Perintah <code>trace</code> akan mengeksekusi blok yang diberikan (fungsi anonim Ruby) dan memastikan bahwa permintaan untuk <code>tracer.collect</code> selama eksekusi akan secara bertahap memperbarui metrik terkait, tidak peduli berapa banyak waktu telah berlalu sejak permintaan terakhir untuk <code>collect</code> . </p><br><p>  Kita perlu menghubungkan <code>tracer</code> ke penangan untuk melacak durasi tugas dan titik akhir melayani permintaan metrik Prometheus.  Kami mulai dengan penangan, menginisialisasi pelacak baru dan memintanya untuk melacak eksekusi dari <code>acquire_job.run</code> . </p><br><pre> <code class="plaintext hljs">class Worker def initialize @tracer = Tracer.new(self) end def work @tracer.trace(JobWorkedSecondsTotal, labels) { acquire_job.run } end # Tell the tracer to flush (incremental) trace progress to metrics def collect @tracer.collect end end</code> </pre> <br><p>  Pada tahap ini, pelacak hanya akan memperbarui metrik dalam hitungan detik yang dihabiskan untuk tugas yang diselesaikan - seperti yang kami lakukan dalam implementasi awal metrik.  Kami harus meminta pelacak untuk memperbarui metrik kami sebelum kami menjalankan permintaan dari Prometheus.  Ini dapat dilakukan dengan menyiapkan Rak middleware. </p><br><pre> <code class="plaintext hljs"># config.ru # https://rack.github.io/ class WorkerCollector def initialize(@app, workers: @workers); end def call(env) workers.each(&amp;:collect) @app.call(env) # call Prometheus::Exporter end end # Rack middleware DSL workers = start_workers # Array[Worker] # Run the collector before serving metrics use WorkerCollector, workers: workers use Prometheus::Middleware::Exporter</code> </pre> <br><p>  Rack adalah antarmuka untuk server web Ruby yang memungkinkan Anda untuk menggabungkan beberapa penangan Rack ke dalam satu titik akhir.  Perintah <code>config.ru</code> menentukan bahwa aplikasi Rack - setiap kali menerima permintaan - mengirim perintah <code>collect</code> ke handler terlebih dahulu, dan hanya kemudian memberitahu klien Prometheus untuk menggambar hasil pengumpulan. </p><br><p>  Adapun bagan kami, kami memperbarui metrik setiap kali tugas selesai atau ketika kami menerima permintaan untuk metrik.  Tugas yang memiliki beberapa kueri sama-sama mengirim data di semua segmen: seperti yang ditunjukkan oleh tugas yang durasinya dibagi menjadi interval 15 detik. </p><br><p><img src="https://habrastorage.org/webt/v3/p-/ve/v3p-vekym_g0w_cnamhqxfsaaya.png"></p><br><h3 id="luchshe-li-eto">  Apakah ini lebih baik? </h3><br><p>  Menggunakan pelacak 24 jam sehari memengaruhi bagaimana aktivitas dicatat.  Berbeda dengan pengukuran awal, yang menunjukkan "gergaji," ketika jumlah puncak melebihi jumlah prosesor yang dipicu dan periode keheningan tumpul, percobaan dengan sepuluh prosesor memberikan grafik yang jelas menunjukkan bahwa setiap prosesor dimasukkan ke dalam pekerjaan yang dipantau secara seragam. </p><br><p><img src="https://habrastorage.org/webt/a5/ng/lj/a5ngljwtmc1ppqxlpwjqdx98_eu.png"><br>  <em>Metrik dibangun berdasarkan perbandingan (kiri) dan dikendalikan oleh pelacak (kanan), diambil dari satu percobaan yang bekerja.</em> </p><br><p>  Dibandingkan dengan jadwal pengukuran awal yang tidak akurat dan kacau, metrik yang dikumpulkan oleh pelacak ini halus dan konsisten.  Kami sekarang tidak hanya secara akurat mengikat pekerjaan dengan setiap permintaan metrik, tetapi juga tidak khawatir tentang kematian mendadak dari salah satu penangan: Prometheus mencatat metrik sampai pawang menghilang, mengevaluasi semua pekerjaannya. </p><br><h3 id="mozhno-li-eto-ispolzovat">  Bisakah ini digunakan? </h3><br><p>  Ya!  Antarmuka <code>Tracer</code> terbukti bermanfaat bagi saya di banyak proyek, jadi ini adalah permata Ruby terpisah, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">prometheus-client-tracer</a> .  Jika Anda menggunakan klien Prometheus di aplikasi Ruby Anda, cukup tambahkan <code>prometheus-client-tracer</code> ke Gemfile Anda: </p><br><pre> <code class="plaintext hljs">require "prometheus/client" require "prometheus/client/tracer" JobWorkedSecondsTotal = Prometheus::Client::Counter.new(...) Prometheus::Client.trace(JobWorkedSecondsTotal) do sleep(long_time) end</code> </pre> <br><p>  Jika ini ternyata bermanfaat bagi Anda dan jika Anda ingin klien resmi Prometheus Ruby muncul di <code>Tracer</code> , tinggalkan ulasan di <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">client_ruby # 135</a> . </p><br><h3 id="nu-i-naposledok-koe-kakie-mysli">  Dan akhirnya, beberapa pemikiran </h3><br><p>  Saya harap ini membantu orang lain secara lebih sadar mengumpulkan metrik untuk tugas yang sudah berjalan lama dan menyelesaikan salah satu masalah umum.  Jangan salah, itu terkait tidak hanya dengan pemrosesan asinkron: jika permintaan HTTP Anda melambat, mereka juga akan mendapat manfaat dari menggunakan pelacak ketika mengevaluasi waktu yang dihabiskan untuk memproses. </p><br><p>  Seperti biasa, umpan balik dan koreksi dipersilahkan: tulis ke Twitter atau <a href="">PR terbuka</a> .  Jika Anda ingin berkontribusi pada tracer gem, kode sumbernya ada di <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">prometheus-client-tracer-ruby</a> . </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id470133/">https://habr.com/ru/post/id470133/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id470121/index.html">Perusahaan sekolah pemrograman atau cara memasukkan TI</a></li>
+<li><a href="../id470123/index.html">Perangkap keuangan Yandex.Money</a></li>
+<li><a href="../id470125/index.html">Jangan menilai kode orang lain dengan ketat</a></li>
+<li><a href="../id470127/index.html">Komposer dengan memori jangka pendek yang panjang</a></li>
+<li><a href="../id470129/index.html">Manajemen memori deklaratif</a></li>
+<li><a href="../id470135/index.html">Aplikasi web interaktif tanpa pemrograman? Mudah! Mavo di tangan Anda</a></li>
+<li><a href="../id470139/index.html">2 life hacks: alternatif pencarian klasik di Microsoft SQL Server</a></li>
+<li><a href="../id470145/index.html">“Waspadalah, FAS!”: Apa bahaya ID militer dalam periklanan, mengapa penting untuk mengetahui matematika dan apakah kebenaran telanjang selalu dibutuhkan</a></li>
+<li><a href="../id470149/index.html">Tidak akan ada koleksi abadi di Jawa - baik sekarang maupun selamanya</a></li>
+<li><a href="../id470153/index.html">Kamus Model Data</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

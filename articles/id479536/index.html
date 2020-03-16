@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐴 ⛸️ 👩🏻‍⚖️ Load balancing dalam Zimbra Open-Source Edition dengan HAProxy 💇 🎵 👡</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Salah satu tugas utama dalam membangun infrastruktur Zimbra OSE skala besar adalah penyeimbangan beban yang kompeten. Selain fakta bahwa ia meningkatk...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Load balancing dalam Zimbra Open-Source Edition dengan HAProxy</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/zimbra/blog/479536/">  Salah satu tugas utama dalam membangun infrastruktur Zimbra OSE skala besar adalah penyeimbangan beban yang kompeten.  Selain fakta bahwa ia meningkatkan toleransi kesalahan pada layanan, tanpa penyeimbangan muatan, mustahil untuk memberikan respons yang sama dari layanan untuk semua pengguna.  Untuk mengatasi masalah ini, load balancers digunakan - solusi perangkat lunak dan perangkat keras yang mendistribusikan kembali permintaan antar server.  Di antara mereka, ada beberapa yang agak primitif, seperti RoundRobin, yang hanya mengirim setiap permintaan berikutnya ke server berikutnya dalam daftar, dan ada yang lebih maju, misalnya, HAProxy, yang banyak digunakan dalam infrastruktur komputasi yang sangat dimuat karena sejumlah keunggulan signifikan.  Mari kita lihat bagaimana penyeimbang beban HAProxy dan Zimbra OSE dapat bekerja bersama. <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e98/93d/7d9/e9893d7d9f995c2a24dce02df7fa5d51.png" alt="gambar"><a name="habracut"></a><br><br>  Jadi, sesuai dengan kondisi tugas, kami diberikan infrastruktur Zimbra OSE, di mana ada dua Proksi Zimbra, dua server Replika LDAP dan LDAP, empat toko surat dengan 1000 kotak surat di masing-masing dan tiga MTA.  Menimbang bahwa kami berurusan dengan server email, ia akan menerima tiga jenis lalu lintas yang perlu seimbang: HTTP untuk mengunduh klien web, serta POP dan SMTP untuk mengirim email.  Pada saat yang sama, lalu lintas HTTP akan menuju server Zimbra Proxy dengan alamat ip 192.168.0.57 dan 192.168.0.58, dan lalu lintas SMTP akan pergi ke server MTA dengan alamat ip 192.168.0.77 dan 192.168.0.78. <br><br>  Seperti yang telah disebutkan, untuk memastikan distribusi permintaan yang seragam antar server, kami akan menggunakan penyeimbang beban HAProxy, yang akan bekerja pada simpul input dari infrastruktur Zimbra yang menjalankan Ubuntu 18.04.  Instalasi haproxy pada sistem operasi ini dilakukan dengan menggunakan <b>perintah haproxy sudo apt-get install</b> .  Setelah itu, di file <b>/ etc / default / haproxy,</b> ubah parameter <b>ENABLED = 0</b> menjadi <b>ENABLED = 1</b> .  Sekarang, untuk memastikan bahwa haproxy berfungsi, cukup masukkan perintah <b>layanan haproxy</b> .  Jika layanan ini berfungsi, maka akan menjadi jelas dari output perintah. <br><br>  Salah satu kelemahan utama HAProxy adalah bahwa secara default HAProxy tidak mengirimkan alamat IP klien yang terhubung, menggantikannya dengan miliknya sendiri.  Ini dapat menyebabkan situasi di mana email yang dikirim oleh penyerang tidak dapat diidentifikasi oleh alamat IP untuk ditambahkan ke daftar hitam.  Namun, masalah ini dapat diatasi.  Untuk melakukan ini, edit file <b>/opt/zimbra/common/conf/master.cf.in</b> di server dengan Postfix dan tambahkan baris berikut ke dalamnya: <br><br><pre><code class="plaintext hljs">26 inet n - n - 1 postscreen -o postscreen_upstream_proxy_protocol=haproxy 466 inet n - n - - smtpd %%uncomment SERVICE:opendkim%% -o content_filter=scan:[%%zimbraLocalBindAddress%%]:10030 -o smtpd_tls_wrappermode=yes -o smtpd_sasl_auth_enable=yes -o smtpd_client_restrictions= -o smtpd_data_restrictions= -o smtpd_helo_restrictions= -o smtpd_recipient_restrictions= -o smtpd_relay_restrictions=permit_sasl_authenticated,reject -o syslog_name=postfix/smtps -o milter_macro_daemon_name=ORIGINATING -o smtpd_upstream_proxy_protocol=haproxy %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_filter=[%%zimbraLocalBindAddress%%]:10027 %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_options=speed_adjust 588 inet n - n - - smtpd %%uncomment SERVICE:opendkim%% -o content_filter=scan:[%%zimbraLocalBindAddress%%]:10030 -o smtpd_etrn_restrictions=reject -o smtpd_sasl_auth_enable=%%zimbraMtaSaslAuthEnable%% -o smtpd_tls_security_level=%%zimbraMtaTlsSecurityLevel%% -o smtpd_client_restrictions=permit_sasl_authenticated,reject -o smtpd_data_restrictions= -o smtpd_helo_restrictions= -o smtpd_recipient_restrictions= -o smtpd_relay_restrictions=permit_sasl_authenticated,reject -o syslog_name=postfix/submission -o milter_macro_daemon_name=ORIGINATING -o smtpd_upstream_proxy_protocol=haproxy %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_filter=[%%zimbraLocalBindAddress%%]:10027 %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_options=speed_adjust</code> </pre> <br>  Karena ini, kami akan membuka port 26, 466 dan 588, yang akan menerima lalu lintas masuk dari HAProxy.  Setelah file disimpan, Anda harus me-restart Postfix di semua server menggunakan perintah restart zmmtactl. <br><br>  Setelah itu, mari mulai menyiapkan HAProxy.  Untuk melakukan ini, pertama buat salinan cadangan file dengan pengaturan <b>cp /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.bak</b> .  Kemudian, buka file sumber <b>/etc/haproxy/haproxy.cfg</b> di editor teks dan mulai secara bertahap menambahkan pengaturan yang diperlukan untuk itu.  Blok pertama akan menambahkan server yang menghapus log, mengatur jumlah maksimum koneksi simultan yang dibolehkan, serta menentukan nama dan grup pengguna yang menjadi tempat proses eksekusi. <br><br><pre> <code class="plaintext hljs">global user daemon group daemon daemon log 127.0.0.1 daemon maxconn 5000 chroot /var/lib/haproxy</code> </pre> <br>  Sosok 5000 koneksi simultan muncul karena suatu alasan.  Karena ada 4000 kotak surat di infrastruktur kami, maka perlu untuk memperkirakan kemungkinan bahwa semua dari mereka akan pergi ke surat kantor pada saat yang sama.  Selain itu, Anda harus meninggalkan margin kecil jika jumlah mereka meningkat. <br><br>  Sekarang tambahkan blok dengan pengaturan default: <br><br><pre> <code class="plaintext hljs">defaults timeout client 1m log global mode tcp timeout server 1m timeout connect 5s</code> </pre> <br>  Dalam blok ini, batas waktu maksimum untuk klien dan server diatur untuk memutuskan koneksi ketika berakhir, dan mode operasi HAProxy juga diatur.  Dalam kasus kami, penyeimbang beban berfungsi dalam mode TCP, yaitu, ia hanya mentransmisikan paket TCP tanpa menganalisis isinya. <br><br>  Selanjutnya, kami akan menambahkan aturan untuk koneksi pada port yang berbeda.  Sebagai contoh, jika port 25 digunakan untuk koneksi SMTP dan transfer surat, maka masuk akal untuk mengarahkan koneksi ke MTA yang tersedia di infrastruktur kami.  Jika koneksi ada di port 80, maka ini adalah permintaan http yang harus diteruskan ke Zimbra Proxy. <br><br>  <b>Aturan untuk port 25:</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-25 bind *:27 default_backend backend-smtp-25 backend backend-smtp-25 server mta1 192.168.0.77:26 send-proxy server mta2 192.168.0.78:26 send-proxy</code> </pre> <br>  <b>Aturan untuk port 465:</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-465 bind *:467 default_backend backend-smtp-465 backend backend-smtp-465 server mta1 192.168.0.77:466 send-proxy server mta2 192.168.0.78:466 send-proxy</code> </pre> <br>  <b>Aturan untuk port 587:</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-587 bind *:589 default_backend backend-smtp-587 backend backend-smtp-587 server mail1 192.168.0.77:588 send-proxy server mail2 192.168.0.78:588 send-proxy</code> </pre> <br>  <b>Aturan untuk port 80:</b> <br><br><pre> <code class="plaintext hljs">frontend http-80 bind *:80 default_backend http-80 backend http-80 mode tcp server zproxy1 192.168.0.57:80 check server zproxy2 192.168.0.58:80 check</code> </pre> <br>  <b>Aturan untuk port 443:</b> <br><br><pre> <code class="plaintext hljs">frontend https bind *:443 default_backend https-443 backend https-443 mode tcp server zproxy1 192.168.0.57:80 check server zproxy2 192.168.0.58:80 check</code> </pre> <br>  Harap dicatat bahwa dalam aturan untuk mengirim paket TCP ke MTA, parameter <b>send-proxy</b> terletak di sebelah alamat mereka.  Ini diperlukan agar, sesuai dengan perubahan yang kami buat sebelumnya ke pengaturan Postfix, alamat IP asli pengirimnya dikirim bersama dengan paket TCP. <br><br>  Sekarang setelah semua perubahan yang diperlukan untuk HAProxy telah dibuat, Anda dapat memulai kembali layanan menggunakan <b>perintah restart layanan haproxy</b> dan mulai menggunakannya. <br><br>  Untuk semua pertanyaan yang terkait dengan Zextras Suite, Anda dapat menghubungi perwakilan perusahaan "Zextras" Ekaterina Triandafilidi melalui email katerina@zextras.com </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id479536/">https://habr.com/ru/post/id479536/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id479518/index.html">Komunikasi dalam tim jarak jauh adalah pengalaman kami</a></li>
+<li><a href="../id479522/index.html">Penerbit Peter. Penjualan musim dingin</a></li>
+<li><a href="../id479524/index.html">Layanan untuk Pemulihan Aktif atau sejarah satu proyek industri di Innopolis</a></li>
+<li><a href="../id479530/index.html">Sistem koordinat ultrasonik 2.0</a></li>
+<li><a href="../id479534/index.html">Kubernetes 1.17 - cara memutakhirkan dan tidak menghabiskan seluruh anggaran kesalahan</a></li>
+<li><a href="../id479538/index.html">Teknologi memimpin umat manusia ke dalam kemunduran. Sudah waktunya untuk mengubah sesuatu</a></li>
+<li><a href="../id479540/index.html">Menggunakan passwordstore.org - pengelola kata sandi gaya KISS</a></li>
+<li><a href="../id479542/index.html">Cara menulis transliterator Anda sendiri</a></li>
+<li><a href="../id479548/index.html">Jalan dari magang ke pertunjukan di HighLoad 2019</a></li>
+<li><a href="../id479550/index.html">MVC dalam Persatuan dengan Objek Skrip. Bagian 3</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

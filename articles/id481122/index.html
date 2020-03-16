@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✝️ ⛷️ 🌸 PostgreSQL Antipatterns: meneruskan set dan pilihan ke SQL 👨🏾‍🔬 📶 🌽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Dari waktu ke waktu, pengembang perlu memberikan serangkaian parameter ke permintaan atau bahkan seluruh pilihan "input". Solusi yang sangat aneh untu...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: meneruskan set dan pilihan ke SQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/481122/">  Dari waktu ke waktu, pengembang perlu <b>memberikan serangkaian parameter ke permintaan atau bahkan seluruh pilihan</b> "input".  Solusi yang sangat aneh untuk masalah ini terkadang muncul. <br><img src="https://habrastorage.org/webt/gy/db/kv/gydbkvfvb0m5yahydebhfhyadb4.png"><br>  Mari kita “dari kebalikan” dan melihat bagaimana itu tidak layak dilakukan, mengapa, dan bagaimana melakukan yang lebih baik. <br><a name="habracut"></a><br><h2>  Penyisipan langsung nilai ke dalam tubuh permintaan </h2><br>  Biasanya terlihat seperti ini: <br><br><pre><code class="plaintext hljs">query = "SELECT * FROM tbl WHERE id = " + value</code> </pre> <br>  ... atau lebih: <br><br><pre> <code class="plaintext hljs">query = "SELECT * FROM tbl WHERE id = :param".format(param=value)</code> </pre> <br>  Tentang metode ini dikatakan, ditulis, dan <a href="https://xkcd.com/327/">bahkan digambar dengan</a> berlimpah: <br><br><img src="https://habrastorage.org/webt/ir/e8/73/ire873nizb3svo3sm7z6lemdoqk.png"><br><br>  Hampir selalu, ini adalah <b>jalur langsung ke injeksi SQL</b> dan beban tambahan pada logika bisnis, yang dipaksa untuk "merekatkan" string kueri Anda. <br><br>  Pendekatan semacam itu hanya dapat dibenarkan sebagian jika perlu <b>menggunakan sectioning</b> dalam versi PostgreSQL 10 dan lebih rendah untuk mendapatkan rencana yang lebih efisien.  Dalam versi ini, daftar bagian yang dipindai ditentukan bahkan tanpa memperhitungkan parameter yang dikirimkan, hanya berdasarkan badan permintaan. <br><br><h2>  argumen $ n </h2><br>  Menggunakan <a href="https://postgrespro.ru/docs/postgresql/12/xfunc-sql">penampung</a> parameter adalah baik, ini memungkinkan Anda untuk menggunakan <a href="https://postgrespro.ru/docs/postgresql/12/sql-prepare">PERNYATAAN YANG DIPERSIAPKAN</a> , mengurangi beban pada kedua logika bisnis (string kueri dihasilkan dan dikirim hanya sekali) dan server database (penguraian ulang dan penjadwalan untuk setiap instance dari permintaan tidak diperlukan). <br><br><h4>  Jumlah argumen yang bervariasi </h4><br>  Masalah akan menunggu kami saat kami ingin menyampaikan terlebih dahulu sejumlah argumen yang tidak diketahui: <br><br><pre> <code class="sql hljs">... id IN ($1, $2, $3, ...) <span class="hljs-comment"><span class="hljs-comment">-- $1 : 2, $2 : 3, $3 : 5, ...</span></span></code> </pre> <br>  Jika Anda meninggalkan permintaan dalam formulir ini, maka meskipun itu akan menyelamatkan kami dari kemungkinan suntikan, namun tetap akan mengarah pada kebutuhan untuk mengelem / mem-parsing permintaan <b>untuk setiap opsi dari sejumlah argumen</b> .  Sudah lebih baik daripada melakukannya setiap saat, tetapi Anda bisa melakukannya tanpa itu. <br><br>  Cukup hanya melewatkan satu parameter yang berisi <b>representasi serial array</b> : <br><br><pre> <code class="sql hljs">... id = ANY($1::integer[]) <span class="hljs-comment"><span class="hljs-comment">-- $1 : '{2,3,5,8,13}'</span></span></code> </pre> <br>  Satu-satunya perbedaan adalah kebutuhan untuk secara eksplisit mengkonversi argumen ke tipe array yang diinginkan.  Tapi ini tidak menimbulkan masalah, karena kita sudah tahu sebelumnya di mana kita menangani. <br><br><h4>  Transfer sampel (matriks) </h4><br>  Biasanya ini adalah segala macam opsi untuk mentransfer set data untuk dimasukkan ke dalam database "dalam satu permintaan": <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl(k, v) <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>,$<span class="hljs-number"><span class="hljs-number">2</span></span>),($<span class="hljs-number"><span class="hljs-number">3</span></span>,$<span class="hljs-number"><span class="hljs-number">4</span></span>),...</code> </pre> <br>  Selain masalah yang dijelaskan di atas dengan "menempel kembali" permintaan, ini juga dapat menyebabkan <b>kehabisan memori</b> dan server crash.  Alasannya sederhana - PG menyimpan memori tambahan untuk argumen, dan jumlah catatan di set hanya dibatasi oleh logika bisnis Wishlist yang diterapkan.  Dalam kasus-kasus klinis khususnya, orang harus melihat <i>argumen "bernomor" lebih dari $ 9.000</i> - tidak perlu. <br><br>  Kami menulis ulang permintaan, menerapkan <b>serialisasi "dua tingkat"</b> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>[<span class="hljs-number"><span class="hljs-number">1</span></span>]::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> k , <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>[<span class="hljs-number"><span class="hljs-number">2</span></span>]::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>[])::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>[] <span class="hljs-comment"><span class="hljs-comment">-- $1 : '{"{a,1}","{b,2}","{c,3}","{d,4}"}' ) T;</span></span></code> </pre><br>  Ya, dalam kasus nilai "kompleks" di dalam array, mereka harus dikelilingi oleh tanda kutip. <br>  Jelas bahwa dengan cara ini Anda dapat "memperluas" seleksi dengan jumlah bidang yang berubah-ubah. <br><br><h4>  tidak, tidak, ... </h4><br>  Secara berkala, ada opsi transmisi alih-alih “array array” dari beberapa “array kolom”, yang saya sebutkan <a href="https://habr.com/ru/post/479920/">di artikel sebelumnya</a> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>[]) k , <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>($<span class="hljs-number"><span class="hljs-number">2</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>[]) v;</code> </pre> <br>  Dengan metode ini, membuat kesalahan saat membuat daftar nilai untuk kolom yang berbeda, sangat mudah untuk mendapatkan <b>hasil</b> yang benar-benar <b>tidak terduga</b> , yang juga tergantung pada versi server: <br><br><pre> <code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">-- $1 : '{a,b,c}', $2 : '{1,2}' -- PostgreSQL 9.4 k | v ----- a | 1 b | 2 c | 1 a | 2 b | 1 c | 2 -- PostgreSQL 11 k | v ----- a | 1 b | 2 c |</span></span></code> </pre> <br><h2>  Json </h2><br>  Dimulai dengan versi 9.3, PostgreSQL memperkenalkan fungsi lengkap untuk bekerja dengan tipe json.  Oleh karena itu, jika definisi parameter input di browser Anda berlangsung, Anda dapat membuat <b>objek json untuk permintaan SQL</b> di sana: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">key</span></span> k , <span class="hljs-keyword"><span class="hljs-keyword">value</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> json_each($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-keyword"><span class="hljs-keyword">json</span></span>); <span class="hljs-comment"><span class="hljs-comment">-- '{"a":1,"b":2,"c":3,"d":4}'</span></span></code> </pre> <br>  Untuk versi sebelumnya, metode yang sama dapat digunakan untuk <b>masing</b> - <b>masing (hstore)</b> , tetapi "konvolusi" yang benar dengan melarikan diri objek kompleks di hstore dapat menyebabkan masalah. <br><br><h4>  json_populate_recordset </h4><br>  Jika Anda tahu sebelumnya bahwa data dari "input" json array akan masuk untuk mengisi beberapa jenis tabel, Anda dapat menyimpan banyak dalam "dereferencing" bidang dan casting ke tipe yang diperlukan menggunakan fungsi json_populate_recordset: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> json_populate_recordset( <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>::pg_class , $<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-keyword"><span class="hljs-keyword">json</span></span> <span class="hljs-comment"><span class="hljs-comment">-- $1 : '[{"relname":"pg_class","oid":1262},{"relname":"pg_namespace","oid":2615}]' );</span></span></code> </pre> <br><h4>  json_to_recordset </h4><br>  Dan fungsi ini hanya "memperluas" array yang ditransfer objek ke dalam seleksi, tanpa bergantung pada format tabel: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> json_to_recordset($<span class="hljs-number"><span class="hljs-number">1</span></span>::<span class="hljs-keyword"><span class="hljs-keyword">json</span></span>) T(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); <span class="hljs-comment"><span class="hljs-comment">-- $1 : '[{"k":"a","v":1},{"k":"b","v":2}]' k | v ----- a | 1 b | 2</span></span></code> </pre> <br><h2>  MEJA SEMENTARA </h2><br>  Tetapi jika jumlah data dalam sampel yang ditransmisikan sangat besar, maka melemparkannya ke dalam satu parameter berseri adalah sulit, dan kadang-kadang tidak mungkin, karena memerlukan <b>alokasi</b> satu kali <b>dari sejumlah besar memori</b> .  Misalnya, Anda perlu mengumpulkan paket besar data tentang peristiwa dari sistem eksternal untuk waktu yang sangat lama, dan kemudian Anda ingin memprosesnya sekali di sisi basis data. <br><br>  Dalam hal ini, solusi terbaik adalah dengan menggunakan <a href="https://postgrespro.ru/docs/postgresql/12/sql-createtable">tabel sementara</a> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TEMPORARY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); ... <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl(k, v) <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span>($<span class="hljs-number"><span class="hljs-number">1</span></span>, $<span class="hljs-number"><span class="hljs-number">2</span></span>); <span class="hljs-comment"><span class="hljs-comment">--  -  ... --   -      </span></span></code> </pre><br>  Metode ini baik <b>untuk pengiriman</b> data <b>dalam jumlah besar yang langka</b> . <br>  Dari sudut pandang menggambarkan struktur datanya, tabel sementara berbeda dari yang "normal" hanya dengan satu fitur <i>dalam tabel sistem pg_class</i> , dan dalam <i>pg_type, pg_depend, pg_attribute, pg_attrdef, ...</i> - tidak ada sama sekali. <br><br>  Oleh karena itu, dalam sistem web dengan sejumlah besar koneksi berumur pendek untuk masing-masingnya, tabel seperti itu akan menghasilkan catatan sistem baru setiap kali, yang dihapus dengan koneksi ke database ditutup.  Akibatnya, <b>penggunaan TEMP TABLE yang tidak terkontrol menyebabkan "pembengkakan" tabel di pg_catalog</b> dan memperlambat banyak operasi yang menggunakannya. <br>  Tentu saja, ini dapat diperjuangkan dengan bantuan <i>lulus berkala VACUUM FULL</i> melalui tabel katalog sistem. <br><br><h2>  Variabel sesi </h2><br>  Misalkan pemrosesan data dari kasus sebelumnya cukup rumit untuk satu query SQL, tetapi Anda cukup sering melakukannya.  Artinya, kami ingin menggunakan pemrosesan prosedural di <a href="https://postgrespro.ru/docs/postgresql/12/sql-do">blok DO</a> , tetapi menggunakan transfer data melalui tabel sementara akan terlalu mahal. <br><br>  Kami tidak akan dapat menggunakan $ n-parameter untuk mentransfer ke blok anonim.  Variabel sesi dan fungsi <b>current_setting</b> akan membantu kita keluar dari situasi ini. <br><br>  Sebelum versi 9.2, perlu untuk <i>mengkonfigurasi</i> <a href="https://www.postgresql.org/docs/9.1/runtime-config-custom.html">ruang nama</a> <i>custom_variable_classes</i> untuk variabel sesi "Anda".  Pada versi saat ini, Anda dapat menulis sesuatu seperti ini: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> my.val = <span class="hljs-string"><span class="hljs-string">'{1,2,3}'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">DO</span></span> $$ <span class="hljs-keyword"><span class="hljs-keyword">DECLARE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FOR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>(current_setting(<span class="hljs-string"><span class="hljs-string">'my.val'</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>[])) <span class="hljs-keyword"><span class="hljs-keyword">LOOP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RAISE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOTICE</span></span> <span class="hljs-string"><span class="hljs-string">'id : %'</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LOOP</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span>; $$ LANGUAGE plpgsql; <span class="hljs-comment"><span class="hljs-comment">-- NOTICE: id : 1 -- NOTICE: id : 2 -- NOTICE: id : 3</span></span></code> </pre> <br>  Bahasa prosedural yang didukung lainnya dapat menemukan solusi lain. <br><br>  <i>Apakah Anda tahu lebih banyak cara?</i>  <i>Bagikan komentar Anda!</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id481122/">https://habr.com/ru/post/id481122/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id481112/index.html">Apa yang akan dikatakan "permen karet" usia 5700 tahun tentang orang yang mengunyahnya?</a></li>
+<li><a href="../id481114/index.html">Seccomp di Kubernetes: 7 Hal yang Perlu Anda Ketahui Dari Awal</a></li>
+<li><a href="../id481116/index.html">Secara otomatis mempublikasikan posting dari komunitas VKontakte ke Discord</a></li>
+<li><a href="../id481118/index.html">Anonim Santa Claus 2019-2020: posting membual hadiah Tahun Baru</a></li>
+<li><a href="../id481120/index.html">Di mana dan bagaimana server tepi diterapkan?</a></li>
+<li><a href="../id481124/index.html">Kiat untuk menulis kode dokumentasi diri</a></li>
+<li><a href="../id481126/index.html">Serikat programmer? Jangan katakan sandal saya</a></li>
+<li><a href="../id481130/index.html">TOP12 Penemuan Ilmiah Interdisipliner 2019</a></li>
+<li><a href="../id481134/index.html">Bagaimana mengevaluasi kapasitas layanan dan tidak jatuh di bawah beban</a></li>
+<li><a href="../id481138/index.html">Orang-orang ini menciptakan kecerdasan buatan - 4 cerita spesialis AI dan ML</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤞🏾 👶🏾 🧡 DBA: membersihkan catatan klon dari tabel tanpa PK 🖖 👩🏽‍💻 🤷🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Ada situasi ketika, dalam sebuah tabel tanpa kunci utama atau indeks unik lainnya, klon penuh dari catatan yang sudah ada jatuh secara tidak sengaja. ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>DBA: membersihkan catatan klon dari tabel tanpa PK</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/481352/">  Ada situasi ketika, <b>dalam sebuah tabel tanpa kunci utama</b> atau indeks unik lainnya, klon penuh dari catatan yang sudah ada jatuh secara tidak sengaja. <br><br><img src="https://habrastorage.org/webt/3z/gu/mn/3zgumnb2iyjc7s2oxvm23mgoqvs.png"><br><br>  Sebagai contoh, nilai-nilai metrik kronologis ditulis ke aliran COPY PostgreSQL, dan kemudian gagal mendadak, dan bagian dari data yang sama persis muncul lagi. <br><br>  Bagaimana cara membersihkan database dari klon yang tidak perlu? <br><a name="habracut"></a><br><h2>  Ketika PK bukan asisten </h2><br>  Cara termudah adalah mencegah hal ini terjadi sama sekali.  Misalnya, gulung KUNCI UTAMA yang sama.  Tetapi ini tidak selalu mungkin tanpa menambah jumlah data yang disimpan. <br><br>  Misalnya, jika akurasi sistem asli lebih tinggi dari keakuratan bidang dalam database: <br><br><pre><code class="plaintext hljs">metric | ts | data -------------------------------------------------- cpu.busy | 2019-12-20 00:00:00 | {"value" : 12.34} cpu.busy | 2019-12-20 00:00:01 | {"value" : 10} cpu.busy | 2019-12-20 00:00:01 | {"value" : 11.2} cpu.busy | 2019-12-20 00:00:03 | {"value" : 15.7}</code> </pre> <br>  Pernahkah Anda memperhatikan?  Hitungan bukannya 00:00:02 ditulis ke database dengan ts sedetik sebelumnya, tetapi tetap cukup valid dari sudut pandang aplikasi (setelah semua, nilai data berbeda!). <br><br>  Tentu saja, Anda dapat membuat <b><i>PK (metrik, ts)</i></b> - tetapi kemudian kami akan mendapatkan konflik penyisipan untuk data yang valid. <br><br>  Anda dapat membuat <b><i>PK (metrik, ts, data)</i></b> - tetapi ini akan sangat meningkatkan volumenya, yang tidak akan kami gunakan. <br><br>  Oleh karena itu, opsi yang paling benar adalah membuat indeks non-unik reguler <b><i>(metrik, ts)</i></b> dan menangani masalah setelah fakta, jika memang muncul. <br><br><h2>  "Perang klonik telah dimulai" </h2><br>  Beberapa jenis kecelakaan terjadi, dan sekarang kita harus menghancurkan catatan klon dari meja. <br><br><img src="https://habrastorage.org/webt/zn/3e/l4/zn3el4t8lmhorjz4wo0zkzxydv0.png"><br><br>  Mari kita simulasikan sumber data: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> (<span class="hljs-string"><span class="hljs-string">'a'</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>) , (<span class="hljs-string"><span class="hljs-string">'a'</span></span>, <span class="hljs-number"><span class="hljs-number">3</span></span>) , (<span class="hljs-string"><span class="hljs-string">'b'</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>) , (<span class="hljs-string"><span class="hljs-string">'b'</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>) <span class="hljs-comment"><span class="hljs-comment">-- oops! , ('c', 3) , ('c', 3) -- oops!! , ('c', 3) -- oops!! , ('d', 4) , ('e', 5) ;</span></span></code> </pre> <br>  Lalu tangan kami gemetar tiga kali, Ctrl + V macet, dan sekarang ... <br><br>  Pertama, mari kita pahami bahwa tabel kita bisa sangat besar, oleh karena itu, setelah kita menemukan semua klon, disarankan bagi kita untuk benar-benar "menyodok" untuk menghapus <b>catatan tertentu tanpa harus mencari lagi</b> . <br><br>  Dan ada cara seperti itu - ini <a href="https://postgrespro.ru/docs/postgresql/12/ddl-system-columns">ditangani oleh ctid</a> , pengidentifikasi fisik catatan tertentu. <br><br>  Artinya, pertama-tama, kita perlu mengumpulkan catatan ctid dalam konteks konten penuh dari baris tabel.  Opsi termudah adalah dengan memasukkan seluruh baris ke dalam teks: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> , array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre><br><pre> <code class="plaintext hljs">t | ctids --------------------------------- (e,5) | {"(0,9)"} (d,4) | {"(0,8)"} (c,3) | {"(0,5)","(0,6)","(0,7)"} (b,2) | {"(0,3)","(0,4)"} (a,3) | {"(0,2)"} (a,1) | {"(0,1)"}</code> </pre><br><div class="spoiler">  <b class="spoiler_title">Apakah mungkin untuk tidak melakukan casting?</b> <div class="spoiler_text">  Pada prinsipnya, itu mungkin dalam banyak kasus.  Sampai Anda mulai menggunakan bidang <b>jenis</b> dalam tabel ini <b>tanpa operator kesetaraan</b> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>, x point); <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T; <span class="hljs-comment"><span class="hljs-comment">-- ERROR: could not identify an equality operator for type tbl</span></span></code> </pre></div></div><br>  Ya, kami segera melihat bahwa jika ada lebih dari satu rekaman dalam array, itu semua ada klon.  Biarkan hanya mereka: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>(ctids[<span class="hljs-number"><span class="hljs-number">2</span></span>:]) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> ) T;</code> </pre> <br><pre> <code class="plaintext hljs">unnest ------ (0,6) (0,7) (0,4)</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">Kekasih yang lebih pendek</b> <div class="spoiler_text">  Anda bisa menulis seperti ini: <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>((array_agg(ctid))[<span class="hljs-number"><span class="hljs-number">2</span></span>:]) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>;</code> </pre> </div></div><br>  Karena nilai string serial itu sendiri tidak menarik bagi kami, kami cukup membuangnya dari kolom subquery yang dikembalikan. <br><br>  Yang tersisa adalah HAPUS untuk menggunakan set yang kami terima: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DELETE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> ctid = <span class="hljs-keyword"><span class="hljs-keyword">ANY</span></span>(<span class="hljs-built_in"><span class="hljs-built_in">ARRAY</span></span>( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>(ctids[<span class="hljs-number"><span class="hljs-number">2</span></span>:]) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> ) T )::tid[]);</code> </pre> <br>  Periksa diri Anda: <br><br><img src="https://habrastorage.org/webt/pw/u_/ip/pwu_ipqwtdh7zs0bj7q2fjceqls.png"><br>  <a href="https://explain.tensor.ru/archive/explain/4f0d922638ebeba13538e5e62d4ba8a7:0:2019-12-20">[lihat menjelaskan.tensor.ru]</a> <br><br>  Ya, itu benar: 3 catatan kami dipilih untuk hanya Pemindaian Seq seluruh tabel, dan simpul Hapus menggunakan <b>satu pass</b> untuk mencari data <b>menggunakan Tid Scan</b> : <br><br><pre> <code class="plaintext hljs">-&gt; Tid Scan on tbl (actual time=0.050..0.051 rows=3 loops=1) TID Cond: (ctid = ANY ($0))</code> </pre> <br>  Jika Anda telah menghapus banyak catatan, <a href="https://habr.com/ru/post/479656/">jangan lupa untuk mengarahkan VACUUM ANALYZE</a> . <br><br>  Mari kita periksa tabel yang lebih besar dan dengan banyak hal: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">TRUNCATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl; <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">chr</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">ascii</span></span>(<span class="hljs-string"><span class="hljs-string">'a'</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>) + (random() * <span class="hljs-number"><span class="hljs-number">26</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>) k <span class="hljs-comment"><span class="hljs-comment">-- a..z , (random() * 100)::integer v -- 0..99 FROM generate_series(1, 10000) i;</span></span></code> </pre> <br><img src="https://habrastorage.org/webt/lq/gq/en/lqgqenwrgbsh76eaqvwtre45gho.png"><br>  <a href="https://explain.tensor.ru/archive/explain/713828b2913c3ca66760181ad6f956d0:0:2019-12-20">[lihat menjelaskan.tensor.ru]</a> <br><br>  Jadi, metode ini berhasil, tetapi harus diterapkan dengan hati-hati.  Karena untuk setiap catatan yang dihapus, ada satu pembacaan halaman data di Tid Scan, dan satu lagi di Delete. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id481352/">https://habr.com/ru/post/id481352/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id481342/index.html">Polling Jumat: Berbicara Tentang Bahasa</a></li>
+<li><a href="../id481344/index.html">Rencana Tim Platform IntelliJ untuk 2020</a></li>
+<li><a href="../id481346/index.html">5 perubahan besar dalam industri otomotif</a></li>
+<li><a href="../id481348/index.html">Direktori Aktif Pentest. Bagian 1</a></li>
+<li><a href="../id481350/index.html">Siapa yang bekerja di kosmodrom Plesetsk</a></li>
+<li><a href="../id481354/index.html">TelegramBot. Fungsionalitas dasar. Terbang secara terpisah, irisan daging secara terpisah. (Bagian 2)</a></li>
+<li><a href="../id481356/index.html">Terima kasih, 2019</a></li>
+<li><a href="../id481358/index.html">C ++ Rusia: bagaimana itu</a></li>
+<li><a href="../id481360/index.html">Hasil minggu ini: Rambler dan Twitch setuju, tenaga kerja elektronik akan diperkenalkan di Federasi Rusia, dan Facebook akan membuat OS sendiri</a></li>
+<li><a href="../id481362/index.html">Sertifikat SSL untuk aplikasi web Docker</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

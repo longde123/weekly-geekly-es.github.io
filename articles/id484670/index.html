@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😽 👉🏽 🆚 PostgreSQL Antipatterns: sebuah catatan langka akan mencapai pertengahan JOIN 👩🏿‍🍳 🕰️ 🥓</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Jika Anda menulis kueri SQL tanpa menganalisis algoritme yang harus mereka implementasikan, ini biasanya tidak menghasilkan sesuatu yang baik dalam ha...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: sebuah catatan langka akan mencapai pertengahan JOIN</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/484670/">  Jika Anda menulis <b>kueri SQL tanpa menganalisis algoritme</b> yang harus mereka implementasikan, ini biasanya tidak menghasilkan sesuatu yang baik dalam hal kinerja. <br><br>  Permintaan <b>seperti</b> itu <b>seperti "memakan" waktu prosesor dan secara aktif membaca data</b> hampir tiba-tiba.  Selain itu, ini belum tentu semacam pertanyaan kompleks, sebaliknya - semakin sederhana ditulis, semakin besar peluang mendapatkan masalah.  Dan jika operator BERGABUNG berperan ... <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/oc/dt/ga/ocdtgatrtkdzckf0zqxd_03pd4i.png"></div><br>  Dengan sendirinya, bergabung dengan tabel tidak berbahaya atau berguna - itu hanya alat, tetapi Anda harus dapat menggunakannya. <br><a name="habracut"></a><br><h2>  Pengelompokan Pengawasan </h2><br>  Pertama, ambil contoh yang sangat sederhana. <br><br>  Ada "kamus" dari 100 entri (misalnya, ini adalah wilayah Federasi Rusia): <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_dict <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">100</span></span>) k; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_dict <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span>(k);</code> </pre> <br>  ... dan terlampir padanya adalah tabel "fakta" terkait per 100 ribu entri: <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_fact <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> (random() * <span class="hljs-number"><span class="hljs-number">100</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> k , (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">100000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> tbl_fact(k);</code> </pre><br>  Sekarang mari kita coba menghitung jumlah nilai untuk setiap "wilayah". <br><br><h4>  Seperti yang didengar, ada tertulis </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> dk , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(fv) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl_fact f <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> tbl_dict d <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre><br>  Membaca data itu sendiri hanya membutuhkan waktu 18%, sisanya sedang memproses: <br><br><img src="https://habrastorage.org/webt/ly/wz/0c/lywz0cbrud70qpf5hxjwoswjtnm.png"><br>  <a href="https://explain.tensor.ru/archive/explain/f2dbfa8818913c7ca6a8a2e6c5137be4:0:2020-01-20" rel="nofollow">[lihat menjelaskan.tensor.ru]</a> <br><br>  Dan semua karena Hash Join dan Hash Aggregate harus memproses 100 ribu catatan masing-masing karena keinginan kami untuk <b>mengelompokkan berdasarkan bidang tabel tertaut</b> . <br><br><h4>  Kami menggunakan kecerdikan </h4><br>  Namun nilai bidang ini sama dengan nilai bidang dalam tabel gabungan!  Artinya, tidak ada yang mengganggu kita untuk <b>mengelompokkan "fakta" terlebih dahulu, dan baru kemudian membuat koneksi</b> : <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> dk , f.sum <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> k , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(v) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl_fact <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span> ) f <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> tbl_dict d;</code> </pre><br><img src="https://habrastorage.org/webt/je/i9/aj/jei9aj5rv4alb6ycdy77tfumuek.png"><br>  <a href="https://explain.tensor.ru/archive/explain/211c2a9e9bb2425fda450f90f1aa5d08:0:2020-01-20" rel="nofollow">[lihat menjelaskan.tensor.ru]</a> <br><br>  Tentu saja, metode ini tidak universal, tetapi untuk kasus kami "GABUNG biasa" <b>, penambahan waktu adalah 2 kali</b> dengan modifikasi minimal dari permintaan - hanya karena "Hash" Hash Join, yang menerima hanya 100 entri, bukan 100K entri. <br><br><h2>  Kondisi yang Tidak Sama </h2><br>  Sekarang mari kita rumit tugasnya: kita memiliki 3 tabel yang terhubung oleh satu pengidentifikasi - tabel utama dan dua tambahan dengan beberapa data aplikasi, yang dengannya kita akan memfilter. <br><br>  Pernyataan kecil tapi sangat penting: meskipun berdasarkan pengetahuan "terapan" dari tugas target, kita sudah tahu bahwa kondisi akan terpenuhi <b>pada tabel pertama - hampir selalu</b> (untuk kepastian - 3: 4), dan <b>pada yang kedua - sangat jarang</b> (1: 8 ) <br><br>  Kami ingin memilih dari tabel bantu utama dan pertama <b>100 rekaman pertama oleh id</b> dengan nilai pengidentifikasi genap yang <b>kondisi semua tabel terpenuhi</b> .  Semua catatan dalam tabel, mari kita kembali pada 100K. <br><br><div class="spoiler">  <b class="spoiler_title">Generator skrip</b> <div class="spoiler_text"><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> base( <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> , val <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> base <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> , (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">100000</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> ext1( <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> , conda <span class="hljs-built_in"><span class="hljs-built_in">boolean</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> ext1 <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> , (random() * <span class="hljs-number"><span class="hljs-number">4</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> &lt;&gt; <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-comment"><span class="hljs-comment">-- 3:4 FROM generate_series(1, 100000) id; CREATE TABLE ext2( id integer PRIMARY KEY , condb boolean ); INSERT INTO ext2 SELECT id , (random() * 8)::integer = 0 -- 1:8 FROM generate_series(1, 100000) id;</span></span></code> </pre></div></div><br><h4>  Seperti yang didengar, ada tertulis </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> base.* , ext1.* <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> base <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> ext1 <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> ext2 <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> % <span class="hljs-number"><span class="hljs-number">2</span></span> = <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> conda <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> condb <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> base.id <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">100</span></span>;</code> </pre><br><img src="https://habrastorage.org/webt/bx/mi/-t/bxmi-tyvohis60rn4eujozcty8i.png"><br>  <a href="https://explain.tensor.ru/archive/explain/11aff76b79f671a307edb86e3608ca98:0:2020-01-20" rel="nofollow">[lihat menjelaskan.tensor.ru]</a> <br><br><div class="spoiler">  <b class="spoiler_title">Waktu negatif dalam hal ini</b> <div class="spoiler_text">  Begitu banyak siklus yang telah melalui beberapa node sehingga kesalahan pembulatan dari beberapa bahkan telah didorong menjadi minus.  Hampir artefak serupa dalam rencana saya akan berbicara di <a href="https://pgconf.ru/2020/262963" rel="nofollow">PGConf.Russia</a> . <br></div></div><br>  200ms dan lebih banyak data 2GB dipompa - tidak terlalu bagus untuk 100 catatan! <br><br><h4>  Kami menggunakan kecerdikan </h4><br>  Kami menggunakan pendekatan berikut untuk mencapai akselerasi: <br><br><ol><li>  Untuk memulainya, kami memahami bahwa masuk akal bagi kami untuk memeriksa semua kondisi untuk tabel tertaut <b>hanya ketika kondisi untuk tabel utama dipenuhi</b> (bahkan untuk id). </li><li>  Outputnya harus diurutkan berdasarkan base.id, dan untuk ini, <b>kunci utama</b> tabel ini sangat <b>cocok</b> untuk kita! </li><li>  Kami tidak memerlukan data dari ext2, dan hanya digunakan untuk memverifikasi kondisi.  Ini berarti bahwa semua pekerjaan dengan tabel ini dapat <b>dihapus dengan aman dari GABUNG ke bagian WHERE</b> .  Dan gunakan EXIS untuk memeriksa, jika tidak, bagaimana jika tidak ada catatan seperti itu sama sekali? </li><li>  Kita perlu mengambil setidaknya beberapa data dari ext1 <b>hanya jika sisa pemeriksaan</b> di pangkalan dan ext2 <b>berhasil diteruskan</b> .  Artinya, koneksi dengan ext1 harus pergi setelah semua tindakan dengan basis / ext2, yang dapat dicapai menggunakan LATERAL. </li><li>  Sehingga perencana kueri tidak mencoba mengubah verifikasi bersarang pada ext2 menjadi BERGABUNG, subquery <b>"sembunyikan di bawah KASUS"</b> . </li></ol><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> base.* , ext1.* <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> base , LATERAL( <span class="hljs-comment"><span class="hljs-comment">--       base SELECT * FROM ext1 WHERE id = base.id AND conda --   LIMIT 1 ) ext1 WHERE CASE WHEN base.id % 2 = 0 THEN EXISTS( --        SELECT NULL FROM ext2 WHERE id = base.id AND condb --   LIMIT 1 ) END ORDER BY base.id --     PK,       LIMIT 100;</span></span></code> </pre><br><img src="https://habrastorage.org/webt/wm/6i/y_/wm6iy_yamiw3cgby9ls6ui7f0pk.png"><br>  <a href="https://explain.tensor.ru/archive/explain/4a201a1ccbc44b066cb4a60c6a9f8b15:0:2020-01-20" rel="nofollow">[lihat menjelaskan.tensor.ru]</a> <br><br>  Permintaan, tentu saja, menjadi lebih rumit, tetapi <b>memenangkan 13 kali dalam waktu dan 350 dalam "kerakusan" tidak</b> sia-sia! <br><br>  <i>Biarkan saya mengingatkan Anda lagi bahwa tidak semua metode digunakan dan tidak selalu, tetapi mengetahui tidak akan berlebihan.</i> <br><br>  Ini juga akan menarik: <br><br><ul><li>  <a href="https://habr.com/post/485398/">tekan kamus di join berat</a> </li><li>  <a href="https://habr.com/post/479920/">sisyphus bergabung dengan array</a> </li><li>  <a href="https://habr.com/post/479508/">berbahaya BERGABUNG dan ATAU</a> </li><li>  <a href="https://habr.com/post/479298/">CTE GABUNG CTE</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id484670/">https://habr.com/ru/post/id484670/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id484660/index.html">Karma adalah keterasingan dari kepengarangan</a></li>
+<li><a href="../id484662/index.html">Proyek percontohan untuk memproses data seismik kepadatan tinggi menggunakan layanan MCS</a></li>
+<li><a href="../id484664/index.html">Trojan lain yang hampir tidak terhapus untuk Android</a></li>
+<li><a href="../id484666/index.html">Dell dan Alienware baru di CES 2020: pengarahan tentang pengumuman utama</a></li>
+<li><a href="../id484668/index.html">Pola Pikir Produk Tinjauan Program Produk Berpikir</a></li>
+<li><a href="../id484672/index.html">Bagaimana Hanipotans Mendanonimkan Hacker dan Scammers Online</a></li>
+<li><a href="../id484676/index.html">IB fakapy 2019 - tipikal dan tidak terlalu</a></li>
+<li><a href="../id484678/index.html">Kuliah Terbuka di JetBrains Research Labs</a></li>
+<li><a href="../id484680/index.html">Terjemahan buku Andrew Un, Passion for Machine Learning, Bab 33</a></li>
+<li><a href="../id484686/index.html">Mengapa resistor ditunjukkan oleh warna?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

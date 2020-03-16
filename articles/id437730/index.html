@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💅🏻 🈷️ ➕ Bagaimana kami memecahkan masalah memori di PostgreSQL tanpa menambahkan byte 🍍 👲🏾 🧙🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Sebuah cerita pendek tentang permintaan "berat" dan solusi elegan untuk masalah ini 
+
+
+ Baru-baru ini, pada malam hari, peringatan mulai membangunkan ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Bagaimana kami memecahkan masalah memori di PostgreSQL tanpa menambahkan byte</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/437730/"><p><img src="https://habrastorage.org/webt/bd/vf/bj/bdvfbjzxvmt2ijnwu5zjqnz3e1e.jpeg"></p><br><p>  Sebuah cerita pendek tentang permintaan "berat" dan solusi elegan untuk masalah ini </p><br><p>  Baru-baru ini, pada malam hari, peringatan mulai membangunkan kami: tidak ada cukup ruang disk.  Kami dengan cepat menemukan bahwa masalahnya ada di tugas ETL. </p><br><p>  Tugas ETL dilakukan dalam tabel di mana catatan biner dan dump disimpan.  Setiap malam, tugas ini adalah untuk menghapus duplikat dump dan membebaskan ruang. </p><a name="habracut"></a><br><p>  Untuk mencari dump duplikat, kami menggunakan kueri ini: </p><br><pre><code class="plaintext hljs">id, MIN(id) OVER (PARTITION BY blob ORDER BY id) FROM dumps</code> </pre> <br><p>  Kueri menggabungkan dump yang sama oleh bidang BLOB.  Menggunakan fungsi jendela, kita mendapatkan pengidentifikasi penampilan pertama setiap dump.  Kemudian dengan permintaan ini, kami menghapus semua dump duplikat. </p><br><p>  Permintaan itu dieksekusi untuk beberapa waktu, dan, seperti dapat dilihat dari log, memakan banyak memori.  Grafik menunjukkan bagaimana ia mencetak ruang disk kosong setiap malam: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/v2/sn/ye/v2snyevasqsmvjjzpc7lbjs4mpe.png"></a> </p><br><p>  Seiring waktu, permintaan tersebut membutuhkan lebih banyak memori, kegagalan semakin dalam.  Dan, melirik rencana eksekusi, kami segera melihat ke mana semuanya berjalan: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Sort (cost=69547.50..70790.83 rows=497332 width=36) (actual time=107.607..127.485 rows=39160) Sort Key: blob, id Sort Method: external merge Disk: 30456kB Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Seq Scan on dumps (cost=0..8889.32 rows=497332 width=36) (actual time=0.022..8.747 rows=39160) Buffers: shared hit=3916 Execution time: 159.960 ms</code> </pre> <br><p>  <strong>Penyortiran memakan banyak memori.</strong>  Dalam hal pelaksanaan, penyortiran membutuhkan sekitar 30 MB memori dari set data uji. </p><br><h3 id="pochemu-tak">  Kenapa begitu </h3><br><p>  PostgreSQL mengalokasikan memori untuk hashing dan sortasi.  Jumlah memori dikendalikan oleh parameter <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><code>work_mem</code></a> .  Ukuran default work_mem adalah 4 MB.  Jika lebih dari 4 MB diperlukan untuk hashing atau sortasi, PostgreSQL sementara menghabiskan ruang disk. </p><br><p>  Permintaan kami mengkonsumsi jelas lebih dari 4 MB, sehingga database menggunakan begitu banyak memori.  Kami memutuskan: kami tidak akan terburu-buru, dan tidak meningkatkan parameter dan memperluas penyimpanan.  Lebih baik mencari cara lain untuk <strong>memangkas memori untuk penyortiran</strong> . </p><br><h3 id="ekonomnaya-sortirovka">  Penyortiran ekonomis </h3><br><p>  "Seberapa banyak penyortiran akan makan tergantung pada ukuran set data dan kunci sortir. Anda tidak dapat mengurangi set data, tetapi <strong>ukuran kunci itu mungkin</strong> . </p><br><p>  Untuk titik referensi, kami mengambil ukuran rata-rata kunci pengurutan: </p><br><pre> <code class="plaintext hljs"> avg ---------- 780</code> </pre> <br><p>  Setiap kunci memiliki bobot 780. Untuk mengurangi kunci biner, ia dapat di-hash.  Di PostgreSQL ada <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">md5</a> untuk ini (ya, bukan keamanan, tetapi untuk tujuan kita itu akan dilakukan).  Mari kita lihat berapa besar BLOB hash dengan md5: </p><br><pre> <code class="plaintext hljs"> avg ----------- 36</code> </pre> <br><p>  Ukuran hash kunci melalui md5 adalah 36 byte.  <strong>Kunci hash hanya berbobot 4% dari opsi asli</strong> . </p><br><p>  Selanjutnya, kami meluncurkan permintaan asli dengan kunci hash: </p><br><pre> <code class="plaintext hljs"> id, MIN(id) OVER ( PARTITION BY md5(array_to_string(blob, '') ) ORDER BY id) FROM dumps;</code> </pre> <br><p>  Dan rencana implementasi: </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916 -&gt; Sort (cost=7490.74..7588.64 rows=39160 width=36) (actual time=349.383..353.045 rows=39160) Sort Key: (md5(array_to_string(blob, ''::text))), id Sort Method: quicksort Memory: 4005kB Buffers: shared hit=3916 -&gt; Seq Scan on dumps (cost=0..4503.40 rows=39160 width=36) (actual time=0.055..292.070 rows=39160) Buffers: shared hit=3916 Execution time: 374.125 ms</code> </pre> <br><p>  Dengan kunci hash, permintaan hanya mengkonsumsi 4 megabyte tambahan, yaitu, sedikit lebih dari 10% dari 30 MB sebelumnya.  <strong>Jadi ukuran kunci sortir sangat memengaruhi seberapa banyak memori yang disortir</strong> . </p><br><h3 id="dalshe--bolshe">  Lebih jauh lagi </h3><br><p>  Dalam contoh ini, kami hash BLOB menggunakan <code>md5</code> .  Hash yang dibuat dengan MD5 harus memiliki berat 16 byte.  Dan kami mendapat lebih banyak: </p><br><pre> <code class="plaintext hljs">md5_size ------------- 32</code> </pre> <br><p>  Hash kami persis dua kali lebih besar, karena <code>md5</code> menghasilkan hash dalam bentuk teks heksadesimal. </p><br><p>  Di PostgreSQL, Anda bisa menggunakan MD5 untuk hashing dengan ekstensi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><code>pgcrypto</code></a> .  <code>pgcrypto</code> membuat MD5 dari tipe <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><code>bytea</code> (dalam biner)</a> : </p><br><pre> <code class="plaintext hljs">select pg_column_size( digest('foo', 'md5') ) as crypto_md5_size crypto_md5_size --------------- 20</code> </pre> <br><p>  Hash masih 4 byte lebih dari yang seharusnya.  Hanya saja tipe <code>bytea</code> menggunakan 4 byte ini untuk menyimpan panjang nilainya, tetapi kami tidak akan membiarkannya begitu saja. </p><br><p>  Ternyata tipe <code>uuid</code> dalam PostgreSQL memiliki berat tepat 16 byte dan mendukung nilai arbitrer apa pun, jadi kami menyingkirkan empat byte yang tersisa: </p><br><pre> <code class="plaintext hljs">uuid_size --------------- 16</code> </pre> <br><p>  Itu saja.  32 byte dengan <code>md5</code> berubah menjadi 16 dengan <code>uuid</code> . </p><br><p>  Saya memeriksa efek dari perubahan dengan mengambil dataset yang lebih besar.  Data itu sendiri tidak dapat ditampilkan, tetapi saya akan membagikan hasilnya: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/rt/g4/v6/rtg4v65zaqxezkmjkh9cspgh2bo.jpeg"></a> </p><br><p>  Seperti yang dapat Anda lihat dari tabel, permintaan bermasalah semula berbobot 300 MB (dan membangunkan kami di tengah malam).  Dengan kunci <code>uuid</code> , pengurutan hanya membutuhkan 7 MB. </p><br><h3 id="soobrazheniya-vdogonku">  Pertimbangan Tindak Lanjut </h3><br><p>  Permintaan dengan kunci penyortiran memori hash mengkonsumsi lebih sedikit, tetapi kerjanya jauh lebih lambat: </p><br><p> <a href=""><img src="https://habrastorage.org/webt/b0/cv/vp/b0cvvpozbm_myvxy0-esybfu7gi.jpeg"></a> </p><br><p>  Hashing menggunakan lebih banyak CPU, jadi permintaan dengan hash lebih lambat.  Tetapi kami mencoba untuk memecahkan masalah dengan ruang disk, terlebih lagi, tugas dilakukan pada malam hari, jadi waktu tidak menjadi masalah.  Kami berkompromi untuk menghemat memori. </p><br><p>  Ini adalah contoh yang bagus dari fakta bahwa Anda <strong>tidak selalu perlu mencoba mempercepat kueri basis data</strong> .  Lebih baik menggunakan apa yang seimbang dan memeras sumber daya minimum. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id437730/">https://habr.com/ru/post/id437730/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id437716/index.html">Tiga cara yang relatif jujur ​​untuk membuat proyek Flutter</a></li>
+<li><a href="../id437720/index.html">Perjuangan untuk solusi berkualitas di Erlang / Elixir</a></li>
+<li><a href="../id437722/index.html">Konsekuensi Kosmik Shatdown Amerika</a></li>
+<li><a href="../id437724/index.html">OpenSceneGraph: Animasi prosedural dari atribut geometri dan status</a></li>
+<li><a href="../id437726/index.html">Serializing Kotlin dengan Kotlinx. Serialisasi</a></li>
+<li><a href="../id437732/index.html">Tinjauan Umum tentang Printer DLP MakeX M-One Pro 70</a></li>
+<li><a href="../id437734/index.html">Menyiapkan IPTV dari Rostelecom pada router MikroTik</a></li>
+<li><a href="../id437736/index.html">Bagaimana kami mengotomatiskan peluncuran uji Selenium melalui Moon dan OpenShift</a></li>
+<li><a href="../id437738/index.html">Catatan seorang phytochemist. Kentang. Bagian Dua Sebuah cerita tentang lemak kentang atau "Day of the Raw Food Eater"</a></li>
+<li><a href="../id437740/index.html">Haxe: Rahasia Besar untuk Pengembangan Lintas Platform</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

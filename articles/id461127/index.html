@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤷 🤹🏽 😮 Analisis kinerja VM di VMware vSphere. Bagian 3: Penyimpanan 🈺 🙌🏼 🍵</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Bagian 1. Tentang CPU 
+ Bagian 2. Tentang Memori 
+
+ Hari ini kita akan menganalisis metrik subsistem disk di vSphere. Masalah dengan penyimpanan adala...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Analisis kinerja VM di VMware vSphere. Bagian 3: Penyimpanan</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/dataline/blog/461127/"><img src="https://habrastorage.org/webt/2z/yj/ri/2zyjri-ljt0oq1lfki5jwlxuyuc.png"><br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Bagian 1. Tentang CPU</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Bagian 2. Tentang Memori</a> <br><br>  Hari ini kita akan menganalisis metrik subsistem disk di vSphere.  Masalah dengan penyimpanan adalah alasan paling umum untuk mesin virtual yang lambat.  Jika dalam kasus dengan CPU dan RAM pemecahan masalah berakhir pada tingkat hypervisor, maka dengan masalah dengan disk, Anda mungkin harus berurusan dengan jaringan data dan sistem penyimpanan. <br><br>  Saya akan menganalisis topik pada contoh akses blok ke penyimpanan, meskipun dengan akses file penghitung hampir sama. <br><a name="habracut"></a><br><h3>  Sedikit teori </h3><br>  Ketika berbicara tentang kinerja subsistem disk mesin virtual, biasanya perhatikan tiga parameter terkait: <br><br><ul><li>  jumlah operasi input / output (Operasi Input / Output Per Detik, IOPS); </li><li>  bandwidth (Throughput); </li><li>  latensi operasi input / output (Latensi). </li></ul><br>  <b>Jumlah IOPS</b> biasanya penting untuk beban kerja acak: akses ke blok pada disk yang terletak di tempat yang berbeda.  Basis data, aplikasi bisnis (ERP, CRM), dll. Dapat berfungsi sebagai contoh pemuatan tersebut. <br><br>  <b>Throughput</b> penting untuk beban berurutan: akses ke blok yang terletak satu demi satu.  Misalnya, server file (tetapi tidak selalu) dan sistem pengawasan video dapat menghasilkan beban seperti itu. <br><br>  Throughput terkait dengan jumlah operasi I / O sebagai berikut: <br><br>  <i>Throughput = IOPS * Ukuran blok</i> , di mana ukuran Blok adalah ukuran blok. <br><br>  Ukuran blok adalah fitur yang cukup penting.  Versi ESXi modern memungkinkan blok hingga 32.767 KB.  Jika blok lebih besar, itu dibagi menjadi beberapa.  Tidak semua sistem penyimpanan dapat bekerja secara efektif dengan blok besar seperti itu, jadi Pengaturan Lanjutan ESXi memiliki parameter DiskMaxIOSize.  Dengan menggunakannya, Anda dapat mengurangi ukuran maksimum blok yang dilewati oleh hypervisor (lebih detail di <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">sini</a> ).  Saya sarankan Anda berkonsultasi dengan produsen sistem penyimpanan sebelum mengubah parameter ini, atau setidaknya menguji perubahan di bangku laboratorium. <br><br>  Ukuran blok besar dapat mempengaruhi kinerja penyimpanan.  Bahkan jika jumlah IOPS dan throughput relatif kecil, latensi tinggi dapat terjadi dengan ukuran blok yang besar.  Karena itu, perhatikan parameter ini. <br><br>  <b>Latensi</b> adalah parameter kinerja yang paling menarik.  Latensi operasi I / O untuk mesin virtual adalah jumlah dari: <br><br><ul><li>  keterlambatan dalam hypervisor (KAVG, Average Kernel MilliSec / Read); </li><li>  latensi yang diberikan oleh jaringan data dan penyimpanan (DAVG, Average Driver MilliSec / Command). </li></ul><br>  Total keterlambatan yang terlihat di OS tamu (GAVG, MilliSec / Perintah Tamu Rata-Rata) adalah jumlah dari KAVG dan DAVG. <br><br>  GAVG dan DAVG diukur, dan KAVG dihitung: GAVG - DAVG. <br><br><img src="https://habrastorage.org/webt/vl/nr/li/vlnrlisbs6bewpfc93um8pocz4c.png"><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><i>Sumber</i></a> <br><br>  Mari kita memikirkan <b>KAVG</b> .  Dalam operasi normal, KAVG harus cenderung nol, atau setidaknya jauh lebih kecil daripada DAVG.  Satu-satunya kasus saya tahu kapan KAVG diharapkan menjadi tinggi adalah batas IOPS pada disk VM.  Dalam hal ini, ketika mencoba melampaui batas, KAVG akan meningkat. <br><br>  Komponen paling penting dari KAVG adalah QAVG - waktu dalam antrian untuk memproses di dalam hypervisor.  Komponen yang tersisa dari KAVG dapat diabaikan. <br><br>  Antrian dalam driver adaptor disk dan antrian bulan memiliki ukuran tetap.  Untuk lingkungan yang sarat muatan, ukuran ini dapat bermanfaat untuk meningkat.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Ini</a> menjelaskan cara meningkatkan antrian di driver adaptor (pada saat yang sama, antrian ke bulan akan meningkat).  Pengaturan ini berfungsi ketika hanya satu VM yang bekerja dengan bulan, yang jarang terjadi.  Jika ada beberapa <i>VM</i> di bulan, Anda juga harus meningkatkan parameter <i>Disk.SchedNumReqOutstanding</i> (instruksi di <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">sini</a> ).  Dengan meningkatkan antrian, Anda mengurangi QAVG dan KAVG. <br><br>  Tetapi, sekali lagi, pertama-tama baca dokumentasi dari vendor HBA dan uji perubahannya di bangku laboratorium. <br><br>  Ukuran antrian ke bulan dapat dipengaruhi oleh masuknya mekanisme SIOC (Storage I / O Control).  Ini memberikan akses seragam ke bulan dari semua server di cluster dengan secara dinamis mengubah antrian ke bulan di server.  Yaitu, jika VM berjalan pada host yang membutuhkan jumlah kinerja yang tidak proporsional (tetangga berisik VM), SIOC mengurangi panjang antrian ke bulan pada host ini (DQLEN).  Lebih detail di <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">sini</a> . <br><br>  KAVG beres, sekarang sedikit tentang <b>DAVG</b> .  Semuanya sederhana di sini: DAVG adalah penundaan yang diperkenalkan oleh lingkungan eksternal (jaringan data dan penyimpanan).  Setiap sistem penyimpanan modern dan tidak begitu memiliki penghitung kinerjanya sendiri.  Untuk menganalisis masalah dengan DAVG, masuk akal untuk melihatnya.  Jika semuanya baik-baik saja di ESXi dan sisi penyimpanan, periksa jaringan data. <br><br>  Untuk menghindari masalah kinerja, pilih Kebijakan Pemilihan Jalur (PSP) yang tepat untuk penyimpanan Anda.  Hampir semua sistem penyimpanan modern mendukung PSP Round-Robin (dengan atau tanpa ALUA, Asymmetric Logical Unit Access).  Kebijakan ini memungkinkan Anda untuk menggunakan semua jalur yang tersedia untuk penyimpanan.  Dalam kasus ALUA, hanya jalur ke pengontrol yang memiliki bulan yang digunakan.  Tidak semua sistem penyimpanan pada ESXi memiliki aturan default yang menetapkan kebijakan Round-Robin.  Jika tidak ada aturan untuk sistem penyimpanan Anda, gunakan plug-in dari pabrik penyimpanan yang akan membuat aturan terkait pada semua host di kluster, atau buat aturan sendiri.  Detail di <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">sini</a> . <br><br>  Selain itu, beberapa vendor penyimpanan merekomendasikan untuk mengubah jumlah IOPS per jalur dari nilai standar 1000 menjadi 1. Dalam praktik kami, ini memungkinkan kami untuk "memeras" kinerja lebih banyak dari penyimpanan dan secara signifikan mengurangi waktu yang diperlukan untuk failover jika terjadi kegagalan atau pembaruan pengontrol.  Periksa rekomendasi vendor, dan jika tidak ada kontraindikasi, maka cobalah mengubah parameter ini.  Detail di <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">sini</a> . <br><br><h3>  Penghitung kinerja dasar subsistem disk mesin virtual </h3><br>  Penghitung kinerja subsistem disk di vCenter dikumpulkan di bagian Datastore, Disk, Virtual Disk: <br><br><img src="https://habrastorage.org/webt/vh/kw/s4/vhkws4yppe9rqfk5pogjaey0_im.png"><br><br>  Bagian <b>Datastore</b> berisi metrik untuk penyimpanan disk vSphere (datastores) tempat disk VM berada.  Di sini Anda akan menemukan penghitung standar untuk: <br><br><ul><li>  IOPS (Permintaan baca / tulis rata-rata per detik), </li><li>  bandwidth (Baca / Tulis rate), </li><li>  keterlambatan (Baca / Tulis / Latensi tertinggi). </li></ul><br>  Dari nama-nama penghitung, pada prinsipnya, semuanya jelas.  Sekali lagi, saya akan menarik perhatian pada kenyataan bahwa di sini statistik bukan untuk VM (atau disk VM) tertentu, tetapi umum untuk seluruh datastore.  Menurut pendapat saya, lebih mudah untuk melihat statistik ini di ESXTOP, setidaknya dengan dasar bahwa periode pengukuran minimum adalah 2 detik. <br><br>  Bagian <b>Disk</b> berisi metrik untuk perangkat blok yang digunakan oleh VM.  Ada penghitung IOPS dari tipe penjumlahan (jumlah operasi I / O per periode pengukuran) dan beberapa penghitung yang terkait dengan akses blok (Perintah dibatalkan, Bus direset).  Menurut pendapat saya, informasi ini juga lebih nyaman untuk ditonton di ESXTOP. <br><br>  Bagian <b>Disk Virtual</b> adalah yang paling berguna dalam hal mengatasi masalah kinerja subsistem disk VM.  Di sini Anda dapat melihat kinerja untuk setiap disk virtual.  Informasi ini diperlukan untuk memahami jika mesin virtual tertentu memiliki masalah.  Selain penghitung standar untuk jumlah operasi input / output, volume baca / tulis dan penundaan, bagian ini berisi penghitung berguna yang menunjukkan ukuran blok: Baca / Tulis ukuran permintaan. <br><br>  Pada gambar di bawah ini, grafik kinerja disk VM, di mana Anda dapat melihat jumlah IOPS, latensi, dan ukuran blok. <br><br><img src="https://habrastorage.org/webt/6_/1e/io/6_1eiop7odinrffnof8y6jkqoc4.png"><br><br>  Metrik kinerja juga dapat dilihat di seluruh datastore jika SIOC diaktifkan.  Berikut adalah beberapa informasi dasar tentang Latency dan IOPS rata-rata.  Secara default, informasi ini hanya dapat dilihat secara waktu nyata. <br><br><img src="https://habrastorage.org/webt/3z/fu/2f/3zfu2fvddarsk_ki3lnavc8juqs.png"><br><br><h3>  ESXTOP </h3><br>  ESXTOP memiliki beberapa layar yang menampilkan informasi tentang subsistem disk host secara keseluruhan, masing-masing mesin virtual dan disk mereka. <br><br>  Mari kita mulai dengan informasi di mesin virtual.  Layar "Disk VM" dipanggil oleh tombol "v": <br><br><img src="https://habrastorage.org/webt/x-/ix/kf/x-ixkfuuxxrv64gpsxezoo8lsci.png"><br><br>  <b>NVDISK</b> adalah jumlah disk VM.  Untuk melihat informasi pada setiap disk, tekan "e" dan masukkan GID VM yang Anda minati. <br><br>  Arti dari parameter yang tersisa pada layar ini jelas dari namanya. <br><br>  Layar lain yang bermanfaat untuk pemecahan masalah adalah Adaptor disk.  Ini disebut dengan tombol "d" (pada gambar di bawah ini, bidang A, B, C, D, E, G dipilih): <br><br><img src="https://habrastorage.org/webt/oo/yk/2n/ooyk2nk1kburs6exfrg1km9auum.png"><br><br>  <b>NPTH</b> adalah jumlah jalur <b>bulan</b> yang terlihat dari adaptor ini.  Untuk mendapatkan informasi tentang setiap jalur pada adaptor, tekan "e" dan masukkan nama adaptor: <br><br><img src="https://habrastorage.org/webt/nb/rl/wr/nbrlwrvqdj95qy_qqna0ultn3tw.png"><br><br>  <b>AQLEN</b> - ukuran antrian maksimum pada adaptor. <br><br>  Juga pada layar ini adalah penghitung keterlambatan yang saya bicarakan di atas: <b>KAVG / cmd, GAVG / cmd, DAVG / cmd, QAVG / cmd</b> . <br><br>  Layar perangkat Disk, yang disebut dengan tombol “u”, menampilkan informasi pada masing-masing perangkat blok - bulan (pada gambar di bawah ini, bidang A, B, F, G, saya dipilih).  Di sini Anda dapat melihat status antrian ke bulan. <br><br><img src="https://habrastorage.org/webt/ik/e0/lk/ike0lkaa77navbia1n-sjfvqwci.png"><br><br>  <b>DQLEN</b> - ukuran antrian untuk perangkat blok. <br>  <b>ACTV</b> adalah jumlah perintah I / O dalam inti ESXi. <br>  <b>QUED</b> - jumlah perintah I / O dalam antrian. <br>  <b>% USD</b> - ACTV / DQLEN × 100%. <br>  <b>LOAD</b> - (ACTV + QUED) / DQLEN. <br><br>  Jika% USD tinggi, Anda harus mempertimbangkan untuk memperluas lineup.  Semakin banyak tim dalam antrian, semakin tinggi QAVG dan, karenanya, KAVG. <br><br>  Anda juga dapat melihat pada layar perangkat Disk apakah VAAI (vStorage API untuk Integrasi Array) berjalan pada penyimpanan.  Untuk melakukan ini, pilih bidang A dan O. <br><br>  Mekanisme VAAI memungkinkan Anda untuk mentransfer sebagian pekerjaan dari hypervisor langsung ke sistem penyimpanan, misalnya, memusatkan perhatian, menyalin blok atau memblokir. <br><br><img src="https://habrastorage.org/webt/ue/ko/mf/uekomfb2nkqqtktz9xy2b_uarpa.png"><br><br>  Seperti yang Anda lihat pada gambar di atas, VAAI bekerja pada sistem penyimpanan ini: Nol dan primitif ATS digunakan secara aktif. <br><br><h3>  Kiat Optimasi Disk ESXi </h3><br><ul><li>  Perhatikan ukuran blok. </li><li>  Atur ukuran antrian optimal pada HBA. </li><li>  Ingatlah untuk mengaktifkan SIOC di datastore. </li><li>  Pilih PSP Anda sesuai dengan rekomendasi pabrikan. </li><li>  Pastikan VAAI berfungsi. </li></ul><br><div class="spoiler">  <b class="spoiler_title">Artikel Terkait yang bermanfaat:</b> <div class="spoiler_text">  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">http://www.yellow-bricks.com/2011/06/23/disk-schednumreqoutstanding-the-story/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">http://www.yellow-bricks.com/2009/09/29/whats-that-alua-exactly/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">http://www.yellow-bricks.com/2019/03/05/dqlen-changes-what-is-going-on/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://www.codyhosterman.com/2017/02/understanding-vmware-esxi-queuing-and-the-flasharray/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://www.codyhosterman.com/2018/03/what-is-the-latency-stat-qavg/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://kb.vmware.com/s/article/1267</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://kb.vmware.com/s/article/1268</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://kb.vmware.com/s/article/1027901</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://kb.vmware.com/s/article/2069356</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://kb.vmware.com/s/article/2053628</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://kb.vmware.com/s/article/1003469</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">https://www.vmware.com/content/dam/digitalmarketing/vmware/en/pdf/techpaper/performance/vsphere-esxi-vcenter-server-67-performance-best-practices.pdf</a> <br></div></div></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id461127/">https://habr.com/ru/post/id461127/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id461105/index.html">5 plugin webpack bermanfaat</a></li>
+<li><a href="../id461107/index.html">Dosimeter untuk Seryozha. Bagian II Tabung centenary vs atom damai</a></li>
+<li><a href="../id461113/index.html">Lima tahun menggunakan C ++ untuk proyek-proyek mikrokontroler dalam produksi</a></li>
+<li><a href="../id461121/index.html">Eksperimen multitasking kecil dalam mikrokontroler</a></li>
+<li><a href="../id461125/index.html">Tugas membuat kode numerik berurutan untuk penomoran pesan dalam kode sumber di Visual Studio (mis. C #)</a></li>
+<li><a href="../id461129/index.html">Tentang kote, istri, dua putra, ide ... dan tidak hanya. Cerita dengan kelanjutan</a></li>
+<li><a href="../id461131/index.html">Truk kereta ROS Bagian 2. Perangkat lunak</a></li>
+<li><a href="../id461133/index.html">Menguji kode SQL Server dengan tSQLt</a></li>
+<li><a href="../id461137/index.html">Bagaimana kami mengembangkan perangkat untuk memonitor perhatian pengemudi. Pengalaman Yandex.Taxi</a></li>
+<li><a href="../id461141/index.html">Hari pertamaku dengan Haiku: dia baik-baik saja</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🆗 🕠 🏇🏾 Bagaimana kami menemukan kerentanan kritis AspNetCore.Mvc dan beralih ke serialisasi kami sendiri 🖐🏿 🤳🏼 🈁</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Halo, Habr! 
+
+ Pada artikel ini, kami ingin berbagi pengalaman kami dalam mengoptimalkan kinerja dan menjelajahi fitur-fitur AspNetCore.Mvc. 
+
+
+
+ Lata...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Bagaimana kami menemukan kerentanan kritis AspNetCore.Mvc dan beralih ke serialisasi kami sendiri</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/retailrocket/blog/435626/">  Halo, Habr! <br><br>  Pada artikel ini, kami ingin berbagi pengalaman kami dalam mengoptimalkan kinerja dan menjelajahi fitur-fitur AspNetCore.Mvc. <br><br><img src="https://habrastorage.org/webt/da/rm/2b/darm2bah850jodxea3wgdjr60qk.jpeg"><br><br><h2>  Latar belakang </h2><br>  Beberapa tahun yang lalu, di salah satu layanan kami yang dimuat, kami memperhatikan konsumsi sumber daya CPU yang signifikan.  Itu tampak aneh, karena tugas layanan adalah untuk benar-benar mengambil pesan dan memasukkannya ke dalam antrian, setelah sebelumnya melakukan beberapa operasi di atasnya, seperti validasi, penambahan data, dll. <br><br>  Sebagai hasil dari pembuatan profil, kami menemukan bahwa deserialisasi “memakan” sebagian besar waktu prosesor.  Kami membuang serializer standar dan menulis sendiri di Jil, akibatnya konsumsi sumber daya berkurang beberapa kali.  Semuanya berjalan sebagaimana mestinya dan kami berhasil melupakannya. <br><a name="habracut"></a><br><h2>  Masalah </h2><br>  Kami terus meningkatkan layanan kami di semua bidang, termasuk keamanan, kinerja, dan toleransi kesalahan, sehingga "tim keamanan" melakukan berbagai tes layanan kami.  Dan beberapa waktu yang lalu peringatan tentang kesalahan dalam log “terbang” kepada kami - entah bagaimana kami melewatkan pesan yang tidak valid pada gilirannya. <br><br>  Dengan analisis terperinci, semuanya tampak agak aneh.  Ada model-permintaan (di sini saya akan memberikan contoh kode yang disederhanakan): <br><br><pre><code class="json hljs">public class RequestModel { public string Key { get; set; } FromBody] Required] public PostRequestModelBody Body { get; set; } } public class PostRequestModelBody { [Required] [MinLength(1)] public IEnumerable&lt;long&gt; ItemIds { get; set; } }</code> </pre> <br>  Ada controller dengan action Post, misalnya: <br><br><pre> <code class="json hljs">[Route(<span class="hljs-string"><span class="hljs-string">"api/[controller]"</span></span>)] public class HomeController : Controller { [HttpPost] public async Task&lt;ActionResult&gt; Post(RequestModel request) { if (this.ModelState.IsValid) { return this.Ok(); } return this.BadRequest(); } }</code> </pre> <br>  Segalanya tampak logis.  Jika permintaan datang dari tampilan Tubuh <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  API akan mengembalikan BadRequest, dan ada tes untuk ini. <br><br>  Namun demikian, dalam log kita melihat yang sebaliknya.  Kami mengambil pesan dari log, mengirimkannya ke API dan mendapat status OK ... dan ... kesalahan baru di log.  Tidak mempercayai mata kami, kami melakukan kesalahan dan memastikan bahwa ya, memang ModelState.IsValid == benar.  Pada saat yang sama, mereka melihat waktu eksekusi permintaan yang luar biasa panjang sekitar 500 ms, sementara waktu respons yang biasa jarang melebihi 50 ms dan ini dalam produksi, yang melayani ribuan permintaan per detik! <br><br>  Perbedaan antara permintaan ini dan pengujian kami hanya bahwa permintaan tersebut berisi 600+ baris kosong ... <br><br>  Selanjutnya akan banyak kode bukaf. <br><br><h2>  Alasan </h2><br>  Mereka mulai mengerti apa yang salah.  Untuk menghilangkan kesalahan, mereka menulis aplikasi yang bersih (dari mana saya memberi contoh), yang dengannya kami mereproduksi situasi yang dijelaskan.  Secara total, kami menghabiskan beberapa hari kerja untuk penelitian, tes, mental debug kode AspNetCore.Mvc dan ternyata masalahnya ada di <a href="">JsonInputFormatter</a> . <br><br>  JsonInputFormatter menggunakan JsonSerializer, yang, mendapatkan aliran untuk deserialisasi dan jenis, mencoba membuat serial setiap properti, jika itu adalah array - setiap elemen dari array ini.  Pada saat yang sama, jika kesalahan terjadi selama serialisasi, JsonInputFormatter menyimpan setiap kesalahan dan jalurnya, menandainya sebagai diproses, sehingga Anda dapat melanjutkan upaya deserialize lebih lanjut. <br><br>  Di bawah ini adalah kode untuk penangan kesalahan JsonInputFormatter (tersedia di Github di tautan di atas): <br><br><pre> <code class="json hljs">void ErrorHandler(object sender, Newtonsoft.Json.Serialization.ErrorEventArgs eventArgs) { successful = false; // When ErrorContext.Path does not include ErrorContext.Member, add Member to form full path. var path = eventArgs.ErrorContext.Path; var member = eventArgs.ErrorContext.Member?.ToString(); var addMember = !string.IsNullOrEmpty(member); if (addMember) { // Path.Member case (path.Length &lt; member.Length) needs no further checks. if (path.Length == member.Length) { // Add Member in Path.Memb case but not for Path.Path. addMember = !string.Equals(path, member, StringComparison.Ordinal); } else if (path.Length &gt; member.Length) { // Finally, check whether Path already ends with Member. if (member[0] == '[') { addMember = !path.EndsWith(member, StringComparison.Ordinal); } else { addMember = !path.EndsWith(<span class="hljs-attr"><span class="hljs-attr">"."</span></span> + member, StringComparison.Ordinal); } } } if (addMember) { path = ModelNames.CreatePropertyModelName(path, member); } // Handle path combinations such as <span class="hljs-string"><span class="hljs-string">""</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, or <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"[12]"</span></span>. var key = ModelNames.CreatePropertyModelName(context.ModelName, path); exception = eventArgs.ErrorContext.Error; var metadata = GetPathMetadata(context.Metadata, path); var modelStateException = WrapExceptionForModelState(exception); context.ModelState.TryAddModelError(key, modelStateException, metadata); _logger.JsonInputException(exception); // Error must always be marked as handled // Failure to do so can cause the exception to be rethrown at every recursive level and // overflow the stack for x<span class="hljs-number"><span class="hljs-number">6</span></span><span class="hljs-number"><span class="hljs-number">4</span></span> CLR processes eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; }</code> </pre><br>  Menandai kesalahan saat diproses dilakukan di bagian paling akhir prosesor <br><br><pre> <code class="json hljs">eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>;</code> </pre> <br><br>  Jadi, sebuah fitur diterapkan untuk mengeluarkan semua kesalahan deserialisasi dan jalurnya, pada bidang / elemen mana mereka, yah ... hampir semua ... <br><br>  Faktanya adalah bahwa JsonSerializer memiliki batas 200 kesalahan, setelah itu crash, sementara semua kode crash dan ModelState menjadi ... valid! ... kesalahan juga hilang. <br><br><h2>  Solusi </h2><br>  Tanpa ragu, kami mengimplementasikan formatter Json kami untuk Asp.Net Core menggunakan Jil Deserializer.  Karena jumlah kesalahan dalam tubuh sama sekali tidak penting bagi kami, hanya fakta keberadaan mereka yang penting (dan umumnya sulit membayangkan situasi ketika itu akan sangat berguna), kode serializer ternyata cukup sederhana. <br><br>  Saya akan memberikan kode utama custom JilJsonInputFormatter: <br><br><pre> <code class="json hljs">using (var reader = context.ReaderFactory(request.Body, encoding)) { try { var result = JSON.Deserialize( reader: reader, type: context.ModelType, options: this.jilOptions); if (result == <span class="hljs-literal"><span class="hljs-literal">null</span></span> &amp;&amp; !context.TreatEmptyInputAsDefaultValue) { return await InputFormatterResult.NoValueAsync(); } else { return await InputFormatterResult.SuccessAsync(result); } } catch { // -   } return await InputFormatterResult.FailureAsync(); }</code> </pre> <br>  <b>Perhatian!</b>  Jil peka huruf besar kecil, artinya isi Tubuh <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"ItemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  dan <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br>  bukan hal yang sama.  Dalam kasus pertama, jika camelCase digunakan, properti ItemIds akan menjadi nol setelah deserialization. <br><br>  Tetapi karena ini adalah API kami, kami menggunakan dan mengendalikannya, bagi kami itu tidak penting.  Masalahnya mungkin muncul jika itu adalah API publik dan seseorang telah memanggilnya, melewati nama parameter yang tidak ada di camelCase. <br><br><h2>  Hasil </h2><br>  Hasilnya bahkan melebihi harapan kami, API diharapkan mulai mengembalikan BadRequest ke permintaan yang diminta dan melakukannya dengan sangat cepat.  Di bawah ini adalah tangkapan layar dari beberapa grafik kami, yang dengan jelas menunjukkan perubahan dalam waktu respons dan CPU, sebelum dan sesudah penyebaran. <br>  Minta waktu tunggu: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/62d/412/60a/62d41260a72b6a3c07c9aeb1e990a3ad.png" alt="gambar"><br><br>  Sekitar pukul 16:00 ada penyebaran.  Sebelum penyebaran, waktu eksekusi p99 adalah 30-57ms, setelah penyebaran menjadi 9-15ms.  (Anda tidak dapat memperhatikan puncak berulang pukul 18:00 - ini adalah penyebaran lain) <br><br>  Ini adalah bagaimana grafik CPU berubah: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/09c/95b/b8c/09c95bb8cf8bc500d0e7383ddbca8827.png" alt="gambar"><br><br>  Untuk alasan ini, kami membawa <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">masalah</a> ke Github, pada saat penulisan, masalah ini ditandai sebagai bug dengan tonggak sejarah 3.0.0-preview3. <br><br><h2>  Kesimpulannya </h2><br>  Sampai masalah teratasi, kami percaya bahwa lebih baik untuk mengabaikan penggunaan deserialisasi standar, terutama jika Anda memiliki API publik.  Mengetahui masalah ini, penyerang dapat dengan mudah memasukkan layanan Anda dengan melemparkan sekelompok permintaan tidak valid yang serupa ke dalamnya, karena semakin besar array yang salah, semakin banyak Tubuh, semakin lama pemrosesan berlangsung di JsonInputFormatter. <br><br>  <b>Artyom Astashkin, Ketua Tim Pengembangan</b> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id435626/">https://habr.com/ru/post/id435626/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id435614/index.html">Rust News # 4 (Desember 2018)</a></li>
+<li><a href="../id435616/index.html">Bagaimana Peer Zoning menyederhanakan kehidupan kami dan membantu menyeimbangkan muatan EMC VPLEX</a></li>
+<li><a href="../id435618/index.html">Pengalaman Persiapan Pekerjaan Google saya</a></li>
+<li><a href="../id435620/index.html">Ide-ide futurolog yang menjadi kenyataan</a></li>
+<li><a href="../id435624/index.html">Pilihan laporan menarik dari Konferensi 35C3</a></li>
+<li><a href="../id435628/index.html">Pemblokir iklan bawaan browser Chrome dimulai 9 Juli</a></li>
+<li><a href="../id435630/index.html">Jaringan IB di cloud: 5 tren tahun 2019</a></li>
+<li><a href="../id435636/index.html">Cara belajar dengan pembelajaran mesin dari para ahli di Dota 2</a></li>
+<li><a href="../id435638/index.html">Tentang kebahagiaan pengembang dan di mana menemukannya</a></li>
+<li><a href="../id435640/index.html">Intisari acara untuk profesional SDM di bidang TI untuk Januari 2019</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

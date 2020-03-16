@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧗 🤸 👨🏾‍🤝‍👨🏽 Redis Streaming sebagai Struktur Data Bersih 🌸 👨🏻 🖐🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Struktur data Redis 5 yang baru, yang disebut stream, telah menarik minat masyarakat. Entah bagaimana, saya akan berbicara dengan mereka yang mengguna...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Redis Streaming sebagai Struktur Data Bersih</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/444996/">  Struktur data Redis 5 yang baru, yang disebut stream, telah menarik minat masyarakat.  Entah bagaimana, saya akan berbicara dengan mereka yang menggunakan aliran dalam produksi dan menulis tentang itu.  Tapi sekarang saya ingin mempertimbangkan topik yang sedikit berbeda.  Bagi saya mulai terlihat bahwa banyak orang menganggap stream sebagai semacam alat surealis untuk menyelesaikan tugas yang sangat sulit.  Memang, struktur data ini * juga * menyediakan perpesanan, tetapi akan menjadi penyederhanaan yang luar biasa untuk mengasumsikan bahwa fungsi Redis Streams hanya dibatasi oleh ini. <br><br>  Streaming adalah template hebat dan "model mental" yang dapat digunakan dengan sukses besar dalam desain sistem, tetapi pada kenyataannya stream, seperti kebanyakan struktur data Redis, adalah struktur yang lebih umum dan dapat digunakan untuk banyak tugas lainnya.  Dalam artikel ini, kami akan menyajikan stream sebagai struktur data murni, sepenuhnya mengabaikan operasi pemblokiran, grup penerima, dan semua fungsi pengiriman pesan lainnya. <br><a name="habracut"></a><br><h1>  Streaming - Ini adalah CSV tentang Steroid </h1><br>  Jika Anda ingin merekam sejumlah elemen data terstruktur dan berpikir bahwa database akan berlebih di sini, Anda cukup membuka file dalam mode <code>append only</code> dan menulis setiap baris sebagai CSV (Comma Separated Value): <br><br><pre> <code class="plaintext hljs">(open data.csv in append only) time=1553096724033,cpu_temp=23.4,load=2.3 time=1553096725029,cpu_temp=23.2,load=2.1</code> </pre> <br>  Itu terlihat sederhana.  Orang telah melakukan ini sejak lama dan masih melakukannya: ini adalah templat yang andal, jika Anda tahu apa apa.  Tapi apa yang akan setara dalam memori?  Dalam memori, pemrosesan data yang jauh lebih maju menjadi mungkin, dan banyak pembatasan file CSV dihapus secara otomatis, seperti: <br><br><ol><li>  Sulit (tidak efisien) untuk memenuhi berbagai permintaan. <br></li><li>  Terlalu banyak informasi yang berlebihan: setiap catatan memiliki waktu yang hampir bersamaan, dan bidangnya digandakan.  Pada saat yang sama, menghapus data akan membuat format kurang fleksibel jika saya ingin beralih ke kumpulan bidang yang berbeda. <br></li><li>  Offset elemen hanyalah offset byte dalam file: jika kita mengubah struktur file, offset akan menjadi salah, sehingga tidak ada konsep nyata dari pengidentifikasi utama.  Entri pada dasarnya tidak dapat disajikan secara jelas. <br></li><li>  Tanpa kemampuan untuk mengumpulkan sampah dan tanpa menulis ulang log, Anda tidak dapat menghapus entri, tetapi hanya menandainya sebagai tidak valid.  Menulis ulang log biasanya menyebalkan karena beberapa alasan, disarankan untuk menghindarinya. </li></ol><br>  Pada saat yang sama, log CSV seperti itu bagus dengan caranya sendiri: tidak ada struktur tetap, bidang dapat berubah, itu sepele untuk menghasilkannya dan cukup kompak.  Gagasan dengan aliran Redis adalah untuk melestarikan kebajikan, tetapi untuk mengatasi keterbatasan.  Hasilnya adalah struktur data hybrid yang sangat mirip dengan set Redis diurutkan: mereka * terlihat seperti * struktur data dasar, tetapi menggunakan beberapa representasi internal untuk mendapatkan efek ini. <br><br><h1>  Pengantar utas (Anda dapat melewati jika Anda sudah terbiasa dengan dasar-dasar) </h1><br>  Redis stream direpresentasikan sebagai node makro terkompresi-delta yang dihubungkan oleh pohon basis.  Akibatnya, Anda dapat dengan cepat mencari catatan acak, mendapatkan rentang, menghapus elemen lama, dll. Pada saat yang sama, antarmuka untuk pemrogram sangat mirip dengan file CSV: <br><br><pre> <code class="plaintext hljs">&gt; XADD mystream * cpu-temp 23.4 load 2.3 "1553097561402-0" &gt; XADD mystream * cpu-temp 23.2 load 2.1 "1553097568315-0"</code> </pre> <br>  Seperti yang Anda lihat dari contoh, perintah XADD secara otomatis menghasilkan dan mengembalikan pengidentifikasi catatan, yang meningkat secara monoton dan terdiri dari dua bagian: &lt;time&gt; - &lt;counter&gt;.  Waktu dalam milidetik, dan penghitung bertambah untuk catatan dengan waktu yang sama. <br><br>  Jadi, abstraksi baru pertama untuk gagasan file CSV dalam mode <code>append only</code> adalah menggunakan asterisk sebagai argumen ID untuk XADD: ini adalah cara kami mendapatkan pengenal catatan dari server secara gratis.  Pengidentifikasi ini berguna tidak hanya untuk menunjukkan elemen tertentu dalam aliran, itu juga terkait dengan waktu catatan ditambahkan ke aliran.  Bahkan, dengan XRANGE, Anda bisa menjalankan kueri rentang atau mengambil elemen individual: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097561402-0 1553097561402-0 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3"</code> </pre> <br>  Dalam hal ini, saya menggunakan ID yang sama untuk memulai dan mengakhiri rentang untuk mengidentifikasi satu item.  Namun, saya dapat menggunakan rentang dan argumen COUNT apa pun untuk membatasi jumlah hasil.  Demikian juga, tidak perlu menentukan pengidentifikasi lengkap untuk rentang, saya hanya bisa menggunakan waktu unix untuk mendapatkan elemen dalam rentang waktu tertentu: <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097560000 1553097570000 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3" 2) 1) "1553097568315-0" 2) 1) "cpu-temp" 2) "23.2" 3) "load" 4) "2.1"</code> </pre> <br>  Saat ini, tidak perlu menunjukkan kepada Anda fitur API lainnya, ada dokumentasi untuk ini.  Untuk saat ini, mari kita fokus pada pola penggunaan ini: XADD untuk menambahkan, XRANGE (dan juga XREAD) untuk mengekstraksi rentang (tergantung pada apa yang ingin Anda lakukan), dan mari kita lihat mengapa aliran sangat kuat untuk menyebutnya struktur data. <br><br>  Jika Anda ingin tahu lebih banyak tentang stream dan API, pastikan untuk membaca <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">tutorialnya</a> . <br><br><h1>  Pemain tenis </h1><br>  Beberapa hari yang lalu, seorang teman saya yang mulai mempelajari Redis dan saya mensimulasikan aplikasi untuk melacak lapangan tenis, pemain, dan pertandingan lokal.  Cara memodelkan pemain sudah jelas, pemain adalah objek kecil, jadi kita hanya perlu hash dengan kunci seperti <code>player:&lt;id&gt;</code> .  Maka Anda akan segera menyadari bahwa Anda membutuhkan cara untuk melacak permainan di klub tenis tertentu.  Jika <code>player:1</code> dan <code>player:2</code> bermain di antara mereka sendiri dan <code>player:1</code> menang, kami dapat mengirim catatan berikut ke stream: <br><br><pre> <code class="plaintext hljs">&gt; XADD club:1234.matches * player-a 1 player-b 2 winner 1 "1553254144387-0"</code> </pre> <br>  Operasi sederhana seperti itu memberi kita: <br><br><ol><li>  Pengidentifikasi kecocokan unik: ID di arus. <br></li><li>  Tidak perlu membuat objek untuk identifikasi kecocokan. <br></li><li>  Permintaan rentang gratis untuk pertandingan paging atau menonton pertandingan untuk tanggal dan waktu tertentu. </li></ol><br>  Sebelum aliran muncul, kami harus membuat set yang diurutkan berdasarkan waktu: elemen-elemen dari set yang diurutkan akan menjadi pengidentifikasi yang cocok, yang disimpan dalam kunci yang berbeda sebagai nilai hash.  Ini tidak hanya lebih banyak bekerja, tetapi juga lebih banyak memori.  Jauh lebih banyak memori (lihat di bawah). <br><br>  Sekarang tujuan kami adalah untuk menunjukkan bahwa aliran Redis adalah semacam diurutkan diatur dalam mode <code>append only</code> , dengan kunci berdasarkan waktu, di mana setiap elemen adalah hash kecil.  Dan dalam kesederhanaannya, ini adalah revolusi nyata dalam konteks pemodelan. <br><br><h1>  Memori </h1><br>  Kasus penggunaan di atas bukan hanya pola pemrograman yang lebih kohesif.  Konsumsi memori dalam utas sangat berbeda dari pendekatan lama dengan set + hash yang diurutkan untuk setiap objek sehingga beberapa hal sekarang mulai berfungsi yang sebelumnya tidak mungkin diimplementasikan sama sekali. <br><br>  Berikut ini adalah statistik jumlah memori untuk menyimpan sejuta pertandingan dalam konfigurasi yang disajikan sebelumnya: <br><br><pre> <code class="plaintext hljs">  +  = 220  (242 RSS)  = 16,8  (18.11 RSS)</code> </pre> <br>  Perbedaannya lebih dari urutan besarnya (yaitu, 13 kali).  Ini berarti bisa bekerja dengan tugas-tugas yang sebelumnya terlalu mahal untuk dilakukan dalam memori.  Sekarang mereka cukup layak.  Keajaibannya adalah memperkenalkan aliran Redis: node makro dapat berisi beberapa elemen yang sangat kompak dikodekan dalam struktur data yang disebut listpack.  Struktur ini akan menangani, misalnya, pengkodean bilangan bulat dalam bentuk biner, bahkan jika mereka semantik string.  Selain itu, kami menerapkan kompresi delta dan mengompres bidang yang sama.  Namun, tetap dimungkinkan untuk mencari berdasarkan ID atau waktu, karena node makro tersebut ditautkan dalam struktur dasar, yang juga dirancang dengan optimasi memori.  Bersama-sama, ini menjelaskan penggunaan memori yang ekonomis, tetapi bagian yang menarik adalah bahwa secara semantik pengguna tidak melihat detail implementasi yang membuat utas jadi efisien. <br><br>  Sekarang mari kita hitung.  Jika saya dapat menyimpan 1 juta catatan dalam memori sekitar 18 MB, maka saya dapat menyimpan 10 juta dalam 180 MB dan 100 juta dalam 1,8 GB.  Hanya dengan memori 18 GB, saya dapat memiliki 1 miliar item. <br><br><h1>  Seri waktu </h1><br>  Penting untuk dicatat bahwa contoh di atas dengan pertandingan tenis secara semantik * sangat berbeda * dari menggunakan aliran Redis untuk deret waktu.  Ya, secara logis kami masih mendaftarkan beberapa jenis acara, tetapi ada perbedaan mendasar.  Dalam kasus pertama, kami mencatat dan membuat catatan untuk merender objek.  Dan dalam deret waktu, kita cukup mengukur sesuatu yang terjadi di luar yang sebenarnya tidak mewakili objek.  Anda dapat mengatakan bahwa perbedaan ini sepele, tetapi tidak.  Penting untuk memahami gagasan bahwa utas Redis dapat digunakan untuk membuat objek kecil dengan urutan yang sama dan untuk menetapkan pengidentifikasi ke objek tersebut. <br><br>  Tetapi bahkan cara paling sederhana untuk menggunakan seri waktu jelas merupakan terobosan besar, karena sebelum munculnya utas, Redis praktis tidak berdaya untuk melakukan apa pun di sini.  Karakteristik memori dan fleksibilitas aliran, serta kemampuan untuk membatasi aliran yang dibatasi (lihat parameter XADD) adalah alat yang sangat penting di tangan pengembang. <br><br><h1>  Kesimpulan </h1><br>  Streaming fleksibel dan menawarkan banyak kasus penggunaan, tetapi saya ingin menulis artikel yang sangat singkat untuk menunjukkan dengan jelas contoh dan konsumsi memori.  Mungkin bagi banyak pembaca penggunaan aliran ini jelas.  Namun, percakapan dengan pengembang dalam beberapa bulan terakhir telah meninggalkan saya dengan kesan bahwa banyak yang memiliki hubungan yang kuat antara stream dan streaming data, seolah-olah struktur data hanya baik di sana.  Ini tidak benar.  :-) </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id444996/">https://habr.com/ru/post/id444996/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id444982/index.html">Mockito dan cara memasaknya</a></li>
+<li><a href="../id444984/index.html">Dari mana datangnya foto untuk menguji sistem pengenalan wajah?</a></li>
+<li><a href="../id444986/index.html">IETF Menyetujui ACME - Ini adalah Standar untuk Bekerja dengan Sertifikat SSL</a></li>
+<li><a href="../id444992/index.html">Kesalahan dibangun ke dalam sistem: peran mereka dalam statistik</a></li>
+<li><a href="../id444994/index.html">Tentang drive dan penggunaannya pada komputer modern</a></li>
+<li><a href="../id444998/index.html">Kerentanan kritis dari perangkat pendukung kehidupan yang ditanamkan memberi para penyerang kemampuan untuk mengendalikan mereka</a></li>
+<li><a href="../id445002/index.html">Cara cepat mempersiapkan wawancara kerja dengan pertanyaan tentang algoritma dan teknologi</a></li>
+<li><a href="../id445004/index.html">Apakah profiler SQL berbahaya?</a></li>
+<li><a href="../id445006/index.html">Mikroelektronika untuk siswa dari sumbernya</a></li>
+<li><a href="../id445008/index.html">Ujian biru (versi revisi dan revisi)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

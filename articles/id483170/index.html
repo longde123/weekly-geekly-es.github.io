@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😒 🧝🏾 🧗🏽 Database messenger (bagian 2): kami mempartisi "untung" 🧔🏻 👩🏿‍🤝‍👨🏾 🤳🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Kami telah berhasil merancang struktur database PostgreSQL kami untuk menyimpan korespondensi, setahun telah berlalu, pengguna secara aktif mengisinya...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Database messenger (bagian 2): kami mempartisi "untung"</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/483170/">  Kami telah berhasil merancang struktur database PostgreSQL kami untuk menyimpan korespondensi, setahun telah berlalu, pengguna secara aktif mengisinya, sekarang memiliki <b>jutaan catatan</b> , dan ... sesuatu mulai melambat. <br><br><ul><li>  <a href="https://habr.com/ru/post/483176/">Bagian 1: merancang bingkai dasar</a> </li><li>  Bagian 2: mempartisi "gain" </li></ul><br><img src="https://habrastorage.org/webt/st/wy/ue/stwyue6afucreci1rnctyj7ents.png"><br>  Faktanya adalah bahwa <b>ketika tabel bertambah besar, “kedalaman” indeks juga tumbuh</b> - meskipun secara logaritma.  Namun seiring waktu, ini memaksa server untuk <i>memproses banyak halaman data</i> untuk melakukan tugas baca / tulis yang sama daripada di awal. <br><br>  Di sinilah <b>partisi</b> datang untuk menyelamatkan. <br><a name="habracut"></a><br>  Saya perhatikan bahwa ini bukan tentang sharding, yaitu distribusi data antara database atau server yang berbeda.  Karena, bahkan membagi data menjadi <b>beberapa</b> server, Anda tidak dapat menyingkirkan masalah "pembengkakan" indeks dari waktu ke waktu.  Jelas bahwa jika Anda mampu membuat komisi server baru setiap hari, maka masalah Anda tidak lagi terletak pada bidang database tertentu. <br><br>  Kami akan mempertimbangkan bukan skrip khusus untuk mengimplementasikan partisi "dalam perangkat keras", tetapi pendekatan itu sendiri - apa dan bagaimana "memotong-motong," dan apa yang menjadi tujuan dari keinginan tersebut. <br><br><h2>  Konsep </h2><br>  Sekali lagi, kami menetapkan tujuan kami: kami ingin memastikan bahwa hari ini, besok, dan setelah satu tahun, jumlah data PostgreSQL yang dibaca selama operasi baca / tulis tetap kurang lebih sama. <br><br>  Untuk <b>data yang terakumulasi secara kronologis</b> (pesan, dokumen, log, arsip, ...), pilihan alami sebagai kunci partisi adalah <b>tanggal / waktu acara</b> .  Dalam kasus kami, peristiwa seperti itu adalah <u>saat pesan dikirim</u> . <br><br>  Perhatikan bahwa pengguna hampir selalu <b>hanya bekerja dengan data "terbaru"</b> seperti itu - mereka membaca pesan terbaru, menganalisis log terbaru ... Tidak, tentu saja, mereka dapat menggulir lebih jauh ke masa lalu, hanya melakukan ini sangat jarang. <br><br>  Dari batasan-batasan ini, menjadi jelas bahwa bagian <b>"harian"</b> akan menjadi solusi terbaik untuk pesan - setelah semua, pengguna kami akan hampir selalu membaca apa yang datang kepadanya "hari ini" atau "kemarin". <br><br>  Jika kita menulis dan membaca hampir hanya satu bagian di siang hari, ini memberi kita <b>penggunaan memori dan disk yang lebih efisien</b> - karena semua indeks bagian mudah masuk ke dalam RAM, tidak seperti bagian "besar dan tebal" dari seluruh tabel. <br><br><h2>  selangkah demi selangkah </h2><br>  Secara umum, semua hal di atas terdengar seperti satu keuntungan yang solid.  Dan itu dapat dicapai, tetapi untuk ini kita harus berusaha keras - karena <u>keputusan untuk mempartisi salah satu entitas mengarah pada kebutuhan untuk "memotong" dan berhubungan dengannya</u> . <br><br><h4>  Pesan, propertinya dan proyeksi </h4><br>  Karena kami memutuskan untuk memotong pesan berdasarkan tanggal, masuk akal juga untuk membagi entitas-properti (file yang dilampirkan, milis), dan <b>juga berdasarkan tanggal pesan</b> , tergantung pada mereka. <br><br>  Karena salah satu tugas khas kami hanya melihat register pesan (belum dibaca, masuk, semuanya), masuk akal juga untuk "menariknya" ke dalam partisi berdasarkan tanggal pesan. <br><br><img src="https://habrastorage.org/webt/28/r5/cb/28r5cbnrcrp7yz_nbpwnou2vvxw.png"><br><blockquote>  Tambahkan kunci partisi (tanggal pesan) ke semua tabel: penerima, file, pendaftar.  Anda tidak dapat menambahkan ke pesan itu sendiri, tetapi gunakan DateTime yang ada. </blockquote><br><h4>  Tema </h4><br>  Karena topiknya adalah satu ke beberapa pesan, tidak akan mungkin untuk "memotongnya" dalam model yang sama, seseorang harus mengandalkan sesuatu yang lain.  Dalam kasus kami, <b>tanggal pesan pertama dalam korespondensi</b> adalah ideal - yaitu, saat penciptaan topik itu sendiri. <br><br><img src="https://habrastorage.org/webt/ho/jh/a6/hojha6iwdworvrxx8kv-d30xdlm.png"><br><blockquote>  Tambahkan kunci partisi (tanggal topik) ke semua tabel: topik, peserta. </blockquote><br>  Tetapi sekarang kami memiliki dua masalah sekaligus: <br><br><ul><li>  di bagian mana untuk mencari posting tentang topik? </li><li>  di bagian mana untuk mencari topik dari pesan? </li></ul><br>  Anda dapat, tentu saja, terus mencari di semua bagian, tetapi itu akan sangat menyedihkan, dan akan meniadakan semua kemenangan kami.  Oleh karena itu, untuk mengetahui di mana tepatnya mencari, kami akan membuat tautan / petunjuk logis ke bagian: <br><br><ul><li>  dalam pesan, tambahkan <b>bidang dengan tanggal topik</b> </li><li>  tambahkan ke topik <b>serangkaian tanggal pesan untuk</b> korespondensi ini (Anda dapat menggunakan tabel terpisah, atau Anda dapat menggunakan array tanggal) </li></ul><br><img src="https://habrastorage.org/webt/0r/hk/f_/0rhkf_nfc0y4rfn24_3byaeeu_c.png"><br><br>  Karena akan ada beberapa modifikasi pada daftar tanggal pesan untuk setiap korespondensi individu (setelah semua, hampir semua pesan jatuh ke 1-2 hari ke depan), saya akan memikirkan opsi ini. <br><br>  Total, struktur basis kami mengambil bentuk berikut, dengan mempertimbangkan partisi: <br><br><div class="spoiler">  <b class="spoiler_title">Tabel: RU, jika Anda tidak menyukai Cyrillic, lebih baik untuk tidak melihat nama-nama tabel / bidang</b> <div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--     CREATE TABLE "_YYYYMMDD"( "" uuid PRIMARY KEY , "" uuid , "" date , "" uuid , "" --    timestamp , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" uuid , PRIMARY KEY("", "") ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" uuid , "BLOB" uuid , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" smallint , "" timestamp , "" uuid , PRIMARY KEY("", "", "") ); CREATE INDEX ON "_YYYYMMDD"("", "", "" DESC); --     CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" uuid , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" uuid , PRIMARY KEY("", "") ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" date );</span></span></code> </pre> <br></div></div><br><h2>  Simpan satu sen yang cukup </h2><br>  Nah, jika kita tidak menggunakan <a href="https://postgrespro.ru/docs/postgresql/10/ddl-partitioning">opsi partisi klasik</a> berdasarkan distribusi nilai bidang (melalui pemicu dan pewarisan atau PARTISI OLEH), tetapi "secara manual" di tingkat aplikasi, kita dapat melihat bahwa nilai kunci partisi sudah disimpan dalam nama tabel itu sendiri. <br><br>  Oleh karena itu, jika Anda begitu <b>khawatir tentang jumlah data yang disimpan</b> , maka Anda dapat menyingkirkan bidang "ekstra" ini dan merujuk ke tabel tertentu.  Benar, semua sampel dari beberapa bagian dalam kasus ini harus diserahkan ke sisi aplikasi. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id483170/">https://habr.com/ru/post/id483170/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id483154/index.html">Saya menghabiskan $ 40 ribu dan merusak ide bagus untuk startup</a></li>
+<li><a href="../id483156/index.html">Letakkan kucing di atas kakinya</a></li>
+<li><a href="../id483160/index.html">Ruang 2020: Mars, rasi bintang satelit dan roket baru</a></li>
+<li><a href="../id483166/index.html">Secara otomatis mendeteksi penyandian teks</a></li>
+<li><a href="../id483168/index.html">Cara membuat bot yang mengubah foto menjadi komik. Bagian Dua Pelatihan model</a></li>
+<li><a href="../id483172/index.html">Bagaimana cara Melokalkan Aplikasi atau Game? Sepuluh Sumber E-learning Gratis</a></li>
+<li><a href="../id483174/index.html">Rekam dan transfer suara dari perangkat ke perangkat menggunakan Konektivitas Multipeer</a></li>
+<li><a href="../id483176/index.html">Database messenger (bagian 1): kami merancang bingkai dasar</a></li>
+<li><a href="../id483178/index.html">Berikut adalah Pembaruan pada Flutter 1.9 Rilis Ditambah dengan Pemrograman Dart 2.5</a></li>
+<li><a href="../id483182/index.html">Lima cara menarik untuk menggunakan Array.reduce () (dan satu cara membosankan)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

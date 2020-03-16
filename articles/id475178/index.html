@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦊 ⛺️ 🤸🏾 Mengganti EAV dengan JSONB di PostgreSQL 🖖 ⚠️ 🍴</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="TL DR: JSONB dapat sangat menyederhanakan pengembangan skema basis data tanpa mengorbankan kinerja kueri. 
+ Pendahuluan 
+ Mari kita berikan contoh kla...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Mengganti EAV dengan JSONB di PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/475178/"><blockquote>  TL  DR: JSONB dapat sangat menyederhanakan pengembangan skema basis data tanpa mengorbankan kinerja kueri. </blockquote><br><h3>  Pendahuluan </h3><br>  Mari kita berikan contoh klasik, mungkin, dari salah satu kasus penggunaan tertua dari basis data relasional (database): kita memiliki entitas, dan perlu untuk mempertahankan properti (atribut) tertentu dari entitas ini.  Tetapi tidak semua instance memiliki set properti yang sama, di samping itu, di masa depan, kemungkinan penambahan lebih banyak properti. <br><br>  Cara termudah untuk menyelesaikan masalah ini adalah dengan membuat kolom di tabel database untuk setiap nilai properti, dan cukup mengisi yang diperlukan untuk instance entitas tertentu.  Hebat!  Masalahnya teratasi ... sampai meja Anda berisi jutaan catatan dan Anda tidak perlu menambahkan catatan baru. <br><br>  Pertimbangkan pola EAV ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Entity-Attribute-Value</a> ), ini cukup umum.  Satu tabel berisi entitas (catatan), tabel lain berisi nama properti (atribut), dan tabel ketiga mengaitkan entitas dengan atributnya dan berisi nilai atribut ini untuk entitas saat ini.  Ini memberi Anda kesempatan untuk memiliki set properti yang berbeda untuk objek yang berbeda, serta menambahkan properti dengan cepat, tanpa mengubah struktur database. <br><a name="habracut"></a><br>  Meskipun demikian, saya tidak akan menulis catatan ini jika tidak ada kekurangan dalam pendekatan menggunakan EVA.  Jadi, misalnya, untuk mendapatkan satu atau lebih entitas yang masing-masing memiliki 1 atribut, diperlukan 2 join'a (bergabung) dalam permintaan: yang pertama adalah penyatuan dengan tabel atribut, yang kedua adalah penyatuan dengan tabel nilai.  Jika suatu entitas memiliki 2 atribut, maka 4 gabungan sudah diperlukan!  Selain itu, semua atribut biasanya disimpan sebagai string, yang mengarah ke tipe casting untuk hasil dan klausa WHERE.  Jika Anda menulis banyak permintaan, maka ini agak boros dalam hal penggunaan sumber daya. <br><br>  Terlepas dari kekurangan yang jelas ini, EAV telah lama digunakan untuk memecahkan masalah semacam ini.  Ini adalah kelemahan yang tak terhindarkan, dan tidak ada alternatif yang lebih baik. <br>  Tapi kemudian "teknologi" baru muncul di PostgreSQL ... <br><br>  Dimulai dengan PostgreSQL 9.4, tipe data JSONB telah ditambahkan untuk menyimpan data JSON biner.  Meskipun menyimpan JSON dalam format ini biasanya membutuhkan sedikit lebih banyak ruang dan waktu daripada JSON teks biasa, operasi dengannya jauh lebih cepat.  JSONB juga mendukung pengindeksan, yang membuat pencarian mereka lebih cepat. <br><br>  Tipe data JSONB memungkinkan kita untuk mengganti pola EAV yang besar dengan menambahkan hanya satu kolom JSONB ke tabel entitas kita, yang sangat menyederhanakan desain basis data.  Tetapi banyak yang berpendapat bahwa ini harus dibarengi dengan penurunan produktivitas ... Itu sebabnya saya muncul di artikel ini. <br><br><h3>  Uji pengaturan basis data </h3><br>  Untuk perbandingan ini, saya membuat database pada instalasi baru PostgreSQL 9.5 berdasarkan $ 80 membangun <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">DigitalOcean</a> Ubuntu 14.04.  Setelah mengatur beberapa parameter di postgresql.conf, saya menjalankan skrip <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">ini</a> menggunakan psql.  Tabel berikut dibuat untuk mewakili data sebagai EAV: <br><br><pre><code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, <span class="hljs-type"><span class="hljs-type">name</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span>, description <span class="hljs-type"><span class="hljs-type">TEXT</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity_attribute ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, <span class="hljs-type"><span class="hljs-type">name</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity_attribute_value ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, entity_id <span class="hljs-type"><span class="hljs-type">INT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REFERENCES</span></span> entity(id), entity_attribute_id <span class="hljs-type"><span class="hljs-type">INT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REFERENCES</span></span> entity_attribute(id), <span class="hljs-keyword"><span class="hljs-keyword">value</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span> );</code> </pre> <br>  Di bawah ini adalah tabel di mana data yang sama akan disimpan, tetapi dengan atribut di kolom tipe JSONB - <i>properties</i> . <br><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity_jsonb ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, <span class="hljs-type"><span class="hljs-type">name</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span>, description <span class="hljs-type"><span class="hljs-type">TEXT</span></span>, properties <span class="hljs-type"><span class="hljs-type">JSONB</span></span> );</code> </pre><br>  Terlihat jauh lebih mudah, bukan?  Kemudian, 10 juta catatan ditambahkan ke tabel entitas ( <i>entitas</i> &amp; <i>entity_jsonb</i> ), dan karenanya, data tabel yang sama diisi menggunakan pola EAV dan pendekatan dengan kolom <i>JSONB</i> - <i>entity_jsonb.properties</i> .  Jadi, kami menerima beberapa tipe data yang berbeda di antara seluruh rangkaian properti.  Data sampel: <br><br><pre> <code class="json hljs">{ id: <span class="hljs-number"><span class="hljs-number">1</span></span> name: <span class="hljs-string"><span class="hljs-string">"Entity1"</span></span> description: <span class="hljs-string"><span class="hljs-string">"Test entity no. 1"</span></span> properties: { color: <span class="hljs-string"><span class="hljs-string">"red"</span></span> lenght: <span class="hljs-number"><span class="hljs-number">120</span></span> width: <span class="hljs-number"><span class="hljs-number">3.1882420</span></span> hassomething: <span class="hljs-literal"><span class="hljs-literal">true</span></span> country: <span class="hljs-string"><span class="hljs-string">"Belgium"</span></span> } }</code> </pre> <br>  Jadi, sekarang kita memiliki data yang sama, untuk dua opsi.  Mari kita mulai membandingkan implementasi di tempat kerja! <br><br><h3>  Penyederhanaan desain </h3><br>  Sebelumnya dikatakan bahwa desain database sangat disederhanakan: satu tabel, karena penggunaan kolom JSONB untuk properti, alih-alih menggunakan tiga tabel untuk EAV.  Tetapi bagaimana ini tercermin dalam permintaan?  Memperbarui satu properti suatu entitas adalah sebagai berikut: <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- EAV UPDATE entity_attribute_value SET value = 'blue' WHERE entity_attribute_id = 1 AND entity_id = 120; -- JSONB UPDATE entity_jsonb SET properties = jsonb_set(properties, '{"color"}', '"blue"') WHERE id = 120;</span></span></code> </pre><br>  Seperti yang Anda lihat, permintaan terakhir tidak terlihat lebih mudah.  Untuk memperbarui nilai properti di objek JSONB, kita harus menggunakan fungsi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">jsonb_set ()</a> , dan harus meneruskan nilai baru kita sebagai objek JSONB.  Namun, kami tidak perlu mengetahui identitas sebelumnya.  Melihat contoh EAV, kita perlu mengetahui entitas_id dan entitas_attribute_id untuk memperbarui.  Jika Anda ingin memperbarui properti di kolom JSONB berdasarkan nama objek, maka ini semua dilakukan dalam satu baris sederhana. <br><br>  Sekarang mari kita pilih entitas yang baru saja kita perbarui, sesuai dengan kondisi warna barunya: <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- EAV SELECT e.name FROM entity e INNER JOIN entity_attribute_value eav ON e.id = eav.entity_id INNER JOIN entity_attribute ea ON eav.entity_attribute_id = ea.id WHERE ea.name = 'color' AND eav.value = 'blue'; -- JSONB SELECT name FROM entity_jsonb WHERE properties -&gt;&gt; 'color' = 'blue';</span></span></code> </pre><br>  Saya pikir kita bisa sepakat bahwa yang kedua lebih pendek (tanpa bergabung!), Dan karena itu lebih mudah dibaca.  Inilah kemenangan JSONB!  Kami menggunakan operator JSON - &gt;&gt; untuk mendapatkan warna sebagai nilai teks dari objek JSONB.  Ada juga cara kedua untuk mencapai hasil yang sama dalam model JSONB menggunakan operator @&gt;: <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- JSONB SELECT name FROM entity_jsonb WHERE properties @&gt; '{"color": "blue"}';</span></span></code> </pre><br>  Ini sedikit lebih rumit: kami memeriksa untuk melihat apakah objek JSON di kolom properti berisi objek di sebelah kanan operator @&gt;.  Kurang terbaca, lebih produktif (lihat di bawah). <br><br>  Sederhanakan penggunaan JSONB bahkan lebih ketika Anda perlu memilih beberapa properti sekaligus.  Di sinilah pendekatan JSONB benar-benar cocok: kita cukup memilih properti sebagai kolom tambahan di set hasil kami tanpa perlu bergabung: <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- JSONB SELECT name , properties -&gt;&gt; 'color' , properties -&gt;&gt; 'country' FROM entity_jsonb WHERE id = 120;</span></span></code> </pre><br>  Dengan EAV, Anda akan membutuhkan 2 gabungan untuk setiap properti yang ingin Anda minta.  Menurut pendapat saya, pertanyaan di atas menunjukkan penyederhanaan besar dalam desain basis data.  Lihat lebih banyak contoh cara menulis permintaan JSONB, juga di pos <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">ini</a> . <br>  Sekarang saatnya berbicara tentang kinerja. <br><br><h3>  Performa </h3><br>  Untuk membandingkan kinerja, saya menggunakan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">EXPLAIN ANALYZE</a> dalam kueri, untuk menghitung runtime.  Setiap permintaan dieksekusi setidaknya tiga kali karena pertama kali perencana kueri membutuhkan waktu lebih lama.  Pada awalnya, saya menjalankan kueri tanpa indeks.  Jelas, ini menjadi keuntungan JSONB, karena gabungan yang diperlukan untuk EAV tidak dapat menggunakan indeks (bidang kunci asing tidak diindeks).  Setelah itu, saya membuat indeks untuk 2 kolom kunci asing di tabel nilai EAV, serta indeks <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">GIN</a> untuk kolom JSONB. <br><br>  Pembaruan data menunjukkan hasil berikut dalam waktu (dalam ms).  Perhatikan bahwa skalanya adalah logaritmik: <br><br><img src="https://habrastorage.org/webt/xr/ma/ij/xrmaijvxbnlu_t5jd0nmg0syuxc.png" alt="gambar"><br><br>  Kami melihat bahwa JSONB jauh (&gt; 50.000-x) lebih cepat daripada EAV jika Anda tidak menggunakan indeks, karena alasan yang ditunjukkan di atas.  Ketika kami mengindeks kolom dengan kunci utama, perbedaannya hampir menghilang, tetapi JSONB masih 1,3 kali lebih cepat dari EAV.  Harap perhatikan bahwa indeks di kolom JSONB tidak berpengaruh di sini, karena kami tidak menggunakan kolom properti dalam kriteria evaluasi. <br><br>  Untuk memilih data berdasarkan nilai properti, kami memperoleh hasil berikut (skala normal): <br><br><img src="https://habrastorage.org/webt/e6/fp/vb/e6fpvbgyqlq536wcbpke7_wrz9s.png" alt="gambar"><br><br>  Anda mungkin memperhatikan bahwa JSONB lebih cepat lagi dari EAV tanpa indeks, tetapi ketika EAV dengan indeks, JSONB masih bekerja lebih cepat daripada JSONB.  Tapi kemudian saya melihat bahwa waktu untuk permintaan JSONB sama, ini mendorong saya pada kenyataan bahwa indeks GIN tidak berfungsi.  Rupanya, ketika Anda menggunakan indeks GIN untuk kolom dengan properti yang diisi, itu hanya bertindak ketika menggunakan operator inklusi @&gt;.  Saya menggunakan ini dalam tes baru, yang berdampak besar pada waktu: hanya 0,153 ms!  Ini 15.000 kali lebih cepat dari EAV, dan 25.000 kali lebih cepat dari operator - &gt;&gt;. <br><br>  Saya pikir itu cukup cepat! <br><br><h3>  Ukuran tabel DB </h3><br>  Mari kita bandingkan ukuran tabel untuk kedua pendekatan.  Dalam psql, kita bisa menampilkan ukuran semua tabel dan indeks menggunakan perintah <b>\ dti +</b> <br><br><img src="https://habrastorage.org/webt/p6/9m/la/p69mlax6rsctef8sqcu52btxshi.png" alt="gambar"><br><br>  Untuk pendekatan EAV, ukuran tabel sekitar 3068 MB, dan indeks hingga 3427 MB, yang secara total menghasilkan 6,43 GB.  Menggunakan pendekatan JSONB, 1817 MB untuk tabel dan 318 MB untuk indeks yang digunakan, yaitu 2,08 GB.  Ternyata 3 kali lebih sedikit!  Fakta ini sedikit mengejutkan saya karena kami menyimpan nama properti di setiap objek JSONB. <br><br>  Namun demikian, angka-angkanya berbicara sendiri: di EAV kami menyimpan 2 kunci asing integer untuk nilai atribut, sebagai hasilnya kami mendapatkan 8 byte data tambahan.  Selain itu, dalam EAV, semua nilai properti disimpan sebagai teks, sementara JSONB akan menggunakan nilai numerik dan logis secara internal jika memungkinkan, sehingga mengurangi volume. <br><br><h3>  Ringkasan </h3><br>  Secara umum, saya berpikir bahwa menyimpan properti entitas dalam format JSONB dapat sangat menyederhanakan desain dan pemeliharaan database Anda.  Jika Anda menjalankan banyak kueri, maka semua yang disimpan dalam tabel yang sama dengan entitas sebenarnya akan bekerja lebih efisien.  Dan fakta bahwa ini menyederhanakan interaksi antara data sudah plus, tetapi database yang dihasilkan adalah 3 kali lebih kecil volumenya. <br><br>  Juga, menurut tes, kita dapat menyimpulkan bahwa kehilangan kinerja sangat kecil.  Dalam beberapa kasus, JSONB bahkan bekerja lebih cepat daripada EAV, yang membuatnya lebih baik.  Namun, tolok ukur ini, tentu saja, tidak mencakup semua aspek (misalnya, entitas dengan jumlah properti yang sangat besar, peningkatan signifikan dalam jumlah properti dari data yang ada, ...), oleh karena itu, jika Anda memiliki saran tentang cara memperbaikinya, silakan Jangan ragu untuk meninggalkan komentar! </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id475178/">https://habr.com/ru/post/id475178/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id475166/index.html">Pengembangan elektronik. Audit proyek dalam contoh. Kami menyimpan lantai yang hangat dengan semua habr</a></li>
+<li><a href="../id475168/index.html">Investasi pertukaran berisiko rendah: cara menggunakan rekening dan obligasi IIA sebagai alternatif deposito bank</a></li>
+<li><a href="../id475170/index.html">Masalah pola dasar untuk membuat aplikasi berbasis data di React.JS</a></li>
+<li><a href="../id475172/index.html">5 Cara Menggunakan Raspberry Pi Menguntungkan Bagian tiga</a></li>
+<li><a href="../id475174/index.html">Cara melepas baterai atau sedikit teori paramotor listrik. Bagian 1</a></li>
+<li><a href="../id475180/index.html">Bagaimana melepas baterai atau praktik mengoperasikan paramotor listrik SkyMax. Bagian 2</a></li>
+<li><a href="../id475182/index.html">Bagaimana Saya Memutuskan Kompetisi Pembelajaran Mesin Seperti Data</a></li>
+<li><a href="../id475184/index.html">Panggilan sistem Linux yang mewah</a></li>
+<li><a href="../id475188/index.html">Algoritma penempatan ubin berbasis kendala</a></li>
+<li><a href="../id475192/index.html">Bagaimana menemukan pekerjaan di perusahaan yang membantu memerangi pemanasan global?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌯 🔚 🔵 JUnit di GitLab CI dengan Kubernetes 🚣🏾 👯 🍝</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Terlepas dari kenyataan bahwa semua orang tahu bahwa penting dan perlu untuk menguji perangkat lunak Anda, dan banyak yang telah melakukannya secara o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>JUnit di GitLab CI dengan Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/460897/">  Terlepas dari kenyataan bahwa semua orang tahu bahwa penting dan perlu untuk menguji perangkat lunak Anda, dan banyak yang telah melakukannya secara otomatis untuk waktu yang lama, tidak ada resep tunggal di ruang terbuka Habr untuk menyiapkan banyak produk populer di ceruk ini sebagai (favorit kami) GitLab dan JUnit .  Isi celah ini! <br><br><img src="https://habrastorage.org/webt/pc/q_/3i/pcq_3iq519cc6s_xqbeivsqyza4.png"><br><br><h2>  Pendahuluan </h2><br>  Pertama, saya akan menguraikan konteksnya: <br><br><ul><li>  Karena semua aplikasi kami berfungsi di Kubernetes, kami akan mempertimbangkan untuk menjalankan tes dalam infrastruktur yang sesuai. </li><li>  Untuk perakitan dan penyebaran kami menggunakan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">werf</a> (dalam arti komponen infrastruktur, ini juga secara otomatis berarti bahwa Helm terlibat). </li><li>  Saya tidak akan masuk ke detail langsung membuat tes: dalam kasus kami, klien menulis tes sendiri, dan kami hanya memastikan bahwa itu dijalankan (dan laporan terkait tersedia dalam permintaan penggabungan). </li></ul><a name="habracut"></a><br>  Seperti apa urutan tindakan secara keseluruhan? <br><br><ol><li>  Perakitan aplikasi - kami akan menghilangkan deskripsi tahap ini. </li><li>  Menyebarkan aplikasi ke namespace cluster Kubernetes terpisah dan meluncurkan pengujian. </li><li>  Cari artefak dan parsing laporan JUnit oleh GitLab. </li><li>  Hapus namespace yang sebelumnya dibuat. </li></ol><br>  Sekarang - untuk implementasi! <br><br><h2>  Kustomisasi </h2><br><h3>  Gitlab ci </h3><br>  Mari kita mulai dengan fragmen <code>.gitlab-ci.yaml</code> menjelaskan penyebaran aplikasi dan menjalankan tes.  Daftar itu ternyata agak tebal, oleh karena itu dilengkapi dengan komentar: <br><br><pre> <code class="bash hljs">variables: <span class="hljs-comment"><span class="hljs-comment">#   werf,    WERF_VERSION: "1.0 beta" .base_deploy: &amp;base_deploy script: #  namespace  K8s,    - kubectl --context="${WERF_KUBE_CONTEXT}" get ns ${CI_ENVIRONMENT_SLUG} || kubectl create ns ${CI_ENVIRONMENT_SLUG} #  werf   —    .   # (https://werf.io/how_to/gitlab_ci_cd_integration.html#deploy-stage) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf deploy --stages-storage :local --namespace ${CI_ENVIRONMENT_SLUG} --set "global.commit_ref_slug=${CI_COMMIT_REF_SLUG:-''}" #   `run_tests` #      Helm- --set "global.run_tests=${RUN_TESTS:-no}" --set "global.env=${CI_ENVIRONMENT_SLUG}" #  timeout (  )      --set "global.ci_timeout=${CI_TIMEOUT:-900}" --timeout ${CI_TIMEOUT:-900} dependencies: - Build .test-base: &amp;test-base extends: .base_deploy before_script: #     ,   $CI_COMMIT_REF_SLUG - mkdir /mnt/tests/${CI_COMMIT_REF_SLUG} || true #  , .. GitLab      build-dir' - mkdir ./tests || true - ln -s /mnt/tests/${CI_COMMIT_REF_SLUG} ./tests/${CI_COMMIT_REF_SLUG} after_script: #        Job' # (, ,  ) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf dismiss --namespace ${CI_ENVIRONMENT_SLUG} --with-namespace #   ,      allow_failure: true variables: RUN_TESTS: 'yes' #    werf # (https://werf.io/how_to/gitlab_ci_cd_integration.html#infrastructure) WERF_KUBE_CONTEXT: 'admin@stage-cluster' tags: #     `werf-runner` - werf-runner artifacts: #     ,      #     — ,     paths: - ./tests/${CI_COMMIT_REF_SLUG}/* #      expire_in: 7 day # :       GitLab' reports: junit: ./tests/${CI_COMMIT_REF_SLUG}/report.xml #        #         —   -  stages: - build - tests build: stage: build script: #  —     werf # (https://werf.io/how_to/gitlab_ci_cd_integration.html#build-stage) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf build-and-publish --stages-storage :local tags: - werf-runner except: - schedules run tests: &lt;&lt;: *test-base environment: # " "  namespace' # (https://docs.gitlab.com/ce/ci/variables/predefined_variables.html) name: tests-${CI_COMMIT_REF_SLUG} stage: tests except: - schedules</span></span></code> </pre> <br><h3>  Kubernetes </h3><br>  Sekarang di direktori <code>.helm/templates</code> , buat YAML dengan Pekerjaan - <code>tests-job.yaml</code> - untuk menjalankan tes dan sumber daya Kubernet yang dibutuhkan.  Penjelasan lihat setelah daftar: <br><br><pre> <code class="plaintext hljs">{{- if eq .Values.global.run_tests "yes" }} --- apiVersion: v1 kind: ConfigMap metadata: name: tests-script data: tests.sh: | echo "======================" echo "${APP_NAME} TESTS" echo "======================" cd /app npm run test:ci cp report.xml /app/test_results/${CI_COMMIT_REF_SLUG}/ echo "" echo "" echo "" chown -R 999:999 /app/test_results/${CI_COMMIT_REF_SLUG} --- apiVersion: batch/v1 kind: Job metadata: name: {{ .Chart.Name }}-test annotations: "helm.sh/hook": post-install,post-upgrade "helm.sh/hook-weight": "2" "werf/watch-logs": "true" spec: activeDeadlineSeconds: {{ .Values.global.ci_timeout }} backoffLimit: 1 template: metadata: name: {{ .Chart.Name }}-test spec: containers: - name: test command: ['bash', '-c', '/app/tests.sh'] {{ tuple "application" . | include "werf_container_image" | indent 8 }} env: - name: env value: {{ .Values.global.env }} - name: CI_COMMIT_REF_SLUG value: {{ .Values.global.commit_ref_slug }} - name: APP_NAME value: {{ .Chart.Name }} {{ tuple "application" . | include "werf_container_env" | indent 8 }} volumeMounts: - mountPath: /app/test_results/ name: data - mountPath: /app/tests.sh name: tests-script subPath: tests.sh tolerations: - key: dedicated operator: Exists - key: node-role.kubernetes.io/master operator: Exists restartPolicy: OnFailure volumes: - name: data persistentVolumeClaim: claimName: {{ .Chart.Name }}-pvc - name: tests-script configMap: name: tests-script --- apiVersion: v1 kind: PersistentVolumeClaim metadata: name: {{ .Chart.Name }}-pvc spec: accessModes: - ReadWriteOnce resources: requests: storage: 10Mi storageClassName: {{ .Chart.Name }}-{{ .Values.global.commit_ref_slug }} volumeName: {{ .Values.global.commit_ref_slug }} --- apiVersion: v1 kind: PersistentVolume metadata: name: {{ .Values.global.commit_ref_slug }} spec: accessModes: - ReadWriteOnce capacity: storage: 10Mi local: path: /mnt/tests/ nodeAffinity: required: nodeSelectorTerms: - matchExpressions: - key: kubernetes.io/hostname operator: In values: - kube-master persistentVolumeReclaimPolicy: Delete storageClassName: {{ .Chart.Name }}-{{ .Values.global.commit_ref_slug }} {{- end }}</code> </pre> <br>  <b>Sumber daya apa yang</b> dijelaskan dalam konfigurasi ini?  Saat menggunakan, buat namespace unik untuk proyek (ini juga ditunjukkan dalam <code>.gitlab-ci.yaml</code> - <code>tests-${CI_COMMIT_REF_SLUG}</code> ) dan gulung ke dalamnya: <br><br><ol><li>  <b>ConfigMap</b> dengan skrip pengujian; </li><li>  <b>Pekerjaan</b> dengan deskripsi pod dan arahan <code>command</code> ditentukan, yang hanya menjalankan tes; </li><li>  <b>PV dan PVC</b> , yang memungkinkan Anda untuk menyimpan data uji. </li></ol><br>  Perhatikan kondisi pengantar dengan <code>if</code> pada awal manifes - oleh karena itu, file YAML lain dari bagan Helm dengan aplikasi harus dibungkus dengan konstruksi <i>terbalik</i> sehingga tidak digunakan selama pengujian.  Itu adalah: <br><br><pre> <code class="plaintext hljs">{{- if ne .Values.global.run_tests "yes" }} ---    {{- end }}</code> </pre> <br>  Namun, jika tes <b>memerlukan beberapa infrastruktur</b> (misalnya, Redis, RabbitMQ, Mongo, PostgreSQL ...) - YAML mereka dapat dimatikan.  Sebarkan di lingkungan uji ... tentu saja, sesuaikan yang Anda suka. <br><br><h3>  Sentuhan terakhir </h3><br>  Karena  perakitan dan penyebaran menggunakan werf sejauh ini <i>hanya</i> berfungsi pada server build (dengan gitlab-runner), dan pod dengan tes dijalankan pada wizard, Anda harus membuat <code>/mnt/tests</code> pada wizard dan memberikannya kepada pelari, <b>misalnya, melalui NFS</b> .  Contoh terperinci dengan penjelasan dapat ditemukan dalam <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">dokumentasi K8s</a> . <br><br>  Hasilnya adalah: <br><br><pre> <code class="plaintext hljs">user@kube-master:~$ cat /etc/exports | grep tests /mnt/tests IP_gitlab-builder/32(rw,nohide,insecure,no_subtree_check,sync,all_squash,anonuid=999,anongid=998) user@gitlab-runner:~$ cat /etc/fstab | grep tests IP_kube-master:/mnt/tests /mnt/tests nfs4 _netdev,auto 0 0</code> </pre> <br>  Tidak ada yang melarang membuat NFS-bola langsung di gitlab-runner, dan kemudian memasangnya di pod. <br><br><h3>  Catatan </h3><br>  Anda mungkin bertanya, mengapa mempersulit segalanya dengan penciptaan Ayub, jika Anda bisa menjalankan skrip uji langsung pada shell runner?  Jawabannya cukup sepele ... <br><br>  Beberapa tes memerlukan akses ke infrastruktur (MongoDB, RabbitMQ, PostgreSQL, dll.) Untuk memeriksa kebenaran bekerja dengan mereka.  Kami membuat pengujian disatukan - dengan pendekatan ini, menjadi mudah untuk memasukkan entitas tambahan tersebut.  Selain itu, kami mendapatkan pendekatan <b>standar</b> dalam penyebaran (bahkan jika menggunakan NFS, pemasangan direktori tambahan). <br><br><h2>  Hasil </h2><br>  Apa yang akan kita lihat ketika kita menerapkan konfigurasi yang sudah disiapkan? <br><br>  Permintaan penggabungan akan menampilkan statistik ringkasan tentang tes yang diluncurkan di saluran terakhir: <br><br><img src="https://habrastorage.org/webt/c5/2w/ix/c52wixmvclqqugnkbxbwe7p6brm.png"><br><br>  Anda dapat mengklik setiap kesalahan di sini untuk mendapatkan detail: <br><br><img src="https://habrastorage.org/webt/3-/0p/dp/3-0pdpuwwpkbkye-dajzbbdpgde.png"><br><br>  <i><b>NB</b> : Pembaca yang penuh perhatian akan melihat bahwa kami sedang menguji aplikasi NodeJS, dan dalam tangkapan layar - .NET ... Jangan kaget: hanya sebagai bagian dari persiapan artikel, tidak ada kesalahan dalam menguji aplikasi pertama, tetapi mereka ditemukan di yang lain.</i> <br><br><h2>  Kesimpulan </h2><br>  Ternyata, tidak ada yang rumit! <br><br>  Pada prinsipnya, jika Anda sudah memiliki shell-builder dan itu bekerja, dan Anda tidak memerlukan Kubernetes, mengacaukan pengujian untuk itu akan menjadi tugas yang lebih sederhana daripada yang dijelaskan di sini.  Dan dalam <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">dokumentasi GitLab CI</a> Anda akan menemukan contoh untuk Ruby, Go, Gradle, Maven dan beberapa lainnya. <br><br><h2>  PS </h2><br>  Baca juga di blog kami: <br><br><ul><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Praktik CI / CD terbaik dengan Kubernetes dan GitLab (review dan laporan video)</a> ”; </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Werf adalah alat CI / CD kami di Kubernetes (review dan laporan video)</a> ” <i>(Dmitry Stolyarov; 27 Mei 2019 di DevOpsConf)</i> ; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Kiat untuk membuat alur kerja khusus di GitLab CI</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">GitLab CI untuk integrasi dan pengiriman berkelanjutan dalam produksi</a> ." </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id460897/">https://habr.com/ru/post/id460897/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id460883/index.html">Tentang kehidupan di dunia perubahan persyaratan dan manfaat fitur kecil</a></li>
+<li><a href="../id460885/index.html">Laporan menarik di HighLoad ++ Siberia 2019 menurut Plesk</a></li>
+<li><a href="../id460887/index.html">Bukan bahasa pemrograman lain. Bagian 3: Fisika</a></li>
+<li><a href="../id460891/index.html">Bagaimana membedakan SCRUM baik dari buruk, menggunakan pendekatan pendiri komputasi kuantum</a></li>
+<li><a href="../id460893/index.html">Melihat relokasi ke Estonia dari dalam ke luar - pro, kontra, dan perangkap</a></li>
+<li><a href="../id460899/index.html">26 Juli, Deworkacy - DocOps dari Rostelecom</a></li>
+<li><a href="../id460901/index.html">Mengapa Pengembang Senior Tidak Dapat Mendapatkan Pekerjaan</a></li>
+<li><a href="../id460905/index.html">Pengetahuan SEO minimal untuk pengusaha</a></li>
+<li><a href="../id460907/index.html">Menggunakan Liquibase untuk mengelola struktur database dalam aplikasi Spring Boot. Bagian 2</a></li>
+<li><a href="../id460909/index.html">Apa yang akan kita makan pada tahun 2050</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

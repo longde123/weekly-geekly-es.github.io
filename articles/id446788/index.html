@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧚🏽 👉🏼 ✊🏽 Kiat & trik Kubernetes: tentang pengembangan lokal dan Telepresence 🤸 ☑️ 🧖🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Kami semakin banyak ditanya tentang pengembangan layanan-layanan microsoft di Kubernetes. Pengembang, terutama bahasa yang ditafsirkan, ingin segera m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kiat & trik Kubernetes: tentang pengembangan lokal dan Telepresence</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/446788/"><img src="https://habrastorage.org/webt/hi/ph/x9/hiphx9pgfhckxtda-itahq7tq1s.png"><br><br>  Kami semakin banyak ditanya tentang pengembangan layanan-layanan microsoft di Kubernetes.  Pengembang, terutama bahasa yang ditafsirkan, ingin segera memperbaiki kode di IDE favorit mereka dan tanpa menunggu build / penyebaran untuk melihat hasilnya - hanya dengan menekan F5.  Dan ketika datang ke aplikasi monolitik, itu sudah cukup untuk meningkatkan basis data dan server web (di Docker, VirtualBox ...), setelah itu - segera menikmati pengembangannya.  Dengan menggergaji monolit ke dalam layanan mikro dan munculnya Kubernetes, dengan munculnya ketergantungan satu sama lain, segalanya <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">menjadi sedikit lebih rumit</a> .  Semakin banyak dari layanan microser ini, semakin banyak masalah.  Untuk menikmati pengembangan lagi, Anda perlu mengumpulkan lebih dari satu atau dua kontainer Docker, dan kadang-kadang bahkan lebih dari selusin ... Secara umum, semua ini bisa memakan banyak waktu, karena itu juga harus terus diperbarui. <a name="habracut"></a><br><br>  Pada waktu yang berbeda, kami mencoba berbagai solusi untuk masalah tersebut.  Dan saya akan mulai dengan solusi yang terakumulasi atau hanya "kruk". <br><br><h2>  1. Kruk </h2><br>  Sebagian besar IDE memiliki kemampuan untuk mengedit kode secara langsung di server menggunakan FTP / SFTP.  Cara ini sangat jelas dan kami segera memutuskan untuk menggunakannya.  Esensinya adalah sebagai berikut: <br><br><ol><li>  Di pod untuk lingkungan pengembangan (dev / review), wadah tambahan diluncurkan dengan akses melalui SSH dan meneruskan kunci SSH publik pengembang yang akan melakukan / menyebarkan aplikasi. </li><li>  Pada tahap init (dalam wadah <code>prepare-app</code> ) kami mentransfer kode ke <code>emptyDir</code> untuk memiliki akses ke kode dari wadah dengan aplikasi dan server SSH. </li></ol><br><img src="https://habrastorage.org/webt/4i/i0/km/4ii0kmxovuszvyeyuyfdgadrvvg.png"><br><br>  Untuk pemahaman yang lebih baik tentang implementasi teknis dari skema semacam itu, saya akan memberikan fragmen dari konfigurasi YAML yang terlibat di Kubernetes. <br><br><h3>  Konfigurasi </h3><br><h4>  1.1.  values.yaml </h4><br><pre> <code class="plaintext hljs">ssh_pub_key: vasya.pupkin: &lt;ssh public key in base64&gt;</code> </pre><br>  Di sini <code>vasya.pupkin</code> adalah nilai variabel <code>${GITLAB_USER_LOGIN}</code> . <br><br><h4>  1.2.  deployment.yaml </h4><br><pre> <code class="plaintext hljs">... {{ if eq .Values.global.debug "yes" }} volumes: - name: ssh-pub-key secret: defaultMode: 0600 secretName: {{ .Chart.Name }}-ssh-pub-key - name: app-data emptyDir: {} initContainers: - name: prepare-app {{ tuple "backend" . | include "werf_container_image" | indent 8 }} volumeMounts: - name: app-data mountPath: /app-data command: ["bash", "-c", "cp -ar /app/* /app-data/" ] {{ end }} containers: {{ if eq .Values.global.debug "yes" }} - name: ssh image: corbinu/ssh-server volumeMounts: - name: ssh-pub-key readOnly: true mountPath: /root/.ssh/authorized_keys subPath: authorized_keys - name: app-data mountPath: /app ports: - name: ssh containerPort: 22 protocol: TCP {{ end }} - name: backend volumeMounts: {{ if eq .Values.global.debug "yes" }} - name: app-data mountPath: /app {{ end }} command: ["/usr/sbin/php-fpm7.2", "--fpm-config", "/etc/php/7.2/php-fpm.conf", "-F"] ...</code> </pre><br><h4>  1.3.  secret.yaml </h4><br><pre> <code class="plaintext hljs">{{ if eq .Values.global.debug "yes" }} apiVersion: v1 kind: Secret metadata: name: {{ .Chart.Name }}-ssh-pub-key type: Opaque data: authorized_keys: "{{ first (pluck .Values.global.username .Values.ssh_pub_key) }}" {{ end }}</code> </pre><br><h4>  Sentuhan terakhir </h4><br>  Setelah itu, tetap hanya meneruskan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">variabel yang diperlukan ke gitlab-ci.yml</a> : <br><br><pre> <code class="plaintext hljs">dev: stage: deploy script: - type multiwerf &amp;&amp; source &lt;(multiwerf use 1.0 beta) - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf deploy --namespace ${CI_PROJECT_NAME}-stage --set "global.env=stage" --set "global.git_rev=${CI_COMMIT_SHA}" --set "global.debug=yes" --set "global.username=${GITLAB_USER_LOGIN}" tags: - build</code> </pre><br>  Voila: pengembang yang meluncurkan penyebaran dapat terhubung menggunakan nama layanan ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">kami sudah memberi tahu Anda</a> cara mengeluarkan akses ke gugus dengan aman) dari desktop Anda melalui SFTP dan mengedit kode tanpa menunggu kode dikirimkan ke gugus. <br><br>  Ini adalah solusi yang sepenuhnya berfungsi, tetapi dari sudut pandang implementasi memiliki kelemahan yang jelas: <br><br><ul><li>  kebutuhan untuk memperbaiki grafik Helm, yang semakin mempersulit pembacaannya; </li><li>  Hanya orang yang telah menggunakan layanan yang dapat menggunakannya; </li><li>  Anda harus ingat untuk menyinkronkannya dengan direktori lokal dengan kode dan komit di Git. </li></ul><br><h2>  2. Telepresence </h2><br>  Proyek <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Telepresence</a> telah dikenal selama beberapa waktu, tetapi dengan serius mencobanya dalam praktik dengan kami, seperti yang mereka katakan, "tidak mencapai tangan kami".  Namun, permintaan telah melakukan tugasnya dan sekarang kami senang untuk berbagi pengalaman yang mungkin berguna bagi pembaca blog kami - terutama karena masih belum ada bahan lain tentang Telepresence di hub. <br><br>  Singkatnya, itu tidak menakutkan.  Semua tindakan yang membutuhkan eksekusi oleh pengembang, kami menempatkannya di file teks dari Helm-chart, yang disebut <code>NOTES.txt</code> .  Jadi, setelah penyebaran layanan di Kubernetes, pengembang melihat instruksi untuk memulai lingkungan dev lokal di log pekerjaan GitLab: <br><br><pre> <code class="plaintext hljs">!!!   ,   Kubernetes !!! *   * *       VPN * *     kubectl ( https://kubernetes.io/docs/tasks/tools/install-kubectl/ ) * *  config-  kubectl (  ~/.kube/config) * *     telepresence ( https://www.telepresence.io/reference/install ) * *    Docker * *    reporter     https://gitlab.site.com/group/app * *    registry  /  GitLab (  ): ######################################################################### docker login registry.site.com ######################################################################### *   ######################################################################### telepresence --namespace {{ .Values.global.env }} --swap-deployment {{ .Chart.Name }}:backend --mount=/tmp/app --docker-run -v `pwd`:/app -v /tmp/app/var/run/secrets:/var/run/secrets -ti registry.site.com/group/app/backend:v8 #########################################################################</code> </pre> <br><br>  Kami tidak akan memikirkan langkah-langkah yang dijelaskan dalam manual ini ... kecuali untuk yang terakhir.  Apa yang terjadi selama peluncuran Telepresence? <br><br><h3>  Bekerja dengan Telepresence </h3><br>  Saat mulai (dengan perintah terakhir yang ditentukan dalam instruksi di atas) kami menetapkan: <br><br><ul><li>  namespace (namespace) di mana layanan Microsoft diluncurkan; </li><li>  nama-nama penyebaran dan wadah yang ingin kami tembus. </li></ul><br>  Argumen yang tersisa bersifat opsional.  Jika layanan kami berinteraksi dengan Kubernetes API dan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">ServiceAccount dibuat</a> untuk itu, kami perlu memasang sertifikat / token di desktop kami.  Untuk melakukan ini, gunakan opsi <code>--mount=true</code> (atau <code>--mount=/dst_path</code> ), yang akan me-mount root (/) dari wadah di Kubernetes ke desktop kita.  Setelah itu, kita bisa (tergantung pada OS dan cara aplikasi diluncurkan) menggunakan "kunci" dari cluster. <br><br>  Pertama, pertimbangkan opsi peluncuran aplikasi yang paling serbaguna - dalam wadah Docker.  Untuk melakukan ini, gunakan <code>--docker-run</code> dan <code>--docker-run</code> direktori dengan kode di wadah: <code>-v `pwd`:/app</code> <br><br>  Harap dicatat bahwa ini menyiratkan mulai dari direktori dengan proyek.  Kode aplikasi akan dipasang di direktori <code>/app</code> dalam wadah. <br><br>  Berikutnya: <code>-v /tmp/app/var/run/secrets:/var/run/secrets</code> - untuk memasang direktori dengan sertifikat / token ke dalam wadah. <br><br>  Opsi ini akhirnya diikuti oleh gambar di mana aplikasi akan diluncurkan.  <b>NB</b> : Saat membuat gambar, Anda harus menentukan <code>CMD</code> atau <code>ENTRYPOINT</code> ! <br><br>  Sebenarnya apa yang akan terjadi selanjutnya? <br><br><ul><li>  Di Kubernetes, untuk Penempatan yang ditentukan, jumlah replika akan diubah menjadi 0. Sebagai gantinya, Penempatan baru akan diluncurkan - dengan wadah <code>backend</code> diganti. </li><li>  Di desktop, 2 wadah akan mulai: yang pertama - dengan Telepresence (ini akan mem-proxy permintaan dari / ke Kubernetes), yang kedua - dengan aplikasi yang sedang dikembangkan. </li><li>  Jika exec'nutsya dalam wadah dengan aplikasi, maka kita akan memiliki akses ke semua variabel ENV yang disahkan oleh Helm selama penyebaran, serta semua layanan tersedia.  Yang tersisa hanyalah mengedit kode di IDE favorit Anda dan menikmati hasilnya. </li><li>  Di akhir pekerjaan, cukup tutup terminal tempat Telepresence berjalan (akhiri sesi menggunakan Ctrl + C), wadah Docker akan berhenti di desktop, dan semuanya akan kembali ke keadaan semula di Kubernetes.  Yang tersisa hanyalah melakukan komitmen, mengeluarkan MR dan meneruskannya untuk meninjau / menggabungkan / ... (tergantung pada alur kerja Anda). </li></ul><br>  Jika kami tidak ingin menjalankan aplikasi dalam wadah Docker - misalnya, kami mengembangkannya bukan dalam PHP, tetapi dalam Go, dan masih mengumpulkannya secara lokal - meluncurkan Telepresence akan lebih mudah: <br><br><pre> <code class="plaintext hljs">telepresence --namespace {{ .Values.global.env }} --swap-deployment {{ .Chart.Name }}:backend --mount=true</code> </pre> <br>  Jika aplikasi mengakses Kubernetes API, Anda harus memasang <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">direktori dengan kunci</a> .  Untuk Linux, ada utilitas <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">proot</a> : <br><br><pre> <code class="plaintext hljs">proot -b $TELEPRESENCE_ROOT/var/run/secrets/:/var/run/secrets bash</code> </pre> <br>  Setelah memulai Telepresence tanpa opsi <code>--docker-run</code> , semua variabel lingkungan akan tersedia di terminal saat ini, jadi Anda perlu memulai aplikasi di dalamnya. <br><br>  <b>NB</b> : Saat menggunakan, misalnya, PHP, Anda harus ingat untuk menonaktifkan berbagai op_cache, apc, dan akselerator lain untuk pengembangan - jika tidak mengedit kode tidak akan menghasilkan hasil yang diinginkan. <br><br><h2>  Ringkasan </h2><br>  Pengembangan lokal dengan Kubernetes adalah masalah yang kebutuhan solusinya tumbuh sebanding dengan penyebaran platform ini.  Setelah menerima permintaan yang relevan dari pengembang (dari pelanggan kami), kami mulai menyelesaikannya dengan cara pertama yang tersedia, yang, bagaimanapun, tidak membuktikan diri mereka dari jarak jauh.  Untungnya, ini menjadi jelas tidak hanya sekarang dan tidak hanya bagi kita, oleh karena itu sarana yang lebih cocok telah muncul di dunia, dan Telepresence adalah yang paling terkenal di antara mereka (omong-omong, masih ada <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">perancah</a> dari Google).  Pengalaman kami dalam penggunaannya tidak terlalu bagus, tetapi sudah memberikan alasan untuk merekomendasikan "kolega" - coba saja! <br><br><h2>  PS </h2><br>  Lainnya dari siklus tips &amp; trik K8: <br><br><ul><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Alat untuk pengembang aplikasi yang berjalan di Kubernetes</a> "; </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Kiat &amp; trik Kubernetes: halaman kesalahan yang dipersonalisasi di NGINX Ingress</a> ; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Transfer sumber daya yang bekerja di sebuah cluster ke manajemen Helm 2</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Tentang alokasi node dan beban pada aplikasi web</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Akses ke situs dev</a> "; </li><li>  " <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Mempercepat bootstrap dari database besar.</a> " </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id446788/">https://habr.com/ru/post/id446788/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id446774/index.html">Desain Karakter Poli Rendah</a></li>
+<li><a href="../id446776/index.html">Bukti Kerja Efektif</a></li>
+<li><a href="../id446780/index.html">Cara membuat tema gelap dan tidak membahayakan. Pengalaman Tim Yandex.Mail</a></li>
+<li><a href="../id446782/index.html">Yo-ho-ho dan sebotol rum</a></li>
+<li><a href="../id446786/index.html">Mengapa saya menolak Disqus dan Anda harus pergi juga</a></li>
+<li><a href="../id446790/index.html">Bagaimana saya menemukan telur paskah di keamanan Android dan tidak mendapatkan pekerjaan di Google</a></li>
+<li><a href="../id446794/index.html">Kami bekerja dengan Wordstat dengan benar. Panduan lengkap</a></li>
+<li><a href="../id446796/index.html">Sirkuit tidak standar: indikator tujuh segmen pada ATtiny13</a></li>
+<li><a href="../id446798/index.html">Kepergian seorang insinyur elektronik dari Apple menyebabkan kegemparan di antara para spekulan saham. Bagaimana menjadi seperti dia?</a></li>
+<li><a href="../id446802/index.html">Refill Dot Cartridges - Sangat Menarik</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

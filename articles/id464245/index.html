@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍕 🐳 💚 Mengkonfigurasi Pembunuh Kehabisan Memori di Linux untuk PostgreSQL 🍯 👩🏾‍⚖️ 🐩</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Ketika server database dimatikan secara tak terduga di Linux, Anda perlu menemukan alasannya. Mungkin ada beberapa alasan. Misalnya, SIGSEGV - macet k...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Mengkonfigurasi Pembunuh Kehabisan Memori di Linux untuk PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/464245/"><p><img src="https://habrastorage.org/webt/xn/ip/86/xnip86u-h8mejjpjkpvpaun7emc.png"></p><br><p>  Ketika server database dimatikan secara tak terduga di Linux, Anda perlu menemukan alasannya.  Mungkin ada beberapa alasan.  Misalnya, <strong>SIGSEGV</strong> - macet karena bug di server backend.  Tapi ini jarang terjadi.  Lebih sering daripada tidak, ruang disk atau memori habis.  Jika ruang disk habis, salah satu jalan keluar adalah membebaskan ruang dan memulai kembali basis data. </p><br><h3 id="out-of-memory-killer">  Pembunuh kehabisan memori </h3><br><p>  Ketika server atau proses kehabisan memori, Linux menawarkan 2 solusi: untuk crash seluruh sistem atau menghentikan proses (aplikasi) yang memakan memori.  Lebih baik, tentu saja, untuk menyelesaikan proses dan menyimpan OS dari penghentian abnormal.  Singkatnya, Pembunuh Kehabisan Memori adalah proses yang menghentikan aplikasi untuk menyimpan kernel dari kerusakan.  Dia mengorbankan aplikasi untuk menjaga OS tetap berjalan.  Pertama mari kita bahas bagaimana OOM bekerja dan bagaimana mengendalikannya, dan kemudian lihat bagaimana OOM Killer memutuskan aplikasi mana yang akan berakhir. </p><a name="habracut"></a><br><p>  Salah satu tugas utama Linux adalah mengalokasikan memori ke proses ketika mereka memintanya.  Biasanya suatu proses atau aplikasi meminta memori dari OS, tetapi mereka sendiri tidak sepenuhnya menggunakannya.  Jika OS akan mengeluarkan memori untuk semua orang yang memintanya, tetapi tidak berencana untuk menggunakannya, segera memori akan berakhir, dan sistem akan gagal.  Untuk menghindarinya, OS mencadangkan memori untuk proses, tetapi tidak benar-benar mengeluarkannya.  Memori hanya dialokasikan ketika proses benar-benar akan menggunakannya.  Itu terjadi bahwa OS tidak memiliki memori bebas, tetapi itu menetapkan memori untuk proses, dan ketika proses membutuhkannya, OS mengalokasikannya jika bisa.  Kelemahannya adalah kadang-kadang OS menyimpan memori, tetapi pada saat yang tepat tidak ada memori bebas, dan sistem macet.  OOM memainkan peran penting dalam skenario ini dan menghentikan proses untuk mencegah kernel dari panik.  Ketika proses PostgreSQL dihentikan secara paksa, sebuah pesan muncul di log: </p><br><pre><code class="plaintext hljs">Out of Memory: Killed process 12345 (postgres).</code> </pre> <br><p>  Jika ada sedikit memori dalam sistem dan tidak mungkin untuk membebaskannya, fungsi <code>out_of_memory</code> .  Pada tahap ini, ia hanya memiliki satu hal yang tersisa - untuk menyelesaikan satu atau lebih proses.  Haruskah OOM-killer menghentikan proses dengan segera atau bisakah saya menunggu?  Jelas, ketika out_of_memory dipanggil, ini karena menunggu operasi I / O atau pertukaran halaman ke disk.  Oleh karena itu, pembunuh-OOM pertama-tama harus melakukan pemeriksaan dan berdasarkan pada mereka memutuskan bahwa proses tersebut harus diselesaikan.  Jika semua cek di bawah memberikan hasil positif, OOM akan menghentikan proses. </p><br><h3 id="vybor-processa">  Seleksi proses </h3><br><p>  Ketika memori habis, fungsi <code>out_of_memory()</code> .  Ini memiliki fungsi <code>select_bad_process()</code> , yang menerima estimasi dari fungsi <code>select_bad_process()</code> .  Distribusi proses yang paling "buruk".  Fungsi <code>badness()</code> memilih proses sesuai dengan aturan tertentu. </p><br><ol><li>  Kernel membutuhkan beberapa memori minimum untuk dirinya sendiri. </li><li>  Anda perlu mengosongkan banyak memori. </li><li>  Tidak perlu mengakhiri proses yang menggunakan sedikit memori. </li><li>  Anda harus menyelesaikan proses minimum. </li><li>  Algoritma kompleks yang meningkatkan kemungkinan penyelesaian untuk proses yang ingin diselesaikan sendiri oleh pengguna. </li></ol><br><p>  Setelah menyelesaikan semua pemeriksaan ini, OOM memeriksa kelasnya ( <code>oom_score</code> ).  OOM menetapkan <code>oom_score</code> setiap proses, dan kemudian mengalikan nilai ini dengan jumlah memori.  Proses dengan nilai yang lebih tinggi lebih mungkin menjadi korban Pembunuh OOM.  Proses yang terkait dengan pengguna yang memiliki hak istimewa memiliki peringkat yang lebih rendah dan cenderung memaksakan penghentian. </p><br><pre> <code class="plaintext hljs">postgres=# SELECT pg_backend_pid(); pg_backend_pid ----------------    3813 (1 row)</code> </pre> <br><p>  Pengidentifikasi proses Postgres adalah 3813, jadi di shell lain Anda bisa mendapatkan perkiraan menggunakan <code>oom_score</code> kernel <code>oom_score</code> ini: </p><br><pre> <code class="plaintext hljs">vagrant@vagrant:~$ sudo cat /proc/3813/oom_score 2</code> </pre> <br><p>  Jika Anda tidak ingin OOM-Killer menyelesaikan proses sama sekali, ada parameter kernel lain: <code>oom_score_adj</code> .  Tambahkan nilai negatif besar untuk mengurangi kemungkinan menyelesaikan proses yang Anda sukai. </p><br><pre> <code class="plaintext hljs">sudo echo -100 &gt; /proc/3813/oom_score_adj</code> </pre> <br><p>  Untuk mengatur nilai <code>oom_score_adj</code> , setel OOMScoreAdjust di blok layanan: </p><br><pre> <code class="plaintext hljs">[Service] OOMScoreAdjust=-1000</code> </pre> <br><p>  Atau gunakan <code>oomprotect</code> dalam <code>rcctl</code> . </p><br><pre> <code class="plaintext hljs">rcctl set &lt;i&gt;servicename&lt;/i&gt; oomprotect -1000</code> </pre> <br><h3 id="prinuditelnoe-zavershenie-processa">  Pengakhiran proses secara paksa </h3><br><p>  Ketika satu atau lebih proses sudah dipilih, OOM-Killer memanggil fungsi <code>oom_kill_task()</code> .  Fungsi ini mengirimkan sinyal terminasi ke proses.  Jika tidak ada cukup memori, <code>oom_kill()</code> memanggil fungsi ini untuk mengirim sinyal SIGKILL ke proses.  Pesan ditulis ke log kernel. </p><br><pre> <code class="plaintext hljs">Out of Memory: Killed process [pid] [name].</code> </pre> <br><h3 id="kak-kontrolirovat-oom-killer">  Cara mengontrol OOM-Killer </h3><br><p>  Di Linux, Anda dapat mengaktifkan atau menonaktifkan OOM-Killer (meskipun yang terakhir tidak disarankan).  Untuk mengaktifkan dan menonaktifkan, gunakan opsi <code>vm.oom-kill</code> .  Untuk mengaktifkan OOM-Killer saat runtime, jalankan perintah <code>sysctl</code> . </p><br><pre> <code class="plaintext hljs">sudo -s sysctl -w vm.oom-kill = 1</code> </pre> <br><p>  Untuk menonaktifkan OOM-Killer, tentukan nilai 0 dalam perintah yang sama: </p><br><pre> <code class="plaintext hljs">sudo -s sysctl -w vm.oom-kill = 0</code> </pre> <br><p>  Hasil dari perintah ini tidak akan disimpan selamanya, tetapi hanya sampai reboot pertama.  Jika Anda membutuhkan lebih banyak ketekunan, tambahkan baris ini ke file <code>/etc/sysctl.conf</code> : </p><br><pre> <code class="plaintext hljs">echo vm.oom-kill = 1 &gt;&gt;/etc/sysctl.conf</code> </pre> <br><p>  Cara lain untuk mengaktifkan dan menonaktifkan adalah dengan menulis variabel <code>panic_on_oom</code> .  Nilai selalu dapat diperiksa di <code>/proc</code> . </p><br><pre> <code class="plaintext hljs">$ cat /proc/sys/vm/panic_on_oom 0</code> </pre> <br><p>  Jika Anda menetapkan nilai ke 0, maka ketika memori habis, panik kernel tidak akan. </p><br><pre> <code class="plaintext hljs">$ echo 0 &gt; /proc/sys/vm/panic_on_oom</code> </pre> <br><p>  Jika Anda menetapkan nilai ke 1, maka ketika memori habis, kernel panik akan terjadi. </p><br><pre> <code class="plaintext hljs">echo 1 &gt; /proc/sys/vm/panic_on_oom</code> </pre> <br><p>  OOM-Killer tidak hanya bisa dihidupkan dan dimatikan.  Kami telah mengatakan bahwa Linux dapat menyimpan lebih banyak memori untuk proses daripada yang ada, tetapi sebenarnya tidak mengalokasikannya, dan perilaku ini dikendalikan oleh parameter kernel Linux.  Variabel <code>vm.overcommit_memory</code> bertanggung jawab untuk ini. </p><br><p>  Anda dapat menentukan nilai-nilai berikut untuk itu: </p><br><p>  <strong>0:</strong> Kernel itu sendiri memutuskan apakah akan mencadangkan terlalu banyak memori.  Ini adalah nilai default pada sebagian besar versi Linux. <br>  <strong>1:</strong> kernel akan selalu menyimpan memori ekstra.  Ini berisiko, karena ingatan bisa berakhir, karena, kemungkinan besar, suatu hari proses akan menuntut apa yang seharusnya. <br>  <strong>2:</strong> kernel tidak akan menyimpan lebih banyak memori daripada yang ditentukan dalam parameter <code>overcommit_ratio</code> . </p><br><p>  Dalam parameter ini Anda menentukan persentase memori yang redundansi diizinkan.  Jika tidak ada ruang untuk itu, memori tidak dialokasikan, reservasi akan ditolak.  Ini adalah opsi teraman yang direkomendasikan untuk PostgreSQL.  OOM-Killer dipengaruhi oleh elemen lain - fitur swap, yang dikendalikan oleh variabel <code>cat /proc/sys/vm/swappiness</code> .  Nilai-nilai ini memberi tahu kernel cara menangani paging.  Semakin besar nilainya, semakin kecil kemungkinan OOM akan menghentikan proses, tetapi karena I / O, ini berdampak negatif pada database.  Dan sebaliknya - semakin kecil nilainya, semakin tinggi kemungkinan intervensi OOM-Killer, tetapi kinerja basis data juga lebih tinggi.  Nilai default adalah 60, tetapi jika seluruh database sesuai dengan memori, yang terbaik adalah mengatur nilai ke 1. </p><br><h3 id="itogi">  Ringkasan </h3><br><p>  Jangan takut dengan si pembunuh di OOM-Killer.  Dalam hal ini, si pembunuh akan menjadi penyelamat sistem Anda.  Ini "membunuh" proses terburuk dan menyelamatkan sistem dari penghentian abnormal.  Untuk menghindari keharusan menggunakan OOM-Killer untuk menyelesaikan PostgreSQL, atur <code>vm.overcommit_memory</code> ke 2. Ini tidak menjamin bahwa OOM-Killer tidak harus campur tangan, tetapi akan mengurangi kemungkinan proses PostgreSQL dipaksa untuk diakhiri. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id464245/">https://habr.com/ru/post/id464245/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id464225/index.html">REST Assured: apa yang kami pelajari dari lima tahun menggunakan alat ini</a></li>
+<li><a href="../id464227/index.html">Bagaimana mereka hidup dan bekerja di Krasnodar</a></li>
+<li><a href="../id464233/index.html">Konstruksi Chaos 2019 Hadir ...</a></li>
+<li><a href="../id464235/index.html">"Slurm" sangat adiktif. Bagaimana mengubah komplotan rahasia menjadi proyek global</a></li>
+<li><a href="../id464237/index.html">Pascal Tanchiki: bagaimana anak-anak diajarkan pemrograman pada tahun 90-an dan apa yang salah dengan itu</a></li>
+<li><a href="../id464249/index.html">Pekerjaan jarak jauh dalam mode penuh waktu: harus mulai dari mana jika Anda belum senior</a></li>
+<li><a href="../id464253/index.html">Berhenti menggunakan datetime</a></li>
+<li><a href="../id464255/index.html">NX JAVA meetup # 14: penelitian kinerja pada pro, pro dan kontra dari Spark dalam solusi berdasarkan Cassandra</a></li>
+<li><a href="../id464257/index.html">Ringkasan UX: Reboot</a></li>
+<li><a href="../id464259/index.html">Cloud games: penilaian langsung atas kemampuan layanan untuk bermain di PC yang lemah</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
