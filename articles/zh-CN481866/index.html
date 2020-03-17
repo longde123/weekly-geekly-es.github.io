@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏽‍🚀 👨🏾‍🎨 ▶️ DBA：当VACUUM通过时-我们手动清洁桌子 💛 🌵 🐊</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="VACUUM只能从PostgreSQL中的一个表中“清理” 任何人都看不到的 -也就是说，没有一个活动查询在更改这些记录之前启动。 
+
+ 但是是否存在这种令人不快的类型（OLTP上的长期OLAP负载）？ 如何清理被长查询包围而不是踩耙的活跃变化的表 ？ 
+
+
+
+ 我们撒了耙子 
+ 首先，我们确定它是...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>DBA：当VACUUM通过时-我们手动清洁桌子</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/481866/">  <a href="https://postgrespro.ru/docs/postgresql/12/routine-vacuuming">VACUUM</a>只能从PostgreSQL中的一个表中“清理” <b>任何人都看不到的</b> -也就是说，没有一个活动查询在更改这些记录之前启动。 <br><br> 但是是否存在这种令人不快的类型（OLTP上的长期OLAP负载）？ 如何<b>清理</b>被长查询包围而不是踩耙<b>的活跃变化的表</b> ？ <br><br><img src="https://habrastorage.org/webt/ny/ux/jf/nyuxjfgkp2c4vvbi0j-jjhypski.png"><br><a name="habracut"></a><br><h2> 我们撒了耙子 </h2><br> 首先，我们确定它是什么以及我们要解决的问题如何产生。 <br><br> 通常，这种情况发生<u>在相对较小的桌子上</u> ，但是其中有<b>很多变化</b> 。 通常，它们要么是不同的<u>计数器/集合/等级</u> （经常在其上执行UPDATE），要么是用于处理某种持续运行的事件流的<u>缓冲区队列</u> ，有关事件的记录始终为INSERT / DELETE。 <br><br> 让我们尝试使用等级重现该选项： <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> tbl(v <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>); <span class="hljs-comment"><span class="hljs-comment">--       INSERT INTO tbl SELECT chr(ascii('a'::text) + i) k , 0 v FROM generate_series(0, 25) i;</span></span></code> </pre> <br> 并行地，在不同的连接中，开始进行长查询，收集一些复杂的统计信息，但<b>不影响我们的表</b> ： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_sleep(<span class="hljs-number"><span class="hljs-number">10000</span></span>);</code> </pre> <br> 现在，我们多次更新计数器之一的值。 为了实验的纯正，我们将<a href="https://habr.com/post/481610/">使用dblink在单独的事务中</a>执行此<a href="https://habr.com/post/481610/">操作</a> ，因为这实际上会发生： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DO</span></span> $$ <span class="hljs-keyword"><span class="hljs-keyword">DECLARE</span></span> i <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>; tsb timestamp; tse timestamp; d double precision; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> PERFORM dblink_connect(<span class="hljs-string"><span class="hljs-string">'dbname='</span></span> || current_database() || <span class="hljs-string"><span class="hljs-string">' port='</span></span> || current_setting(<span class="hljs-string"><span class="hljs-string">'port'</span></span>)); FOR i IN 1..10000 LOOP tsb = clock_timestamp(); PERFORM dblink($e$<span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> v = v + <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> k = <span class="hljs-string"><span class="hljs-string">'a'</span></span>;$e$); tse = clock_timestamp(); IF i % 1000 = 0 THEN d = (extract('epoch' from tse) - extract('epoch' from tsb)) * 1000; RAISE NOTICE 'i = %, exectime = %', lpad(i::text, 5), lpad(d::text, 5); <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IF</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LOOP</span></span>; PERFORM dblink_disconnect(); <span class="hljs-keyword"><span class="hljs-keyword">END</span></span>; $$ LANGUAGE plpgsql;</code> </pre> <br><pre> <code class="plaintext hljs">NOTICE: i = 1000, exectime = 0.524 NOTICE: i = 2000, exectime = 0.739 NOTICE: i = 3000, exectime = 1.188 NOTICE: i = 4000, exectime = 2.508 NOTICE: i = 5000, exectime = 1.791 NOTICE: i = 6000, exectime = 2.658 NOTICE: i = 7000, exectime = 2.318 NOTICE: i = 8000, exectime = 2.572 NOTICE: i = 9000, exectime = 2.929 NOTICE: i = 10000, exectime = 3.808</code> </pre> <br> 怎么了 为什么即使对于单个记录的最简单的UPDATE <b>，运行时间也降低了7倍</b> -从0.524ms到3.808ms？ 而且我们的评级正在越来越慢地建立。 <br><br><h2>  MVCC是罪魁祸首 </h2><br> 这全部<a href="https://habr.com/ru/company/postgrespro/blog/445820/">与MVCC机制</a>有关， <a href="https://habr.com/ru/company/postgrespro/blog/445820/">该机制</a>会强制请求查看记录的所有先前版本。 因此，让我们从“死”版本中清除表： <br><br><pre> <code class="sql hljs">VACUUM VERBOSE tbl;</code> </pre> <br><pre> <code class="plaintext hljs">INFO: vacuuming "public.tbl" INFO: "tbl": found 0 removable, 10026 nonremovable row versions in 45 out of 45 pages DETAIL: 10000 dead row versions cannot be removed yet, oldest xmin: 597439602</code> </pre> <br> 哦，没什么好清洁的！ 并行<b>查询使我们感到困扰</b> -毕竟，有一天，他可能想引用这些版本（如果？），那么他应该可以使用它们。 因此，即使VACUUM FULL也无法帮助我们。 <br><br><h2>  “夹紧”桌子 </h2><br> 但是我们可以肯定的是，我们的表不需要查询。 因此，让我们尝试将系统性能恢复到适当的框架，因为VACUUM通过之后，至少是“手动”地丢弃了表格中多余的所有内容。 <br><br> 为了更清楚，让我们考虑一个缓冲表的示例。 也就是说，有一个很大的INSERT / DELETE流，有时表是完全空的。 但是，如果那里不为空，则必须<b>保存其当前内容</b> 。 <br><br><h4>  ＃0：评估情况 </h4><br> 很明显，即使在每次操作之后，您都可以尝试对表进行操作，但这没有多大意义-维护开销显然会大于目标请求的吞吐量。 <br><br> 如果出现以下情况，我们将制定标准-“该采取行动了” <br><br><ul><li>  VACUUM已经运行很长时间了 <br> 我们期望有很大的负载，因此距离上一次[自动] VACUUM为<b>60秒</b> 。 </li><li> 物理表大小大于目标 <br> 我们将其定义为相对于最小大小的页数（8KB块）的两倍- <b>每个堆1 blk +每个索引1 blk-对于</b>潜在的空表。 如果我们期望一定数量的数据将始终“正常”保留在缓冲区中，那么收紧该公式是合理的。 </li></ul><br><div class="spoiler">  <b class="spoiler_title">验证请求</b> <div class="spoiler_text"><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> relpages , (( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">count</span></span>(*) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_index <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> indrelid = cl.oid ) + <span class="hljs-number"><span class="hljs-number">1</span></span>) &lt;&lt; <span class="hljs-number"><span class="hljs-number">13</span></span> size_norm <span class="hljs-comment"><span class="hljs-comment">--    * current_setting('block_size')::bigint,     ?.. , pg_total_relation_size(oid) size , coalesce(extract('epoch' from (now() - greatest( pg_stat_get_last_vacuum_time(oid) , pg_stat_get_last_autovacuum_time(oid) ))), 1 &lt;&lt; 30) vaclag FROM pg_class cl WHERE oid = $1::regclass -- tbl LIMIT 1;</span></span></code> </pre> <br><pre> <code class="plaintext hljs">relpages | size_norm | size | vaclag ------------------------------------------- 0 | 24576 | 1105920 | 3392.484835</code> </pre> </div></div><br><h4>  ＃1：真空 </h4><br> 我们无法事先知道并行查询是否确实在阻碍我们-确切地说，自并行查询问世以来，已有多少记录已“过时”。 因此，无论如何，当我们决定以某种方式处理表时，都应首先在其上运行<b>VACUUM-</b>与VACUUM FULL不同，它不会干扰并行的数据读写过程。 <br><br> 同时，他可以立即清除我们要删除的大部分内容。 是的，此表的后续请求将<b>在“热缓存”中</b>发送给我们，这将减少它们的持续时间-因此，减少了通过我们的服务交易阻止其他人的总时间。 <br><br><h4>  ＃2：有人在家吗？ </h4><br> 让我们检查一下-表格中是否有任何内容： <br><br><pre> <code class="sql hljs">TABLE tbl LIMIT 1;</code> </pre> <br> 如果仅剩一条记录，那么我们可以节省很多时间-只需执行<a href="https://postgrespro.ru/docs/postgresql/12/sql-truncate">TRUNCATE即可</a> ： <br><br><blockquote> 它的作用与对每个表的无条件DELETE命令相同，但速度更快，因为它实际上并不扫描表。 此外，它会立即释放磁盘空间，因此在此之后无需执行VACUUM操作。 </blockquote> 是否需要同时重置表序列的计数器（RESTART IDENTITY），请自己决定。 <br><br><h4>  ＃3：一切-反过来！ </h4><br> 由于我们在竞争激烈的环境中工作，因此在这里检查表中是否没有条目时，已经有人可以在其中写一些东西了。 我们不应该丢失这些信息，那又如何呢？ 没错，必须这样做，以确保没有人可以确定录制。 <br><br> 为此，我们需要为我们的事务启用<b>SERIALIZABLE</b>隔离（是的，在这里我们开始事务）并“紧密”锁定表： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TRANSACTION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ISOLATION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LEVEL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SERIALIZABLE</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">LOCK</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ACCESS</span></span> EXCLUSIVE <span class="hljs-keyword"><span class="hljs-keyword">MODE</span></span>;</code> </pre> <br> 此级别的阻止是由于我们要对其执行的操作。 <br><br><h4>  ＃4：利益冲突 </h4><br> 我们来到这里，我们想“锁定”平板电脑-例如，如果有人当时正在使用平板电脑，请从平板电脑上阅读吗？ 我们将“吊死”以期望释放此块，而其他希望阅读的人将已经埋在我们里面... <br><br> 为了防止这种情况的发生，请“牺牲自己”-如果我们在一定时间内（允许的很小时间内）仍然无法获得锁，那么我们将从数据库中获取一个异常，但是至少我们不会打扰其余的人。 <br><br> 为此，设置会话变量<a href="https://www.postgresql.org/docs/current/runtime-config-client.html">lock_timeout</a> （对于9.3+版本）或/和<a href="https://www.postgresql.org/docs/current/runtime-config-client.html">statement_timeout</a> 。 要记住的主要事情是，statement_timeout的值仅适用于下一条语句。 也就是说，像这样粘贴时， <u>它将无法工作</u> ： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> statement_timeout = ...;<span class="hljs-keyword"><span class="hljs-keyword">LOCK</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> ...;</code> </pre> <br> 为了避免以后恢复该变量的“旧”值，我们使用<b>SET LOCAL</b>表格，该表格将设置范围限制为当前事务。 <br><br> 请记住，statement_timeout适用于所有后续请求，因此，如果表中有很多数据，则事务不能扩展到不可接受的值。 <br><br><h4>  ＃5：复制数据 </h4><br> 如果表并非完全为空，则必须通过辅助临时标签重新保存数据： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TEMPORARY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> _tmp_swap <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DROP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl;</code> </pre><br>  <b>ON COMMIT DROP</b>签名意味着在事务结束时，临时表将不存在，并且您不需要在连接上下文中手动删除它。 <br><br> 由于我们假设没有太多“实时”数据，因此该操作应该足够快。 <br><br> 好，仅此而已！ 请记住<a href="https://habr.com/post/479656/">，</a>在事务完成后<a href="https://habr.com/post/479656/">运行ANALYZE</a>来标准化表的统计信息（如有必要）。 <br><br><h2> 我们收集最终脚本 </h2><br> 我们使用这样的“伪python”： <br><br><pre> <code class="python hljs"><span class="hljs-comment"><span class="hljs-comment">#     stat &lt;- SELECT relpages , (( SELECT count(*) FROM pg_index WHERE indrelid = cl.oid ) + 1) &lt;&lt; 13 size_norm , pg_total_relation_size(oid) size , coalesce(extract('epoch' from (now() - greatest( pg_stat_get_last_vacuum_time(oid) , pg_stat_get_last_autovacuum_time(oid) ))), 1 &lt;&lt; 30) vaclag FROM pg_class cl WHERE oid = $1::regclass -- table_name LIMIT 1; #      VACUUM   if stat.size &gt; 2 * stat.size_norm and stat.vaclag is None or stat.vaclag &gt; 60: -&gt; VACUUM %table; try: -&gt; BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE; #         1s -&gt; SET LOCAL statement_timeout = '1s'; SET LOCAL lock_timeout = '1s'; -&gt; LOCK TABLE %table IN ACCESS EXCLUSIVE MODE; #          row &lt;- TABLE %table LIMIT 1; #       ""  -   ,    - ""      if row is None: -&gt; TRUNCATE TABLE %table RESTART IDENTITY; else: #      - -&gt; CREATE TEMPORARY TABLE _tmp_swap ON COMMIT DROP AS TABLE %table; #      -&gt; TRUNCATE TABLE %table; #         -&gt; INSERT INTO %table TABLE _tmp_swap; -&gt; COMMIT; except Exception as e: #    ,     "" -   if not isinstance(e, InterfaceError): -&gt; ROLLBACK;</span></span></code> </pre> <br><div class="spoiler">  <b class="spoiler_title">而且您不能第二次复制数据吗？</b> <div class="spoiler_text"> 原则上，如果表的oid本身不与BL端的其他活动或DB端的FK绑定，则是可能的： <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> _swap_%<span class="hljs-keyword"><span class="hljs-keyword">table</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">LIKE</span></span> %<span class="hljs-keyword"><span class="hljs-keyword">table</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INCLUDING</span></span> ALL); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> _swap_%<span class="hljs-keyword"><span class="hljs-keyword">table</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> %<span class="hljs-keyword"><span class="hljs-keyword">table</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">DROP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> %<span class="hljs-keyword"><span class="hljs-keyword">table</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> _swap_%<span class="hljs-keyword"><span class="hljs-keyword">table</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RENAME</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TO</span></span> %<span class="hljs-keyword"><span class="hljs-keyword">table</span></span>;</code> </pre> </div></div><br> 让我们在源表上运行脚本并检查指标： <br><pre> <code class="sql hljs">VACUUM tbl; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TRANSACTION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ISOLATION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LEVEL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SERIALIZABLE</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LOCAL</span></span> statement_timeout = <span class="hljs-string"><span class="hljs-string">'1s'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LOCAL</span></span> lock_timeout = <span class="hljs-string"><span class="hljs-string">'1s'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">LOCK</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ACCESS</span></span> EXCLUSIVE <span class="hljs-keyword"><span class="hljs-keyword">MODE</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TEMPORARY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> _tmp_swap <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DROP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl; <span class="hljs-keyword"><span class="hljs-keyword">TRUNCATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl; <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> _tmp_swap; <span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span>;</code> </pre> <br><pre> <code class="plaintext hljs">relpages | size_norm | size | vaclag ------------------------------------------- 0 | 24576 | 49152 | 32.705771</code> </pre> <br> 一切顺利！ 该表已缩小了50倍，并且所有UPDATE再次快速运行。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN481866/">https://habr.com/ru/post/zh-CN481866/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN481852/index.html">3D Anet N4打印机评论//如何逼真的给深色灵魂角色上色</a></li>
+<li><a href="../zh-CN481854/index.html">通过仪表板原型测试想法</a></li>
+<li><a href="../zh-CN481858/index.html">Google日历上有年龄的生日</a></li>
+<li><a href="../zh-CN481860/index.html">IT在2020年应该做什么？</a></li>
+<li><a href="../zh-CN481862/index.html">Nvidia Jetson嵌入式机器学习系统</a></li>
+<li><a href="../zh-CN481868/index.html">达加斯：新起点</a></li>
+<li><a href="../zh-CN481874/index.html">指标-项目运行状况指标</a></li>
+<li><a href="../zh-CN481880/index.html">移动PvP射击游戏的物理原理以及我们如何与ECS交朋友</a></li>
+<li><a href="../zh-CN481882/index.html">4. Fortinet入门v6.0。 防火墙政策</a></li>
+<li><a href="../zh-CN481884/index.html">老年人的十字路口：下一步要去哪里？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

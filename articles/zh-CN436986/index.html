@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👳 📮 👨🏾‍💼 Linux API 管理内核文件I / O缓冲 💼 🧛🏻 😛</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="嗨，habrozhiteli！ 我们已经写过Michael Kerrisk的书“ Linux API。 综合指南 。 ” 现在，我们决定出版《管理内核中管理的文件I / O缓冲》一书的摘录。 
+
+ 可以强制为输出文件重置内核缓冲区内存。 如果应用程序在继续工作之前（例如，更改进程日志记录数据库）必须...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Linux API 管理内核文件I / O缓冲</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/piter/blog/436986/"> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><img src="https://habrastorage.org/webt/qk/pj/rf/qkpjrftqtsq-bnryowiwf_v88us.jpeg" align="left" alt="图片"></a> 嗨，habrozhiteli！ 我们已经写过Michael Kerrisk的书<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“ Linux API。</a>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">综合指南</a> 。 <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">”</a> 现在，我们决定出版《管理内核中管理的文件I / O缓冲》一书的摘录。 <br><br> 可以强制为输出文件重置内核缓冲区内存。 如果应用程序在继续工作之前（例如，更改进程日志记录数据库）必须保证将输出实际写入磁盘（或至少写入硬件磁盘缓存），有时这是必要的。 <br><br> 在考虑用于控制内核缓冲的系统调用之前，有必要考虑一下SUSv3的几个相关定义。 <br><a name="habracut"></a><br>  <b>具有数据和文件完整性的同步I / O</b> <br><br> 在SUSv3中，同步I / O完成的概念意味着“导致成功将数据传输到磁盘或被诊断为不成功的I / O操作”。 <br><br>  SUSv3定义了两种不同类型的同步I / O终端。 类型之间的差异与描述文件的元数据（“有关数据的数据”）有关。 内核将它们与文件本身的数据一起存储。 在检查文件索引节点时，文件元数据详细信息将在14.4节中讨论。 同时，只需注意文件元数据包含以下信息，例如有关文件所有者及其组的所有者，对文件的访问权限，文件大小，与文件的硬链接数，显示文件上次访问时间，上次修改时间的时间戳记最后元数据的时间，以及指向数据块的指针。 <br><br>  SUSv3中同步I / O完成的第一种类型是数据完整性完成。 更新文件数据时，应确保传递足以允许进一步提取该数据以继续工作的信息。 <br><br>  -对于读取操作，这意味着已将请求的文件数据（从磁盘）传输到进程。 如果有待处理的写操作可能会影响所请求的数据，则数据将在读取前传输到磁盘。 <br><br>  -对于写操作，这意味着已将写请求中指定的数据传输（到磁盘），就像提取此数据所需的所有文件元数据一样。 要注意的关键点：确保从修改后的文件中提取数据，没有必要传输所有的medaten文件。 需要迁移的已修改文件的元数据属性的一个示例是其大小（如果写入操作增加了文件大小）。 相反，在随后的数据检索发生之前，无需将要修改的文件的时间戳记传输到磁盘。 <br><br>  SUSv3中定义的第二种同步I / O完成是文件完整性完成。 这是用于完成具有数据完整性的同步I / O的高级选项。 此模式之间的区别在于，即使在随后的文件数据提取过程中不需要此操作，在文件更新期间，其所有元数据也会传输到磁盘。 <br><br>  <b>系统调用以控制文件I / O期间的内核缓冲</b> <br><br>  fsync（）系统调用重置与具有fd描述符的打开文件关联的所有缓冲数据和所有元数据。 同步I / O完成后，调用fsync（）会将文件置于完整性状态（文件）。 <br><br> 仅在完成向磁盘设备（或至少向其缓存）的数据传输后，fsync（）调用才返回控制。 <br><br><pre><code class="plaintext hljs">#include &lt;unistd.h&gt; int fsync(int fd);</code> </pre> <br> 成功返回0或错误返回-1 <br><br>  fdatasync（）系统调用的工作原理与fsync（）完全相同，但是在同步I / O完成之后，将文件置于完整性（数据）状态。 <br><br><pre> <code class="plaintext hljs">#include &lt;unistd.h&gt; int fdatasync(int fd);</code> </pre> <br> 成功返回0或错误返回-1 <br><br> 使用fdatasync（）可能会将磁盘操作的数量从fsync（）系统调用所需的两个减少到一个。 例如，如果文件数据已更改，但大小保持不变，则调用fdatasync（）仅强制更新数据。  （上面已经指出，为了完成具有数据完整性的同步I / O操作，不需要将对属性的更改（例如文件上次修改的时间）进行传输。）相反，调用fsync（）也会强制将元数据传输到磁盘。 <br><br> 磁盘I / O操作数量的减少对于单个应用程序非常有用，对于这些应用程序，特定元数据（例如时间戳）的性能和准确更新起着至关重要的作用。 对于可以一次生成多个文件更新的应用程序，这可以显着提高性能。 因为文件数据和元数据通常位于磁盘的不同部分，所以要同时更新这两个文件，则需要在磁盘上进行重复的向前和向后搜索。 <br><br> 在Linux 2.2和更早版本上，fdatasync（）被实现为对fsync（）的调用，因此不会提高性能。 <br><br><blockquote> 从内核版本2.6.17开始，Linux提供了一个非标准的系统调用sync_file_range（）。 与fdatasync（）相比，它使您可以更准确地控制将文件数据刷新到磁盘的过程。 调用时，您可以指定文件中要放置的区域，并设置标志来设置阻止此调用的条件。 有关更多详细信息，请参见sync_file_range（2）手册页。 </blockquote><br>  sync（）系统调用导致将包含更新文件信息（即数据块，指针块，元数据等）的所有内核缓冲区刷新到磁盘。 <br><br><pre> <code class="plaintext hljs">#include &lt;unistd.h&gt; void sync(void);</code> </pre> <br> 在Linux实现中，仅在所有数据都已传输到磁盘设备（或至少已传输到其缓存）之后，sync（）函数才返回控制。 但是在SUSv3中，允许sync（）简单地将用于I / O操作的数据传输引入计划并返回控制，直到传输完成。 <br><br><blockquote> 如果修改后的内核缓冲区在30秒内未显式同步，则连续执行的内核线程会将修改后的内核缓冲区刷新到磁盘。 这样做是为了防止数据缓冲区长时间与相应的磁盘文件不同步（并且不会在系统出现故障时使它们遭受丢失的风险）。 在Linux 2.6上，此任务由pdflush内核线程执行。  （在Linux 2.4上，它是由kupdated内核线程执行的。） <br><br> 在/ proc / sys / vm / dirty_expire_centisecs文件中定义了经过一段时间后（以百分之一秒为单位）的pdflush流代码将修改后的缓冲区刷新到磁盘上。 同一目录中的其他文件控制pdflush流执行的操作的其他功能。 <br></blockquote><br>  <b>打开所有记录的同步模式：O_SYNC</b> <br><br> 在调用open（）时指定O_SYNC标志会使所有后续输出操作以同步模式执行： <br><br><pre> <code class="plaintext hljs">fd = open(pathname, O_WRONLY | O_SYNC);</code> </pre> <br> 在调用open（）之后，对文件执行的每个write（）操作都会自动将数据和文件元数据刷新到磁盘上（也就是说，写入操作是具有文件完整性的同步写入操作）。 <br><br><blockquote> 在BSD系统的旧版本中，使用O_FSYNC标志来提供O_SYNC标志所包含的功能。 在glibc中，O_FSYNC标志定义为O_SYNC的同义词。 </blockquote><br>  <b>O_SYNC标志的性能影响</b> <br><br> 使用O_SYNC标志（或频繁调用fsync（），fdatasync（）或sync（））会极大地影响性能。 在桌子上。 图13.3显示了将100万字节写入刚刚创建的文件（在ext2文件系统中）所需的时间，该文件是使用O_SYNC标志设置且未选中的各种缓冲区大小的。 使用“香草”内核版本2.6.30和ext2文件系统（块大小为4096字节）获得了结果（使用本书源代码中提供的filebuff / write_bytes.c程序）。 对于给定的缓冲区大小，每行包含20次开始后获得的平均值。 <br><br> 表13.3  O_SYNC标志对100万字节写入速度的影响 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/_r/va/c0/_rvac0j3fu9affstt4_poiq5ybw.png" alt="图片"></div><br> 如您所见，指定O_SYNC标志会导致使用1字节的缓冲区超过1000次时花费的时间急剧增加。 另请注意，执行带有O_SYNC标志的记录时，所用时间与CPU使用时间之间存在很大差异。 当每个缓冲区的实际内容刷新到磁盘时，这是阻止程序执行的结果。 <br><br> 在结果如表所示。  13.3中，未考虑使用O_SYNC时影响性能的另一个因素。 现代磁盘驱动器具有较大的内部缓存，默认情况下，设置O_SYNC标志仅会将数据传输到此缓存。 如果禁用磁盘缓存（使用hdparm –W0命令），则O_SYNC的性能影响将更加显着。 缓冲区大小为1字节时，经过的时间将从1030秒增加到大约16,000秒。 缓冲区大小为4096字节时，经过的时间将从0.34秒增加到4秒。 因此，如果您需要强制将内核缓冲区刷新到磁盘，则应考虑是否可以使用更大的write（）缓冲区设计应用程序，或者考虑使用fsync（）或fdatasync（）定期调用而不是O_SYNC标志。 <br><br>  <b>标志O_DSYNC和O_RSYNC</b> <br><br>  SUSv3定义了两个与同步I / O相关的其他打开文件状态标志：O_DSYNC和O_RSYNC。 <br><br>  O_DSYNC标志导致后续的同步写入操作，并且终止的I / O的数据完整性（类似于使用fdatasync（））。 其操作的效果与O_SYNC标志所引起的效果不同，使用O_SYNC标志会导致后续的具有文件完整性的同步写操作（如fsync（））。 <br><br>  O_RSYNC标志与O_SYNC或O_DSYNC一起指定，并导致在读取操作期间扩展了与这些标志关联的行为。 在打开文件时指定O_RSYNC和O_DSYNC标志会导致随后的同步读取操作具有数据完整性（也就是说，在读取完成之前，由于存在O_DSYNC，所有未完成的文件条目都已完成）。 在打开文件时指定O_RSYNC和O_SYNC标志会导致后续具有文件完整性的同步读取操作（即，在读取完成之前，由于存在O_SYNC，所有未完成的文件条目都已完成）。 <br><br> 在内核版本2.6.33发行之前，Linux上未实现O_DSYNC和O_RSYNC标志，并且这些常量在glibc头文件中定义为设置O_SYNC标志。  （对于O_RSYNC，情况并非如此，因为O_SYNC不会影响读取操作的任何功能。） <br><br> 从内核版本2.6.33开始，Linux实现O_DSYNC标志，并且可能在将来的内核版本中添加O_RSYNC标志的实现。 <br><br><blockquote> 在Linux上发布2.6.33内核之前，还没有完全实现O_SYNC语义。 而是将O_SYNC标志实现为O_DSYNC。 在与用于较旧内核的GNU C库的较旧版本链接的应用程序中，在Linux版本2.6.33和更高版本上，O_SYNC标志的行为仍类似于O_DSYNC。 这样做是为了保持此类程序的熟悉行为。  （为了保持内核2.6.33中的向后二进制兼容性，已为O_DSYNC标志分配了旧的O_SYNC标志，而新的O_SYNC标志包括O_DSYNC标志（在一台机器上分别为04010000和010000）。这允许使用新的头文件编译的应用程序，至少要在2.6.33版之前的内核中获得O_DSYNC语义。） </blockquote><br><h3>  13.4。  I / O缓冲概述 </h3><br> 在图。 图13.1显示了stdio库和内核使用的（用于输出文件的）缓冲方案，还显示了控制每种缓冲类型的机制。 如果将图表拖到中间，您将看到stdio库的功能将用户数据传输到stdio缓冲区，该缓冲区在用户存储空间中工作。 当此缓冲区已满时，stdio库将诉诸write（）系统调用，该调用将数据传输到内核缓冲区高速缓存（位于内核内存中）。 结果，内核启动磁盘操作以将数据传输到磁盘。 <br><br> 在图的电路的左侧。  13.1显示了可以在任何时候显式强制刷新任何缓冲区的调用。 右侧部分显示了可用于自动执行重置的调用，方法是关闭stdio库中的缓冲或通过打开系统执行的同步执行模式的文件输出，以便每个write（）调用将立即刷新到磁盘。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/cc/1f/of/cc1fofbz5pqtee-lktnypfahsac.png" alt="图片"></div><br><br><h3>  13.5。 内核I / O通知 </h3><br>  posix_fadvise（）系统调用允许该进程通知内核其访问文件数据的首选方法。 <br><br> 内核可以（但不是必须）使用posix_fadvise（）系统调用提供的信息来优化其对缓冲区高速缓存的使用，从而提高进程和整个系统的I / O性能。 调用posix_fadvise（）不会影响程序的语义。 <br><br><pre> <code class="plaintext hljs">#define _XOPEN_SOURCE 600 #include &lt;fcntl.h&gt; int posix_fadvise(int fd, off_t offset, off_t len, int advice);</code> </pre> <br> 成功时返回0或错误号为正 <br><br>  fd参数是一个文件描述符，用于标识需要与内核联系的文件。 参数offset和len标识与通知相关的文件区域：offset指示该区域的初始偏移量，len指示其大小（以字节为单位）。 将len设置为0意味着将包含所有字节，从offset开始到文件的末尾。  （在2.6.6之前的内核版本中，len的值0从字面上解释为0字节。） <br><br> 建议参数显示进程访问文件的预期性质。 它使用以下值之一定义。 <br><br>  POSIX_FADV_NORMAL-进程没有关于处理方式的特殊通知。 如果没有为该文件提供任何通知，则这是默认行为。 在Linux上，此操作将窗口设置为主动从文件读取数据至其原始大小（128 KB）。 <br><br>  POSIX_FADV_SEQUENTIAL-该过程涉及从较小的偏移量到较大的偏移量顺序读取数据。 在Linux上，此操作会将窗口设置为主动从文件读取数据，使其原始值翻倍。 <br><br>  POSIX_FADV_RANDOM-该过程涉及以随机顺序访问数据。 在Linux上，此选项禁用从文件主动读取数据。 <br><br>  POSIX_FADV_WILLNEED-该过程涉及在不久的将来访问文件的指定区域。 内核抢先读取数据，以offset和len参数指定的范围内的文件数据填充缓冲区高速缓存。 随后对文件的read（）调用不会阻止磁盘I / O，而只是从缓冲区高速缓存中检索数据。 内核不保证从文件检索的数据在缓冲区高速缓存中的时间长度。 如果在另一个进程或内核的操作期间特别需要内存，则该页面最终将被重用。 换句话说，如果对内存的需求很高，我们需要保证对posix_fadvise（）的调用与随后的对read（）的调用之间的时间间隔很小。  （特定于Linux的readahead（）系统调用提供了与POSIX_FADV_WILLNEED操作等效的功能。） <br><br>  POSIX_FADV_DONTNEED-该过程在不久的将来不涉及对指定文件区域的调用。 以这种方式，通知内核它可以释放相应的缓存页面（如果有）。 在Linux上，此操作分两个阶段执行。 首先，如果主机设备上的写队列未满一系列请求，则内核将丢弃指定区域中的所有已修改缓存页面。 然后，内核尝试从指定区域释放所有缓存页面。 对于此区域中的已修改页面，仅当在第一阶段将它们记录到基本设备上（即设备上的记录队列未满）时，第二阶段才会成功完成。 由于应用程序无法检查设备上队列的状态，因此可以在应用POSIX_FADV_DONTNEED之前通过在fd句柄上调用fsync（）或fdatasync（）来确保释放缓存页面。 <br><br>  POSIX_FADV_NOREUSE-该过程涉及一次性访问文件指定区域中的数据，而无需重新使用它。 因此，通知内核它可以在单次访问页面后释放页面。 在Linux上，此操作当前被忽略。 <br><br>  posix_fadvise（）规范仅出现在SUSv3中，并且并非所有UNIX实现都支持此接口。 在Linux上，自内核版本2.6起提供了posix_fadvise（）调用。 <br><br><h3>  13.6。 缓冲区高速缓存旁路：直接I / O </h3><br> 从内核版本2.4开始，Linux通过将数据直接从用户存储空间移动到文件或磁盘设备上，从而允许应用程序在执行磁盘I / O时绕过缓冲区高速缓存。 有时，这种模式称为直接或未处理的I / O。 <br><br><blockquote> 此处提供的信息仅适用于Linux，并且未在SUSv3中标准化。 但是，大多数UNIX实现提供了一些设备或文件的直接I / O访问选项。 </blockquote><br> 有时，直接I / O被误解为实现高I / O性能的一种手段。 但是对于大多数应用程序，使用直接I / O会大大降低性能。 事实是内核通过使用缓冲区高速缓存执行了多项优化以提高I / O性能，包括顺序主动读取数据，在磁盘块集群中执行I / O并允许进程访问相同的卷相同的文件，共享缓存中的缓冲区。 使用直接I / O时所有这些优化类型都会丢失。 它仅适用于具有特殊I / O要求的应用程序，例如，执行自己的缓存和I / O优化的数据库管理系统，并且不需要内核来浪费CPU时间和内存来执行相同的任务。 <br><br> 直接I / O可以在单个文件或块设备（例如磁盘）上执行。 为此，在使用open（）调用打开文件或设备时，将指定O_DIRECT标志。 <br><br> 从内核版本2.4.10开始，O_DIRECT标志起作用。 并非所有文件系统和Linux内核版本都支持使用此标志。 大多数基本文件系统都支持O_DIRECT标志，但是许多非UNIX文件系统（例如VFAT）不支持。 您可以通过测试选定的文件系统（如果文件系统不支持O_DIRECT，调用open（）将失败并显示EINVAL错误）来测试对此功能的支持，或者为此检查内核源代码。 <br><br><blockquote> 如果一个进程使用O_DIRECT标志打开文件，而另一个进程以通常的方式（即使用缓冲区缓存）打开文件，则缓冲区缓存的内容与通过直接I / O读取或写入的数据之间没有一致性。 应该避免这种发展。 <br><br> 可以在原始（8）手册页上找到有关获取对磁盘设备的原始访问权限的过时（现在不推荐）方法的信息。 </blockquote><br>  <b>直接I / O的对齐限制</b> <br><br> 由于直接I / O（在磁盘设备上并且与文件有关）都涉及直接访问磁盘，因此在执行I / O时必须注意一些限制。 <br><br>  -便携式数据缓冲区应在内存边界上对齐，为块大小的倍数。 <br><br>  -文件或从中开始传输数据的设备中的偏移量必须是块大小的倍数。 <br><br>  -传输数据的长度必须是块大小的倍数。 <br><br> 不遵守任何这些限制将导致EINVAL错误。 在上面的列表中，块大小是指设备物理块的大小（通常为512字节）。 <br><br><blockquote> 在Linux 2.4中执行直接I / O时，比Linux 2.6施加了更多的限制：对齐，长度和偏移量必须是所使用文件系统逻辑块大小的倍数。  （通常，文件系统中逻辑块的大小为1024、2048或4096字节。） <br></blockquote><br>  <b>程式范例</b> <br><br>   13.1     O_DIRECT     .        ,  (  ) ,     ,     , ,     ,       ,    ,  read().               4096 . <br><br>   ,      : <br><br><pre> <code class="plaintext hljs">$ ./direct_read /test/x 512  512    0 Read 512 bytes  $ ./direct_read /test/x 256 ERROR [EINVAL Invalid argument] read    512 $ ./direct_read /test/x 512 1 ERROR [EINVAL Invalid argument] read    512 $ ./direct_read /test/x 4096 8192 512 Read 4096 bytes  $ ./direct_read /test/x 4096 512 256 ERROR [EINVAL Invalid argument] read    512</code> </pre> <br><blockquote>    13.1   ,    ,    ,      memalign().  memalign()    7.1.4. </blockquote><br><pre> <code class="plaintext hljs">#define _GNU_SOURCE /*   O_DIRECT  &lt;fcntl.h&gt; */ #include &lt;fcntl.h&gt; #include &lt;malloc.h&gt; #include "tlpi_hdr.h" int main(int argc, char *argv[]) { int fd; ssize_t numRead; size_t length, alignment; off_t offset; void *buf; if (argc &lt; 3 || strcmp(argv[1], "–help") == 0) usageErr("%s file length [offset [alignment]]\n", argv[0]); length = getLong(argv[2], GN_ANY_BASE, "length"); offset = (argc &gt; 3) ? getLong(argv[3], GN_ANY_BASE, "offset") : 0; alignment = (argc &gt; 4) ? getLong(argv[4], GN_ANY_BASE, "alignment") : 4096; fd = open(argv[1], O_RDONLY | O_DIRECT); if (fd == -1) errExit("open"); /*  memalign()   ,   ,    .     'buf'  ,  'alignment',     .    ,   ,  ,    ,  256 ,     ,     512- .    '(char *)'        (     'void *',   memalign(). */ buf = (char *) memalign(alignment * 2, length + alignment) + alignment; if (buf == NULL) errExit("memalign"); if (lseek(fd, offset, SEEK_SET) == -1) errExit("lseek"); numRead = read(fd, buf, length); if (numRead == -1) errExit("read"); printf("Read %ld bytes\n", (long) numRead); exit(EXIT_SUCCESS); } _______________________________________________________________filebuff/direct_read.c</code> </pre> <br><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">»这本书的更多信息可以</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在出版商的网站上找到</font></font></a> <br>  » <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">目录</a> <br>  » <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">摘录</a> <br><br><font style="vertical-align: inherit;"><b><font style="vertical-align: inherit;">Linux</font></b><font style="vertical-align: inherit;">优惠券20％的折扣</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-Linux</font></font></b> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN436986/">https://habr.com/ru/post/zh-CN436986/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN436976/index.html">KeePass密码验证与泄漏数据库集成</a></li>
+<li><a href="../zh-CN436978/index.html">密钥卡形式的可编程TOTP令牌</a></li>
+<li><a href="../zh-CN436980/index.html">人工智能-全球繁荣的世界末日或黄金时代</a></li>
+<li><a href="../zh-CN436982/index.html">安全周04：如何处理密码</a></li>
+<li><a href="../zh-CN436984/index.html">微软停止支持Windows 10移动版</a></li>
+<li><a href="../zh-CN436988/index.html">相机，马达，大数据：电影制片厂如何使用AI寻找新电影</a></li>
+<li><a href="../zh-CN436990/index.html">Zimbra和Zextras Suite与NTC IT ROSA操作系统完全兼容</a></li>
+<li><a href="../zh-CN436992/index.html">选择HTTP反向代理时的尝试和错误</a></li>
+<li><a href="../zh-CN436994/index.html">Liquibase和Maven</a></li>
+<li><a href="../zh-CN436996/index.html">Mail.ru Group的Python专业化最终课程</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

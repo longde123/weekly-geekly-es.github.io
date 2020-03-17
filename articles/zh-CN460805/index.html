@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩‍💻 🏵️ 🤵🏽 如何以100 Mbps在微控制器之间传输数据 🛍️ 🍀 👐🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我遇到了这样的问题：我需要在两个微控制器STM32F407之间至少以100 Mbps的速度传输数据。 可能会使用以太网（MAC-to-MAC），但是麻烦的是它很忙，正是从这些数据中获取它们的... 
+ 从空闲外设来看，可能只有SPI-但只有42 Mbps。 
+
+ 奇怪的是，网络上没有任何准备就绪。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>如何以100 Mbps在微控制器之间传输数据</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/460805/">我遇到了这样的问题：我需要在两个微控制器STM32F407之间至少以100 Mbps的速度传输数据。 可能会使用以太网（MAC-to-MAC），但是麻烦的是它很忙，正是从这些数据中获取它们的... <br> 从空闲外设来看，可能只有SPI-但只有42 Mbps。 <br><a name="habracut"></a><br> 奇怪的是，网络上没有任何准备就绪。 于是我决定实现一个并行的8位时钟寄存器。 而且-频率可以设置为10 MHz（当然，时钟本身快一倍，但是20 MHz并不复杂）-因此，在如此低的频率下，您不必担心电路板的布线。 速度将是100 Mbps。 <br><br> 言归正传。 通常，系统看起来像这样。 我们在发送端使用计时器，比较信号之一输出到引脚-这将是时钟信号，第二个将用于启动DMA的一个突发。 <br><br> 我有一条82 MHz的总线（由于较高频率下的电流消耗:)，一个计时器处于相同的频率：因此，在ARR = 8的周期内，它的结果约为10 MHz（所以大约80 Mbps，好吧）。 <br><br>  DMA会将一个字节从存储器（当然是自动递增）直接传输到寄存器输出端口-在我的情况下，PORTE出现了-它的前8位正好适合DMA接收器地址。 <br><br> 在接收端，我们将在两个边沿上使用时钟信号为定时器提供时钟，周期为1，并且将使用更新信号开始DMA的转发，DMA从端口读取数据（再次进入PORTE端口）并以自动递增的方式写入内存。 <br><br> 现在，仍然可以正确配置所有内容（下面的代码）并运行。 两端的终止取决于DMA的中断。 <br><br> 但是，为了完整起见，您当然需要在代码中包括检查传输延迟和错误处理，但是我忽略了这一点。 <br><br> 在下面的代码中，TIM8计时器使用CC2通道输出信号-看看会发生什么。 <br><br><pre><code class="plaintext hljs">volatile int transmit_done; volatile int receive_done; void DMA2_Stream1_IRQHandler(void) { TIM8-&gt;CR1 &amp;= ~TIM_CR1_CEN; DMA2-&gt;LIFCR |= 0b1111 &lt;&lt; 8; receive_done = 1; } void DMA2_Stream4_IRQHandler(void) { TIM1-&gt;CR1 &amp;= ~TIM_CR1_CEN; TIM1-&gt;EGR |= TIM_EGR_BG; DMA2-&gt;HIFCR |= 0b1111101; transmit_done = 1; } void ii_receive(uint8_t *data, int len) { GPIOE-&gt;MODER = (GPIOE-&gt;MODER &amp; 0xFFFF0000) | 0x0000; DMA2_Stream1-&gt;PAR = (uint32_t) &amp;(GPIOE-&gt;IDR); DMA2_Stream1-&gt;M0AR = (uint32_t) data; DMA2_Stream1-&gt;NDTR = len; TIM8-&gt;CNT = 0; TIM8-&gt;BDTR |= TIM_BDTR_MOE; receive_done = 0; DMA2_Stream1-&gt;CR |= DMA_SxCR_EN; TIM8-&gt;CR1 |= TIM_CR1_CEN; } void ii_transmit(uint8_t *data, int len) { GPIOE-&gt;MODER = (GPIOE-&gt;MODER &amp; 0xFFFF0000) | 0x5555; DMA2_Stream4-&gt;PAR = (uint32_t) &amp;(GPIOE-&gt;ODR); DMA2_Stream4-&gt;M0AR = (uint32_t) data; DMA2_Stream4-&gt;NDTR = len; TIM1-&gt;CNT = 6; transmit_done = 0; DMA2_Stream4-&gt;CR |= DMA_SxCR_EN; TIM1-&gt;SR |= TIM_SR_BIF; TIM1-&gt;BDTR |= TIM_BDTR_MOE; TIM1-&gt;CR1 |= TIM_CR1_CEN; } // tx: TIM1 CH4 on DMA2/stream4/channel6, CH1 on output clock in PE9 // rx: TIM8 CH2 on DMA2/stream3/channel7, CH1 on input clock in PC6 void ii_init() { __HAL_RCC_GPIOC_CLK_ENABLE(); __HAL_RCC_GPIOE_CLK_ENABLE(); __HAL_RCC_TIM1_CLK_ENABLE(); __HAL_RCC_TIM8_CLK_ENABLE(); __HAL_RCC_TIM2_CLK_ENABLE(); __HAL_RCC_DMA2_CLK_ENABLE(); GPIOC-&gt;MODER |= (0b10 &lt;&lt; GPIO_MODER_MODE6_Pos) | (0b10 &lt;&lt; GPIO_MODER_MODE7_Pos); GPIOC-&gt;PUPDR |= (0b10 &lt;&lt; GPIO_PUPDR_PUPD7_Pos); GPIOC-&gt;AFR[0] |= (GPIO_AF3_TIM8 &lt;&lt; 24) | (GPIO_AF3_TIM8 &lt;&lt; 28); GPIOE-&gt;MODER |= (0b10 &lt;&lt; GPIO_MODER_MODE9_Pos); GPIOE-&gt;OSPEEDR |= GPIO_OSPEEDER_OSPEEDR9 | 0xFFFF; GPIOE-&gt;AFR[1] |= GPIO_AF1_TIM1 &lt;&lt; 4; GPIOE-&gt;PUPDR |= (0b10 &lt;&lt; GPIO_PUPDR_PUPD9_Pos); TIM1-&gt;ARR = 8; TIM1-&gt;CCR1 = 5; TIM1-&gt;CCR4 = 1; TIM1-&gt;EGR |= TIM_EGR_CC4G; TIM1-&gt;DIER |= TIM_DIER_CC4DE; TIM1-&gt;CCMR1 |= (0b110 &lt;&lt; TIM_CCMR1_OC1M_Pos); TIM1-&gt;CCER |= TIM_CCER_CC1E; TIM1-&gt;EGR |= TIM_EGR_BG; TIM8-&gt;ARR = 1; TIM8-&gt;CCR2 = 1; TIM8-&gt;EGR |= TIM_EGR_UG; TIM8-&gt;DIER |= TIM_DIER_UDE; TIM8-&gt;SMCR |= (0b100 &lt;&lt; TIM_SMCR_TS_Pos) | (0b111 &lt;&lt; TIM_SMCR_SMS_Pos); TIM8-&gt;CCMR1 = (0b01 &lt;&lt; TIM_CCMR1_CC1S_Pos) | (0b110 &lt;&lt; TIM_CCMR1_OC2M_Pos); TIM8-&gt;CCER |= (0b11 &lt;&lt; TIM_CCER_CC1P_Pos) | TIM_CCER_CC2E; DMA2_Stream1-&gt;CR = DMA_CHANNEL_7 | DMA_PRIORITY_VERY_HIGH | DMA_MINC_ENABLE | (0b00 &lt;&lt; DMA_SxCR_DIR_Pos) | DMA_SxCR_TCIE | DMA_SxCR_TEIE | DMA_SxCR_DMEIE; DMA2_Stream1-&gt;FCR |= DMA_FIFOMODE_ENABLE; DMA2_Stream4-&gt;CR = DMA_CHANNEL_6 | DMA_PRIORITY_VERY_HIGH | DMA_MINC_ENABLE | (0b01 &lt;&lt; DMA_SxCR_DIR_Pos) | DMA_SxCR_TCIE | DMA_SxCR_TEIE | DMA_SxCR_DMEIE; DMA2_Stream4-&gt;FCR |= DMA_FIFOMODE_ENABLE; HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0); HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn); HAL_NVIC_SetPriority(DMA2_Stream4_IRQn, 0, 0); HAL_NVIC_EnableIRQ(DMA2_Stream4_IRQn); }</code> </pre> <br> 对于测试，使用了同一块板，只是将PE9时钟输出连接到PC6输入。 主循环如下所示： <br><br><pre> <code class="plaintext hljs"> ii_receive(rdata, 256); ii_transmit(tdata, 256); while (!transmit_done); while (!receive_done);</code> </pre><br> 根据结果​​：数据完美发送30-31微秒而没有丢失。 信号看起来像这样： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/z7/dx/gx/z7dxgxw4ppqv7mot4mk4kmjvi00.png"></div><br> 这里，白色是TIM8定时器的输出，红色是时钟信号（TIM1），橙色是数据的最低有效位（0-1-0-1 -...）。 <br><br> 我对此不满意的是，您无法通过GPIO输入的中断来启动DMA，而您必须使用计时器。 也许有人会告诉你另一种方式？ <br><br>  PS作为最新实验的结果，事实证明，将频率提高到168 MHz可以自然地使速度提高2倍，并且数据在14微秒（即150 Mbps）中传输，但是当主计时器降低到7以下时，接收端开始出现毛刺-计时器没有时间TIM8。 在7时它仍然可以工作，但是在6时它已经消失了，毕竟是200 Mbps ... </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN460805/">https://habr.com/ru/post/zh-CN460805/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN460795/index.html">改善JavaScript应用程序性能的12个技巧</a></li>
+<li><a href="../zh-CN460797/index.html">负责任的JavaScript开发第2部分</a></li>
+<li><a href="../zh-CN460799/index.html">标准浏览器API付款请求</a></li>
+<li><a href="../zh-CN460801/index.html">适用于现代JavaScript开发人员的27个很棒的VS Code工具</a></li>
+<li><a href="../zh-CN460803/index.html">夏季阅读：技术书籍</a></li>
+<li><a href="../zh-CN460807/index.html">测量七次，一次实施BI工具</a></li>
+<li><a href="../zh-CN460811/index.html">不同团队的共同组成部分。 Yandex报告</a></li>
+<li><a href="../zh-CN460813/index.html">如何使用Voronoi图控制AI</a></li>
+<li><a href="../zh-CN460815/index.html">发明vusb库</a></li>
+<li><a href="../zh-CN460819/index.html">WorldSkills：奥运会参与者回顾</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

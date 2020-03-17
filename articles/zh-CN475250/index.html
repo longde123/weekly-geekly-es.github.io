@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏳️‍🌈 🎠 🛋️ Redash注意到并修复了导致Python代码性能下降的问题 👩🏽‍🎓 🏞️ 👌🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Redash最近开始从一种任务执行系统更改为另一种。 即，他们开始了从Celery到RQ的过渡。 在第一阶段，只有那些不直接执行请求的任务才被转移到新平台。 这些任务包括发送电子邮件，确定应更新哪些请求，记录用户事件以及其他支持任务。 
+
+  
+
+ 部署完所有这些之后，人们注意到RQ工作者需要更多的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Redash注意到并修复了导致Python代码性能下降的问题</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ruvds/blog/475250/">  Redash最近开始从一种任务执行系统更改为另一种。 即，他们开始了从Celery到RQ的过渡。 在第一阶段，只有那些不直接执行请求的任务才被转移到新平台。 这些任务包括发送电子邮件，确定应更新哪些请求，记录用户事件以及其他支持任务。 <br><br> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><img src="https://habrastorage.org/webt/0h/9y/wb/0h9ywbok79_xnw71erdzqpiydzq.jpeg"></a> <br><br> 部署完所有这些之后，人们注意到RQ工作者需要更多的计算资源来解决Celery以前要解决的相同数量的任务。 <br><br> 我们今天发布的翻译材料专门讲述Redash如何找出问题原因并加以解决的故事。 <br><a name="habracut"></a><br><h2>  <font color="#3AC1EF">几句话关于芹菜和RQ之间的区别</font> </h2><br>  Celery和RQ具有过程工人的概念。 那里和那里都使用创建fork来组织任务的并行执行。 当Celery工作者启动时，将创建几个fork过程，每个fork过程自动处理任务。 在RQ的情况下，worker的实例仅包含一个子进程（称为“主力马”），该子进程执行一项任务，然后被销毁。 当工作人员从队列下载下一个任务时，他将创建一个新的“主力马”。 <br><br> 使用RQ时，只需运行更多工作进程，即可达到与使用Celery时相同的并行度。 但是，芹菜和RQ之间有一个细微的区别。 在Celery中，工作人员在启动时会创建许多子流程实例，然后重复使用它们来完成许多任务。 对于RQ，您需要为每个作业创建一个新的fork。 两种方法都有其优点和缺点，但是在此我们不再赘述。 <br><br><h2>  <font color="#3AC1EF">绩效评估</font> </h2><br> 在开始进行性能分析之前，我决定通过找出工作容器需要处理1000个作业的时间来评估系统性能。 我决定专注于<code>record_event</code>任务，因为这是常见的轻量级操作。 为了衡量性能，我使用了<code>time</code>命令。 这需要对项目代码进行一些更改： <br><br><ol><li> 为了衡量执行1000个任务的性能，我决定使用RQ批处理模式，在该模式下，在处理任务之后，将退出该过程。 </li><li> 我想避免影响我的测量结果，而这可能是在测量系统性能时安排的其他任务。 所以我将<code>record_event</code>移到了一个称为<code>benchmark</code>的单独队列中，将<code>@job('default')</code>替换为<code>@job('benchmark')</code> 。 这是在<code>tasks/general.py</code>的<code>record_event</code>之前<code>tasks/general.py</code> 。 </li></ol><br> 现在可以开始测量了。 对于初学者，我想知道启动和停止没有负载的工人需要多长时间。 该时间可以从稍后获得的最终结果中减去。 <br><br><pre> <code class="python hljs">$ docker-compose <span class="hljs-keyword"><span class="hljs-keyword">exec</span></span> worker bash -c <span class="hljs-string"><span class="hljs-string">"time ./manage.py rq workers 4 benchmark"</span></span> real <span class="hljs-number"><span class="hljs-number">0</span></span>m14<span class="hljs-number"><span class="hljs-number">.728</span></span>s user <span class="hljs-number"><span class="hljs-number">0</span></span>m6<span class="hljs-number"><span class="hljs-number">.810</span></span>s sys <span class="hljs-number"><span class="hljs-number">0</span></span>m2<span class="hljs-number"><span class="hljs-number">.750</span></span>s</code> </pre> <br> 在我的计算机上初始化工作程序花了14.7秒。 我记得那个。 <br><br> 然后，我将1000个<code>record_event</code>测试用例放入<code>benchmark</code>队列中： <br><br><pre> <code class="python hljs">$ docker-compose run --rm server manage shell &lt;&lt;&lt; <span class="hljs-string"><span class="hljs-string">"from redash.tasks.general import record_event; [record_event.delay({ 'action': 'create', 'timestamp': 0, 'org_id': 1, 'user_id': 1, 'object_id': 0, 'object_type': 'dummy' }) for i in range(1000)]"</span></span></code> </pre> <br> 之后，我以与以前相同的方式启动系统，并找出处理1000个作业所需的时间。 <br><br><pre> <code class="python hljs">$ docker-compose <span class="hljs-keyword"><span class="hljs-keyword">exec</span></span> worker bash -c <span class="hljs-string"><span class="hljs-string">"time ./manage.py rq workers 4 benchmark"</span></span> real <span class="hljs-number"><span class="hljs-number">1</span></span>m57<span class="hljs-number"><span class="hljs-number">.332</span></span>s user <span class="hljs-number"><span class="hljs-number">1</span></span>m11<span class="hljs-number"><span class="hljs-number">.320</span></span>s sys <span class="hljs-number"><span class="hljs-number">0</span></span>m27<span class="hljs-number"><span class="hljs-number">.540</span></span>s</code> </pre> <br> 从发生的事情中减去14.7秒，我发现4个工人在102秒内处理了1000个任务。 现在，让我们尝试找出原因。 为此，我们在工作人员忙碌时，将使用<code>py-spy</code>研究他们。 <br><br><h2>  <font color="#3AC1EF">剖析</font> </h2><br> 我们向队列添加了另外1,000个任务（之所以必须这样做，是因为在之前的测量过程中，所有任务均已处理），然后运行工作程序并对其进行监视。 <br><br><pre> <code class="python hljs">$ docker-compose run --rm server manage shell &lt;&lt;&lt; <span class="hljs-string"><span class="hljs-string">"from redash.tasks.general import record_event; [record_event.delay({ 'action': 'create', 'timestamp': 0, 'org_id': 1, 'user_id': 1, 'object_id': 0, 'object_type': 'dummy' }) for i in range(1000)]"</span></span> $ docker-compose <span class="hljs-keyword"><span class="hljs-keyword">exec</span></span> worker bash -c <span class="hljs-string"><span class="hljs-string">'nohup ./manage.py rq workers 4 benchmark &amp; sleep 15 &amp;&amp; pip install py-spy &amp;&amp; rq info -u "redis://redis:6379/0" | grep busy | awk "{print $3}" | grep -o -P "\s\d+" | head -n 1 | xargs py-spy record -d 10 --subprocesses -o profile.svg -p'</span></span> $ open -a <span class="hljs-string"><span class="hljs-string">"Google Chrome"</span></span> profile.svg</code> </pre> <br> 我知道以前的团队很长。 理想情况下，为提高其可读性，值得将其分成单独的片段，并在找到<code>&amp;&amp;</code>字符序列的位置将其划分。 但是命令必须在相同的<code>docker-compose exec worker bash</code>会话中顺序执行，因此一切看起来都是这样。 这是此命令的作用的描述： <br><br><ol><li> 在后台启动4个批处理工人。 </li><li> 等待15秒（完成下载大约需要很多时间）。 </li><li> 安装<code>py-spy</code> 。 </li><li> 运行<code>rq-info</code>并找出其中一个工人的PID。 </li><li> 使用先前接收的PID记录有关工人工作的信息，持续10秒钟，并将数据保存在<code>profile.svg</code>文件中 </li></ol><br> 结果，获得了以下“火热时间表”。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/456/89a/2f6/45689a2f6406fe5659d7417396665c6d.jpg"><br>  <i><font color="#999999">可视化py-spy收集的数据</font></i> <br><br> 在分析了这些数据之后，我注意到<code>record_event</code>任务花了很长时间在<code>record_event</code>运行它。 这发生在每个任务期间。 从文档中我了解到，在我感兴趣的时候，所有先前创建的映射器的关系都已初始化。 <br><br> 绝对不需要每个叉子都发生这样的事情。 我们可以在父级工作人员中初始化一次关系，而避免在“主力军”中重复执行此任务。 <br><br> 结果，在启动“主力马”之前，我在代码中添加了对<code>sqlalchemy.org.configure_mappers()</code>的调用，并再次进行了测量。 <br><br><pre> <code class="python hljs">$ docker-compose run --rm server manage shell &lt;&lt;&lt; <span class="hljs-string"><span class="hljs-string">"from redash.tasks.general import record_event; [record_event.delay({ 'action': 'create', 'timestamp': 0, 'org_id': 1, 'user_id': 1, 'object_id': 0, 'object_type': 'dummy' }) for i in range(1000)] $ docker-compose exec worker bash -c "</span></span>time ./manage.py rq workers <span class="hljs-number"><span class="hljs-number">4</span></span> benchmark<span class="hljs-string"><span class="hljs-string">" real 0m39.348s user 0m15.190s sys 0m10.330s</span></span></code> </pre> <br> 如果从这些结果中减去14.7秒，结果表明我们将4个工作人员处理1000个任务所需的时间从102秒缩短到24.6秒。 这是性能的四倍提高！ 借助此修复程序，我们能够将RQ生产资源增加四倍，并保持相同的系统带宽。 <br><br><h2>  <font color="#3AC1EF">总结</font> </h2><br> 从这一切，我得出以下结论：值得记住的是，如果它是唯一的过程，并且涉及到分叉，则应用程序的行为会有所不同。 如果在每项任务期间有必要解决一些棘手的正式任务，那么最好先解决这些问题，在完成分叉之前先完成一次。 在测试和开发过程中不会检测到此类问题，因此，在感觉到项目存在问题，测量其速度并最终找到问题性能原因的过程中，一直没有发现这些问题。 <br><br>  <b>亲爱的读者们！</b> 您是否在Python项目中遇到了性能问题，可以通过仔细分析工作系统来解决？ <br><br><div style="text-align:center;"> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><img src="https://habrastorage.org/webt/-o/2e/tu/-o2etuqogwhmdnmysb9_vivc9v4.png"></a> </div><br> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><img src="https://habrastorage.org/files/1ba/550/d25/1ba550d25e8846ce8805de564da6aa63.png"></a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN475250/">https://habr.com/ru/post/zh-CN475250/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN475240/index.html">在大型Python项目中使用严格的模块：Instagram的经验。 第一部分</a></li>
+<li><a href="../zh-CN475242/index.html">在大型Python项目中使用严格的模块：Instagram的经验。 第二部分</a></li>
+<li><a href="../zh-CN475244/index.html">您应该了解的预期JavaScript新功能</a></li>
+<li><a href="../zh-CN475246/index.html">Python异步编程：简要概述</a></li>
+<li><a href="../zh-CN475248/index.html">编写跨浏览器应用程序时使用polyfill</a></li>
+<li><a href="../zh-CN475252/index.html">如何批评微软</a></li>
+<li><a href="../zh-CN475254/index.html">AERODISK vAIR体系结构或国家集群建设的功能</a></li>
+<li><a href="../zh-CN475258/index.html">圣彼得堡选举的视觉呈现-语音环绕的魔力</a></li>
+<li><a href="../zh-CN475260/index.html">异步函数和返回承诺的函数之间的区别</a></li>
+<li><a href="../zh-CN475264/index.html">嗅探者：FakeSecurity家族如何感染在线商店</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

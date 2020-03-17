@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⌛️ 👨🏻‍🎨 💰 GitLab数据库迁移到外部PostgreSQL 📇 🚵🏿 🍜</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="大家好！ 
+
+ 在本文中，我们将GitLab数据库从与GitLab一起安装的内部PostgreSQL迁移到已经安装在另一台服务器上的外部PostgreSQL。 
+
+
+ 注意 
+ 保证所有操作均可在CentOS 7.7.1908，PostgreSQL 12和GitLab 12.4.2-ee.0上执行。...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>GitLab数据库迁移到外部PostgreSQL</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/476258/"> 大家好！ <br><br> 在本文中，我们将GitLab数据库从与GitLab一起安装的内部PostgreSQL迁移到已经安装在另一台服务器上的外部PostgreSQL。 <br><br><img src="https://habrastorage.org/webt/xc/2l/gc/xc2lgcwnx8zb3ksut8bridiklou.png"><a name="habracut"></a><br><blockquote>  <b>注意</b> <br> 保证所有操作均可在CentOS 7.7.1908，PostgreSQL 12和GitLab 12.4.2-ee.0上执行。 <br></blockquote><h2> 初步准备 </h2><br>  <b>我们将提前做三件事：</b> <br><br>  1.在PostgreSQL服务器上，向防火墙添加一条规则，该规则允许传入到PostgreSQL 5432 / TCP端口的连接。 <br><br>  <b>就我而言：</b> <br><br><pre><code class="bash hljs">firewall-cmd --add-service=postgresql --zone=internal --permanent success firewall-cmd --reload success</code> </pre> <br>  2.在同一位置，但在postgresql.conf文件中，允许网络接口接受来自外部的传入连接。 打开postgresql.conf文件，找到注释掉的行“ <i>#listen_addresses ='localhost'</i> ”，然后在其下面添加行。 其中10.0.0.2是接口的地址。 <br><br>  <b>就我而言：</b> <br><br><pre> <code class="bash hljs">vi /var/lib/pgsql/12/data/postgresql.conf <span class="hljs-comment"><span class="hljs-comment"># - Connection Settings - #listen_addresses = 'localhost' # what IP address(es) to listen on; listen_addresses = 'localhost, 10.0.0.2' # comma-separated list of addresses;</span></span></code> </pre> <br><br>  3.由于GitLab服务器将连接到外部数据库，因此必须在PostgreSQL服务器上的pg_hba.conf文件中启用它。 我的GitLab服务器的地址是10.0.0.4。 <br><br>  <b>打开pg_hba.conf文件，并在其中添加以下行：</b> <br><br><pre> <code class="bash hljs">host all gitlab 10.0.0.4/24 md5</code> </pre> <br>  <b>它看起来像这样：</b> <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># TYPE DATABASE USER ADDRESS METHOD # "local" is for Unix domain socket connections only local all postgres md5 # IPv4 local connections: host all postgres 127.0.0.1/32 md5 host all gitlab 10.0.0.4/24 md5</span></span></code> </pre> <br>  <b>最后，重新启动postgresql服务：</b> <br><br><pre> <code class="bash hljs">systemctl restart postgresql-12.service</code> </pre> <br><h2> 导出GitLab数据库 </h2><br>  <b>让我们在GitLab服务器上执行备份数据库的操作：</b> <br><pre> <code class="bash hljs">sudo -u gitlab-psql /opt/gitlab/embedded/bin/pg_dumpall -U gitlab-psql --host=/var/opt/gitlab/postgresql &gt; /tmp/internal-gitlab.sql</code> </pre> <br><br>  <b>备份出现在/ tmp中：</b> <br><br><pre> <code class="bash hljs">ls -lh total 836K -rw-r--r--. 1 root root 836K Nov 18 12:59 internal-gitlab.sql</code> </pre> <br>  <b>将此副本复制到PostgreSQL服务器：</b> <br><br><pre> <code class="bash hljs">scp /tmp/internal-gitlab.sql 10.0.0.2:/tmp/ internal-gitlab.sql 100% 835KB 50.0MB/s 00:00</code> </pre> <br><h2> 将“ internal-gitlab.sql”导入PostgreSQL </h2><br>  <b>将数据库导入PostgreSQL：</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -f /tmp/internal-gitlab.sql</code> </pre> <br>  <b>检查数据库现在是否在PostgreSQL中：</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -l</code> </pre> <br>  <b>应显示以下行：</b> <br><br><pre> <code class="bash hljs">gitlabhq_production | gitlab | UTF8 | en_US.UTF-8 | en_US.UTF-8 |</code> </pre> <br><h2> 配置GitLab </h2><br> 将数据库导入PostgreSQL后，创建了gitlab用户。 您需要更改该用户的密码。 <br><br>  <b>修改密码：</b> <br><br><pre> <code class="bash hljs">sudo -u postgres psql -c <span class="hljs-string"><span class="hljs-string">"ALTER USER gitlab ENCRYPTED PASSWORD '' VALID UNTIL 'infinity';"</span></span> Password <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> user postgres: ALTER ROLE</code> </pre> <br> 然后在GitLab服务器上的配置文件/etc/gitlab/gitlab.rb中，我们将指定外部PostgreSQL的所有数据。 <br><br>  <b>制作gitlab.rb文件的备份副本：</b> <br><br><pre> <code class="bash hljs">cp /etc/gitlab/gitlab.rb /etc/gitlab/gitlab.rb.orig</code> </pre> <br>  <b>现在，在gitlab.rb文件的末尾，添加以下行：</b> <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   PostgreSQL. postgresql['enable'] = false #      .  . gitlab_rails['db_adapter'] = 'postgresql' gitlab_rails['db_encoding'] = 'utf8' gitlab_rails['db_host'] = '10.0.0.2' gitlab_rails['db_port'] = 5432 gitlab_rails['db_database'] = "gitlabhq_production" gitlab_rails['db_username'] = 'gitlab' gitlab_rails['db_password'] = '******'</span></span></code> </pre> <br>  <b>保存文件/etc/gitlab/gitlab.rb并重新配置GitLab：</b> <br><br><pre> <code class="bash hljs">gitlab-ctl reconfigure &amp;&amp; gitlab-ctl restart</code> </pre> <br> 仅此而已:) <br><br><blockquote> 一个很大的要求。 如果减号，请在注释中写下原因。 </blockquote></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN476258/">https://habr.com/ru/post/zh-CN476258/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN476248/index.html">11月18日至24日在莫斯科举行的数字活动</a></li>
+<li><a href="../zh-CN476250/index.html">11月18日至24日在圣彼得堡举行的数字活动</a></li>
+<li><a href="../zh-CN476252/index.html">邮件迁移：如何轻松地从一台服务器移动到另一台服务器</a></li>
+<li><a href="../zh-CN476254/index.html">从学生到事件，或者如何在没有知识和经验的情况下进入IT公司</a></li>
+<li><a href="../zh-CN476256/index.html">在俄罗斯斯卡拉运动的脚步。 第三部分</a></li>
+<li><a href="../zh-CN476260/index.html">我们在rpm WireMock中收集-一个实用程序，用于在Ubuntu的PPA的Fedora COPR类似物中通过Web服务创建存根</a></li>
+<li><a href="../zh-CN476262/index.html">关于Centos存储库镜像并选择最佳的镜像库</a></li>
+<li><a href="../zh-CN476264/index.html">用于学习外语的电报机器人：从填字游戏到说话</a></li>
+<li><a href="../zh-CN476266/index.html">在Mars Digital Technologies实习。 我们如何在M＆M's应用深度学习</a></li>
+<li><a href="../zh-CN476268/index.html">PVS-Studio团队在2018-2019年会议上提供的Bug发现挑战解决方案</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

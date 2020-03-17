@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😀 🏾 🙅 Amazon Redshift并行扩展指南和测试结果 🉑 🤟 ✨</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在Skyeng，我们使用Amazon Redshift（包括并行缩放），因此dotgo.com创始人Stefan Gromall关于intermix.io的文章对我们来说似乎很有趣。 转移后-根据Daniyar Belkhodzhaev的观点，我们从工程师那里得到了一些经验。 
+
+ Amazon R...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Amazon Redshift并行扩展指南和测试结果</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/skyeng/blog/451538/"><img src="https://habrastorage.org/webt/mo/pi/gt/mopigtqlz7wpuhwhxsmrlcvgpky.png" alt="图片"><br><br>  <i>在Skyeng，我们使用Amazon Redshift（包括并行缩放），因此dotgo.com创始人Stefan Gromall关于intermix.io的文章对我们来说似乎很有趣。</i>  <i>转移后-根据Daniyar Belkhodzhaev的观点，我们从工程师那里得到了一些经验。</i> <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Amazon Redshift体系结构</a>允许通过向集群添加新节点来进行扩展。 必须应对峰值请求数量可能会导致节点的超额配置。 与添加新节点相反，并发扩展按需增加了计算能力。 <br><br>  Amazon Redshift并行扩展为Redshift群集提供了额外的功能来处理高峰请求。 它通过在后台将请求传输到新的“并行”集群来工作。 根据WLM配置和规则路由请求。 <br><a name="habracut"></a><br> 并行扩展的定价基于免费使用的信用模型。 除了免费贷款的标准，还款额取决于并行扩展集群处理请求的时间。 <br><br> 作者在一个内部集群上测试了并行缩放。 在这篇文章中，他将讨论测试结果并提供入门指南。 <br><br><h3> 集群要求 </h3><br> 要使用并行扩展，Amazon Redshift集群必须满足以下要求： <br><br><ul><li>  <b>平台：</b> EC2-VPC; </li><li>  <b>节点类型：</b> dc2.8xlarge，ds2.8xlarge，dc2.large或ds2.xlarge； </li><li>  <b>节点数：</b> 2到32（不支持带有一个节点的集群）。 </li></ul><br><h3> 有效的请求类型 </h3><br> 并行缩放不适用于所有类型的查询。 在第一个版本中，它仅处理满足以下三个条件的读取请求： <br><br><ul><li> 只读SELECT查询（尽管计划了更多类型）； </li><li> 该查询不引用具有INTERLEAVED排序规则的表； </li><li> 该查询不使用Amazon Redshift Spectrum引用外部表。 </li></ul><br> 要路由到并行扩展集群，必须将请求排队。 另外，适合<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">SQA（短查询加速）</a>队列的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">查询</a>将不会在并行扩展群集中执行。 <br><br> 队列和SQA需要正确配置<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Redshift工作负载管理（WLM）</a> 。 我们建议您首先优化WLM-这将减少并行缩放的需求。 这很重要，因为并行扩展仅在一定小时内是免费的。  AWS声称并行扩展将对97％的客户免费提供，这使我们面临定价问题。 <br><br><h3> 并行缩放成本 </h3><br> 对于并行扩展，AWS提供了一个信用模型。 每个活动的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Amazon Redshift</a>集群每小时都会累积贷款，每天最多可以免费获得一小时的并行并行扩展贷款。 <br><br> 仅当使用并行扩展群集时，您才需要支付超过您收到的贷款额的费用。 <br><br> 成本是按超出免费速率使用的并行群集的每秒需求速率计算的。 仅在执行请求期间付款，每次激活并行扩展集群时，至少要支付一分钟。 每秒点播速率是根据<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Amazon Redshift</a>定价的一般原则计算的，也就是说，它取决于节点的类型和集群中节点的数量。 <br><br><h3> 运行并行缩放 </h3><br> 并行缩放开始于每个WLM队列。 转到AWS Redshift控制台，然后在左侧导航菜单中选择“工作负载管理”。 在下一个下拉菜单中选择群集的WLM组。 <br><br> 您将在每个队列旁边看到一个称为“并发扩展模式”的新列。 默认值为“关”。 单击“更改”，您可以更改每个队列的设置。 <br><br><img src="https://habrastorage.org/webt/rz/g9/mk/rzg9mkvwxcmlhry2v522jjrtcdk.png"><br><br><h3> 构型 </h3><br> 并行扩展通过将相关查询转发到新的专用集群来工作。 新群集的大小（节点的类型和数量）与主群集相同。 <br><br> 用于并行扩展的默认群集数为一（1），最多可以配置十（10）个群集。 <br> 可以通过max_concurrency_scaling_clusters参数设置用于并行扩展的群集总数。 增加此设置可提供其他冗余群集。 <br><br><img src="https://habrastorage.org/webt/p6/we/qu/p6wequjhe3-yxannbvr_zndpqdg.png"><br><br><h3> 监控方式 </h3><br>  AWS Redshift控制台还有几个其他图形。  “ Max Configured Concurrency Scaling Clusters”图表显示随时间变化的max_concurrency_scaling_clusters值。 <br><br><img src="https://habrastorage.org/webt/ti/mw/au/timwauz4qrbalhetjn3ttccxui4.png"><br><br> 活动缩放集群的数量显示在用户界面的“并发缩放活动”部分中： <br><br><img src="https://habrastorage.org/webt/zq/ai/xx/zqaixxhdn7i-pkwockkal_7ujvw.png"><br><br> 在“请求”选项卡中，有一列显示该请求是在主集群中执行还是在并行扩展集群中执行： <br><br><img src="https://habrastorage.org/webt/p-/sw/p8/p-swp8elamy2ecxarcydioa0_ac.png"><br><br> 无论特定请求是在主集群中执行还是通过并行伸缩集群执行，该请求都存储在stl_query.concurrency_scaling_status中。 <br><br><img src="https://habrastorage.org/webt/kf/ns/_4/kfns_4r21bi4fbmqzpk2nfgv1ba.png"><br><br> 值1表示该请求正在并行伸缩集群中运行，而其他值则表明该请求正在主集群中运行。 <br><br> 一个例子： <br><br><img src="https://habrastorage.org/webt/cn/3u/vh/cn3uvh7rn90c8bydqicyz3zlir8.png"><br><br> 有关并行缩放的信息也存储在其他一些表和视图中，例如SVCS_CONCURRENCY_SCALING_USAGE。 此外，还有许多目录表存储有关并行缩放的信息。 <br><br><h3> 结果 </h3><br> 作者于2019年3月29日格林尼治标准时间下午6:30对内部集群中的一个队列进行并行扩展。他们于2019年3月29日下午8:30将参数max_concurrency_scaling_clusters更改为3。 <br><br> 模拟请求队列，并将该队列的插槽数从15减少到5。 <br><br> 以下是一个intermix.io仪表板图，显示了减少插槽数后正在运行和排队的请求数。 <br><br><img src="https://habrastorage.org/webt/d4/0p/7q/d40p7qzi5ty79bbw_irhtk4qfzs.png"><br><br> 我们看到队列中请求的等待时间增加了，而最​​大时间超过了5分钟。 <br><br><img src="https://habrastorage.org/webt/ov/xp/rn/ovxprnqxnz1fy9ds4xm4vmn6vte.png"><br><br> 以下是AWS控制台中有关这段时间发生的相关信息： <br><br><img src="https://habrastorage.org/webt/rm/f-/ip/rmf-ipbke1vkled8fyo8zch9jpu.png"><br><br>  Redshift按照配置启动了三（3）个并行扩展集群。 尽管我们集群中的许多请求都已排队，但这些集群似乎并未得到充分利用。 <br><br> 用法图与扩展活动图相关： <br><br><img src="https://habrastorage.org/webt/am/ho/yk/amhoykwqbkcttpfdiv5gvizkvog.png"><br><br> 几个小时后，作者检查了队列，似乎使用并行扩展执行了6个请求。 我们还通过用户界面选择性地检查了两个请求。 当几个并行集群同时处于活动状态时，他们没有检查如何使用这些值。 <br><br><img src="https://habrastorage.org/webt/fi/2f/rb/fi2frbpdkxqfcj1q-4rp12wrjz4.png"><br><br><h3> 结论 </h3><br> 并行缩放可以减少高峰负载期间请求的排队时间。 <br><br> 根据基础测试的结果，事实证明加载请求的情况已部分改善。 但是，仅并行缩放并不能解决所有并发问题。 <br><br> 这是由于对可以使用并行扩展的查询类型的限制。 例如，作者的许多表具有交错的排序键，而我们的大部分工作量都是一条记录。 <br><br> 尽管并行缩放不是WLM配置中的通用解决方案，但是在任何情况下，使用此功能都是简单易懂的。 <br><br> 因此，作者建议将其用于您的WLM队列。 从单个并行群集开始，并通过控制台监视峰值负载，以确定是否充分利用了新群集。 <br><br> 随着AWS添加对其他类型的查询和表的支持，并行扩展应逐渐变得越来越有效。 <br><blockquote>  <b>Skyeng的工程师Belkhodzhaev Daniyar的评论</b> <br><br>  Skyeng的我们也立即提请人们注意并行缩放的新兴可能性。 <br> 该功能非常吸引人，特别是考虑到AWS认为大多数用户甚至不必为此付费的事实。 <br><br> 碰巧的是，在4月中旬，我们向Redshift集群发出了一系列异常请求。 在此期间，我们经常求助于并发扩展，有时附加集群每天24小时不间断地工作。 <br><br> 如果不能完全解决排队问题，这至少可以使情况令人满意。 <br><br> 我们的观察结果与intermix.io给人的印象非常吻合。 <br><br> 我们还注意到，尽管队列中存在挂起的请求，但并非所有请求都会立即重定向到并行集群。 显然，这是由于并行集群仍需要一些时间才能启动。 结果，在短期峰值负载期间，我们的队列仍然很小，并且相应的警报还有时间工作。 <br><br> 正如AWS预期的那样，在4月份消除了异常负载之后，我们进入了偶发使用模式-这是免费规范的一部分。 <br> 您可以在AWS Cost Explorer中跟踪并发扩展成本。 您需要选择服务-Redshift，使用类型-CS，例如USW2-CS：dc2.large。 <br><br> 可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">这里</a>找到俄语价格的详细信息<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">。</a> </blockquote></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN451538/">https://habr.com/ru/post/zh-CN451538/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN451522/index.html">我们在几个小时内部署自动化：TypeScript，Protractor，Jasmine</a></li>
+<li><a href="../zh-CN451524/index.html">Autoplay Media Studio 8.5.3.0水壶如何破裂的故事</a></li>
+<li><a href="../zh-CN451528/index.html">“顺其自然”：云提供商不同意个人数据</a></li>
+<li><a href="../zh-CN451532/index.html">OpenStreetMap第459号世界新闻（04/30/2019-06/05/2019）</a></li>
+<li><a href="../zh-CN451534/index.html">电子游戏开发中的12条动画原则</a></li>
+<li><a href="../zh-CN451540/index.html">有多少开发人员需要创建像Airbnb这样的服务</a></li>
+<li><a href="../zh-CN451542/index.html">我们如何以及为什么在Mail.ru Cloud中进行地标识别</a></li>
+<li><a href="../zh-CN451552/index.html">我们建立了小工具DO-RA的网络销售渠道</a></li>
+<li><a href="../zh-CN451556/index.html">Flutter：使用Android Studio进行应用程序本地化</a></li>
+<li><a href="../zh-CN451558/index.html">质量保证自动化生命中的一天</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚷 💪🏼 🎙️ PostgreSQL中的索引-3（哈希） 🎮 👩🏿‍🤝‍👩🏻 🐠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="第一篇文章介绍了PostgreSQL索引引擎 ，第二篇文章介绍了访问方法的接口 ，现在我们准备讨论特定类型的索引。 让我们从哈希索引开始。 
+
+ 杂凑 
+ 结构形式 
+ 一般理论 
+ 许多现代编程语言都将哈希表作为基本数据类型。 在外部，哈希表看起来像一个常规数组，该索引使用任何数据类型（例如字符串...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL中的索引-3（哈希）</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/442776/"> 第一篇文章介绍了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PostgreSQL索引引擎</a> ，第二篇文章介绍<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">了访问方法的接口</a> ，现在我们准备讨论特定类型的索引。 让我们从哈希索引开始。 <br><br><h1> 杂凑 </h1><br><h2> 结构形式 </h2><br><h3> 一般理论 </h3><br> 许多现代编程语言都将哈希表作为基本数据类型。 在外部，哈希表看起来像一个常规数组，该索引使用任何数据类型（例如字符串）而不是整数进行索引。  PostgreSQL中的哈希索引的结构类似。 如何运作？ <br><br> 通常，数据类型的允许值范围非常大：在“文本”类型的列中我们可能会设想多少个不同的字符串？ 同时，某个表的文本列中实际存储了多少个不同的值？ 通常情况下，没有那么多。 <br><br> 散列的思想是将少量（从0到<em>N</em> -1，总共<em>N个</em>值）与任何数据类型的值相关联。 这样的关联称为<em>哈希函数</em> 。 所获得的数字可用作常规数组的索引，其中将存储对表行（TID）的引用。 该数组的元素称为<em>哈希表存储桶</em> -如果相同的索引值出现在不同的行中，则一个存储桶可以存储多个TID。 <br><br> 哈希函数按存储区分配源值的方式越统一，效果越好。 但是，即使是一个好的哈希函数，有时对于不同的源值也会产生相等的结果-这称为<em>碰撞</em> 。 因此，一个桶可以存储对应于不同密钥的TID，因此，需要重新检查从索引获得的TID。 <br><a name="habracut"></a><br> 举例来说：我们可以想到字符串的哪些哈希函数？ 假设存储桶数为256。例如，存储桶号，我们可以采用第一个字符的代码（假设单字节字符编码）。 这是一个很好的哈希函数吗？ 显然不是：如果所有字符串都以相同的字符开头，则所有字符串都将放入一个存储桶中，因此毫无疑问是统一的，将需要重新检查所有值，并且散列将毫无意义。 如果我们将所有以256为模的字符的代码相加怎么办？ 这会好得多，但远非理想。 如果您对PostgreSQL中此类哈希函数的内部结构感兴趣，请查看<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">hashfunc.c</a>中hash_any（）的定义。 <br><br><h3> 索引结构 </h3><br> 让我们回到哈希索引。 对于某些数据类型的值（索引键），我们的任务是快速找到匹配的TID。 <br><br> 当插入索引时，让我们计算键的哈希函数。  PostgreSQL中的哈希函数始终返回“整数”类型，其范围为2 32≈40亿个值。 存储桶的数量最初等于2，然后动态增加以适应数据大小。 可以使用位算法从哈希码中计算出存储桶编号。 这是我们放置TID的存储桶。 <br><br> 但这还不够，因为可以将与不同密钥匹配的TID放入同一存储桶中。 我们该怎么办？ 除了TID之外，还可以将键的源值存储在存储桶中，但这会大大增加索引大小。 为了节省空间，存储桶存储了密钥的哈希码，而不是密钥。 <br><br> 搜索索引时，我们计算键的哈希函数并获取存储桶编号。 现在，它仍然需要遍历存储桶的内容，并仅返回具有适当哈希码的匹配TID。 由于存储的“哈希码-TID”对是有序的，因此可以高效地完成此操作。 <br><br> 但是，可能会发生两种不同的密钥，不仅会进入一个存储桶，而且还会具有相同的四字节哈希码-没有人能消除冲突。 因此，访问方法要求通用索引引擎通过重新检查表行中的条件来验证每个TID（引擎可以与可见性检查一起执行此操作）。 <br><br><h3> 将数据结构映射到页面 </h3><br> 如果我们从缓冲区缓存管理器而不是从查询计划和执行的角度看待索引，那么事实证明所有信息和所有索引行都必须打包到页面中。 这样的索引页存储在缓冲区高速缓存中，并从那里与表页完全相同的方式从中退出。 <br><br><img src="https://habrastorage.org/web/aa7/83b/c8c/aa783bc8cbfc4be49baec029339eb539.png"><br><br> 如图所示，哈希索引使用四种页面（灰色矩形）： <br><br><ul><li> 元页面-页面号零，其中包含有关索引内部内容的信息。 </li><li> 存储桶页面-索引的主页，将数据存储为“哈希码-TID”对。 </li><li> 溢出页面-与存储桶页面的结构相同，并且当一个页面不足以存储桶时使用。 </li><li> 位图页面-跟踪当前清除的溢出页面，并且可以将其重新用于其他存储桶。 </li></ul><br> 从索引页元素开始的向下箭头表示TID，即对表行的引用。 <br><br> 每次索引增加，PostgreSQL即时创建的存储桶（因此，页面）数量是上次创建的存储桶数量的两倍。 为了避免一次分配可能潜在的大量页面，版本10使大小增加更加平滑。 对于溢出页面，它们会根据需要进行分配，并在位图页面中进行跟踪，位图页面也会根据需要进行分配。 <br><br> 请注意，哈希索引的大小不能减小。 如果我们删除一些索引行，则一旦分配的页面将不会返回到操作系统，而只会在VACUUMING之后重新用于新数据。 减小索引大小的唯一选择是使用REINDEX或VACUUM FULL命令从头开始重建索引。 <br><br><h2> 例子 </h2><br> 让我们看看如何创建哈希索引。 为了避免设计自己的表格，从现在开始，我们将使用航空运输<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的演示数据库</a> ，这次我们将考虑航班表。 <br><br><pre><code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">index</span></span> <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> flights <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> hash(flight_no);</code> </pre> <pre> <code class="plaintext hljs">WARNING: hash indexes are not WAL-logged and their use is discouraged CREATE INDEX</code> </pre><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">explain</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">costs</span></span> <span class="hljs-keyword"><span class="hljs-keyword">off</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> flights <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> flight_no = <span class="hljs-string"><span class="hljs-string">'PG0001'</span></span>;</code> </pre><pre> <code class="plaintext hljs"> QUERY PLAN ---------------------------------------------------- Bitmap Heap Scan on flights Recheck Cond: (flight_no = 'PG0001'::bpchar) -&gt; Bitmap Index Scan on flights_flight_no_idx Index Cond: (flight_no = 'PG0001'::bpchar) (4 rows)</code> </pre><br> 当前哈希索引实现的不便之处在于，带有索引的操作未记录在预写日志中（PostgreSQL在创建索引时会发出警告）。 因此，哈希索引在失败后将无法恢复，并且不参与复制。 此外，哈希索引的通用性远低于“ B树”，其效率也值得怀疑。 因此，现在使用这样的索引是不切实际的。 <br><br> 但是，这将在PostgreSQL的第10版发布后最早于今年秋天（2017年）改变。 在此版本中，哈希索引最终获得了对预写日志的支持； 此外，还优化了内存分配，并发工作更加高效。 <br><br><blockquote> 没错 由于PostgreSQL 10哈希索引得到了全面的支持，因此可以不受限制地使用。 该警告不再显示。 <br></blockquote><br><h2> 散列语义 </h2><br> 但是，为什么哈希索引从PostgreSQL诞生到9.6不能使用几乎都可以生存？ 问题是DBMS广泛使用了散列算法（特别是用于散列连接和分组），并且系统必须知道将哪种散列函数应用于哪种数据类型。 但是这种对应关系不是静态的，并且不能一劳永逸地设置，因为PostgreSQL允许动态添加新的数据类型。 这是一种通过散列的访问方法，其中存储了此对应关系，表示为辅助功能与操作员家族的关联。 <br><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> opf.opfname <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> opfamily_name, amproc.amproc::<span class="hljs-type"><span class="hljs-type">regproc</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> opfamily_procedure <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pg_am am, pg_opfamily opf, pg_amproc amproc <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> opf.opfmethod = am.oid <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> amproc.amprocfamily = opf.oid <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> am.amname = <span class="hljs-string"><span class="hljs-string">'hash'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">order</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> opfamily_name, opfamily_procedure;</code> </pre><pre> <code class="plaintext hljs"> opfamily_name | opfamily_procedure --------------------+-------------------- abstime_ops | hashint4 aclitem_ops | hash_aclitem array_ops | hash_array bool_ops | hashchar ...</code> </pre><br> 尽管未记录这些函数，但可以将它们用于为适当数据类型的值计算哈希码。 例如，如果将“哈希文本”函数用于“ text_ops”运算符系列： <br><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> hashtext(<span class="hljs-string"><span class="hljs-string">'one'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> hashtext ----------- 127722028 (1 row)</code> </pre><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> hashtext(<span class="hljs-string"><span class="hljs-string">'two'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> hashtext ----------- 345620034 (1 row)</code> </pre><br><h2> 物产 </h2><br> 让我们看一下哈希索引的属性，其中此访问方法向系统提供有关其自身的信息。 我们<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">上次</a>提供了查询。 现在，我们将超越结果： <br><br><pre> <code class="plaintext hljs"> name | pg_indexam_has_property ---------------+------------------------- can_order | f can_unique | f can_multi_col | f can_exclude | t name | pg_index_has_property ---------------+----------------------- clusterable | f index_scan | t bitmap_scan | t backward_scan | t name | pg_index_column_has_property --------------------+------------------------------ asc | f desc | f nulls_first | f nulls_last | f orderable | f distance_orderable | f returnable | f search_array | f search_nulls | f</code> </pre><br> 散列函数不保留顺序关系：如果一个键的散列函数的值小于另一个键的散列函数的值，则无法得出任何键本身如何排序的结论。 因此，通常哈希索引可以支持唯一的操作“等于”： <br><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> opf.opfname <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> opfamily_name, amop.amopopr::<span class="hljs-type"><span class="hljs-type">regoperator</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> opfamily_operator <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pg_am am, pg_opfamily opf, pg_amop amop <span class="hljs-keyword"><span class="hljs-keyword">where</span></span> opf.opfmethod = am.oid <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> amop.amopfamily = opf.oid <span class="hljs-keyword"><span class="hljs-keyword">and</span></span> am.amname = <span class="hljs-string"><span class="hljs-string">'hash'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">order</span></span> <span class="hljs-keyword"><span class="hljs-keyword">by</span></span> opfamily_name, opfamily_operator;</code> </pre><pre> <code class="plaintext hljs"> opfamily_name | opfamily_operator ---------------+---------------------- abstime_ops | =(abstime,abstime) aclitem_ops | =(aclitem,aclitem) array_ops | =(anyarray,anyarray) bool_ops | =(boolean,boolean) ...</code> </pre><br> 因此，哈希索引无法返回有序数据（“ can_order”，“ orderable”）。 出于同样的原因，哈希索引不会处理NULL：“等于”操作对于NULL（“ search_nulls”）没有意义。 <br><br> 由于哈希索引不存储键（而仅存储其哈希码），因此它不能用于仅索引访问（“可返回”）。 <br><br> 此访问方法也不支持多列索引（“ can_multi_col”）。 <br><br><h2> 内部构造 </h2><br> 从版本10开始，可以通过“ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pageinspect</a> ”扩展名查看哈希索引的内部结构。 它将是这样的： <br><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">create</span></span> <span class="hljs-keyword"><span class="hljs-keyword">extension</span></span> pageinspect;</code> </pre><br> 元页面（我们获得索引中的行数和已用的最大存储桶数）： <br><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> hash_page_type(get_raw_page(<span class="hljs-string"><span class="hljs-string">'flights_flight_no_idx'</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>));</code> </pre><pre> <code class="plaintext hljs"> hash_page_type ---------------- metapage (1 row)</code> </pre><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> ntuples, maxbucket <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> hash_metapage_info(get_raw_page(<span class="hljs-string"><span class="hljs-string">'flights_flight_no_idx'</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>));</code> </pre><pre> <code class="plaintext hljs"> ntuples | maxbucket ---------+----------- 33121 | 127 (1 row)</code> </pre><br> 存储桶页面（我们获得活动元组和死元组的数量，即可以清除的元组的数量）： <br><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> hash_page_type(get_raw_page(<span class="hljs-string"><span class="hljs-string">'flights_flight_no_idx'</span></span>,<span class="hljs-number"><span class="hljs-number">1</span></span>));</code> </pre><pre> <code class="plaintext hljs"> hash_page_type ---------------- bucket (1 row)</code> </pre><br><pre> <code class="pgsql hljs">demo=# <span class="hljs-keyword"><span class="hljs-keyword">select</span></span> live_items, dead_items <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> hash_page_stats(get_raw_page(<span class="hljs-string"><span class="hljs-string">'flights_flight_no_idx'</span></span>,<span class="hljs-number"><span class="hljs-number">1</span></span>));</code> </pre><pre> <code class="plaintext hljs"> live_items | dead_items ------------+------------ 407 | 0 (1 row)</code> </pre><br> 依此类推。 但是，在不检查源代码的情况下几乎不可能找出所有可用字段的含义。 如果希望这样做，则应从<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">README</a>开始。 <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">继续阅读</a> 。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN442776/">https://habr.com/ru/post/zh-CN442776/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN442760/index.html">有关CommVault如何备份PostgreSQL的文章</a></li>
+<li><a href="../zh-CN442762/index.html">培训生Vasya及其关于幂等API的故事</a></li>
+<li><a href="../zh-CN442764/index.html">产品管理摘要。 什么激发了2019年的产品和营销人员</a></li>
+<li><a href="../zh-CN442770/index.html">JavaScript条码扫描器概述</a></li>
+<li><a href="../zh-CN442772/index.html">数据科学家数学：必要部分</a></li>
+<li><a href="../zh-CN442778/index.html">学习围棋：精选视频报告</a></li>
+<li><a href="../zh-CN442780/index.html">流行物理学中最常见的误解</a></li>
+<li><a href="../zh-CN442782/index.html">VShard-Tarantool中的水平缩放</a></li>
+<li><a href="../zh-CN442784/index.html">通过将受害者AS添加到攻击者的AS-SET中来进行BGP劫持</a></li>
+<li><a href="../zh-CN442786/index.html">7个使用房间的有用技巧</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

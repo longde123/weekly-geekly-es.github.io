@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐼 👨🏾‍🏭 👀 PostgreSQL并记录每个特定连接的一致性设置 🥐 👦🏻 ♏️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="本文的翻译是专门为“数据库”课程的学生准备的。 朝这个方向发展是否有趣？ 我们邀请您参加开放日 ，在其中详细讨论该计划，在线格式的功能，胜任力和职业前景，这些都将在培训后等待毕业生。 
+
+
+
+
+
+ PostgreSQL并记录每个特定连接的一致性设置 
+ 在Compose，我们必须处理许多数据库，这使...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL并记录每个特定连接的一致性设置</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/472364/"><p>  <em>本文的翻译是专门为<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“数据库”</a>课程的学生准备的。</em>  <em>朝这个方向发展是否有趣？</em>  <em>我们邀请您参加<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">开放日</a> ，在其中详细讨论该计划，在线格式的功能，胜任力和职业前景，这些都将在培训后等待毕业生。</em> </p><br><p><img src="https://habrastorage.org/webt/gf/iy/te/gfiyteycddmeefan9z5h1nxdgu0.png"></p><br><p>  PostgreSQL并记录每个特定连接的一致性设置 <br> 在Compose，我们必须处理许多数据库，这使我们有机会了解更多有关其功能和缺点的信息。 当我们学习喜爱新数据库的功能时，有时我们会开始考虑，如果我们已经使用了很长时间的更成熟的工具中存在类似的功能，那将会有多好。  PostgreSQL希望看到的新功能之一是其在整个集群中的自定义写入一致性。 事实证明，我们已经拥有它，今天我们想与您分享有关如何使用它的信息。 <a name="habracut"></a></p><br><h1 id="zachem-mne-eto"> 我为什么需要这个？ </h1><br><p> 群集的行为方式取决于您的应用程序。 以一个支付账单的应用程序为例。 您将需要在集群中实现100％的一致性，因此必须启用同步提交，以便数据库等待所有更改。 但是，如果您的应用程序是一个快速增长的社交网络，那么您可能更希望100％的一致性和快速的响应。 为此，您可以在集群中使用异步提交。 </p><br><h2 id="znakomtes-kompromiss"> 妥协 </h2><br><p> 您必须在数据一致性和性能之间折衷。  PostgreSQL脱离了一致性，因为在这种情况下，默认配置是可预测的，不会出现意料之外的意外。 现在，我们将熟悉妥协。 </p><br><h3 id="kompromiss-1-proizvoditelnost"> 妥协1：性能 </h3><br><p> 如果PostgreSQL集群不需要一致性，那么它很可能异步工作。 记录完成后，集群领导者将在几毫秒后将更新发送到他的副本。 当PostgreSQL集群需要一致性时，它应该同步工作。 该记录将在群集的领导者中进行，该领导者将向副本发送更新，并等待确认每个人都做出了记录，然后再将确认发送给发起记录成功的客户端。 这些方法之间的实际区别是异步方法需要两次网络跳转，而同步方法则需要四个网络跳转。 </p><br><h3 id="kompromiss-2-soglasovannost"> 妥协2：一致性 </h3><br><p> 如果这两种方法中的领导者发生故障，结果也会有所不同。 如果工作是异步执行的，那么当发生此类错误时，并非所有记录都会由副本提交。 将损失多少？ 取决于应用程序本身和复制效率。 如果复制信息中的信息量比引导者少1 MB，则Compose复制将阻止该副本成为引导者，也就是说，在异步操作期间最多可能会丢失1 MB的记录。 </p><br><p>在同步模式下，不会发生这种情况。 如果领导者失败，则所有副本都将更新，因为必须在副本中确认领导者上确认的任何记录。 这就是-连贯性。 </p><br><p> 在应用程序中使用同步行为支付账单是很有意义的，在一致性方面，一致性在寻找一致性和性能之间的折中方面具有明显的优势。 对于这样的应用程序，最重要的是有效数据。 现在，请记住社交网络，其中的主要任务是保持用户的注意力，并尽快响应请求。 在这种情况下，将优先考虑具有较少网络跳转和较少等待提交的性能。 但是，性能和一致性之间的权衡并不是唯一要考虑的问题。 </p><br><h3 id="kompromiss-3-sboi"> 妥协3：失败 </h3><br><p> 了解群集在故障期间的行为非常重要。 考虑一个或多个副本失败的情况。 异步处理提交后，领导者将继续运行，即无需等待丢失的副本即可接收和处理记录。 当副本返回群集时，它们追赶领导者。 对于同步复制，如果副本没有响应，则领导者将别无选择，他将继续等待提交确认，直到副本返回集群并可以接受并确认记录。 </p><br><h2 id="po-odnomu-soedineniyu-na-tranzakciyu"> 每笔交易一个连接？ </h2><br><p> 每个应用程序都需要一种特殊类型的一致性和性能组合。 除非当然是我们认为完全一致的计费应用程序，还是我们几乎短暂的社交网络应用程序。 在所有其他情况下，有时某些操作必须是同步的而某些异步。 您可能不希望系统等待发送给聊天的消息被提交，但是如果在同一应用程序中付款，则必须等待。 </p><br><p> 当然，所有这些决定都是由应用程序开发人员做出的。 有关何时采用这种方法的正确决策将有助于最大程度地利用集群。 对于连接和事务，开发人员可以在SQL级别上在它们之间进行切换很重要。 </p><br><h2 id="obespechenie-kontrolya-na-praktike"> 在实践中提供控制 </h2><br><p>默认情况下，PostgreSQL提供一致性。 这由<code>synchronous_commit</code>服务器参数控制。 默认情况下它是<code>on</code> ，但是它还有其他三个选项： <code>local</code> ， <code>remote_write</code>或<code>off</code> 。 </p><br><p> 当参数设置为<code>off</code> ，即使在本地系统中，所有同步提交也将停止。  local中的参数确定本地系统的同步模式，但是对副本的写入是异步的。  <code>Remote_write</code>甚至更进一步：对副本的写入是异步进行的，但是当副本收到记录但未将其写入磁盘时返回。 </p><br><p> 考虑到可用选项的范围，我们选择行为，并记住<code>on</code>同步记录上，我们将选择<code>local</code>进行网络上的异步提交，同时使本地提交保持同步。 </p><br><p> 现在，我们将告诉您如何立即进行配置，但是假设我们将服务器的sync_commit设置为<code>local</code> 。 我们问自己是否可以即时更改<code>synchronous_commit</code>参数，结果证明这不仅可行，甚至有两种方法可以实现。 首先是按照以下步骤设置连接会话： </p><br><pre> <code class="plaintext hljs">SET SESSION synchronous_commit TO ON; // Your writes go here</code> </pre> <br><p> 在向连接的客户端返回肯定结果之前，会话中的所有后续记录将确认副本的写操作。 除非，当然，除非您再次更改<code>synchronous_commit</code>设置。 您可以省略命令的<code>SESSION</code>部分，因为它将是默认值。 </p><br><p> 当您只想确保单个事务获得同步复制时，第二种方法很好。 在许多NoSQL数据库中，不存在事务的概念，但是在PostgreSQL中存在。 在这种情况下，您可以启动事务，然后在写入事务之前将<code>synchronous_commit</code>设置为<code>on</code> 。 尽管最好预先设置变量以确保其他开发人员了解记录不是异步的，但<code>COMMIT</code>使用当时设置的<code>synchronous_commit</code>参数的任何值来<code>COMMIT</code>事务。 </p><br><pre> <code class="plaintext hljs">BEGIN; SET LOCAL synchronous_commit TO ON; // Your writes go here COMMIT;</code> </pre> <br><p> 现在，即使在数据库向连接的客户端返回肯定响应之前，也将确认所有事务提交均已写入副本。 </p><br><h2 id="nastroyka-postgresql">  PostgreSQL设置 </h2><br><p> 在此之前，我们设想了一个PostgreSQL系统，其中<code>synchronous_commit</code>设置为<code>local</code> 。 为了使它在服务器端实现，您将需要设置两个服务器配置参数。  <code>on</code> sync_commit时，将接管另一个<code>synchronous_standby_names</code>参数。 它确定哪些副本适合进行同步提交，我们将其设置为<code>*</code> ，这意味着所有副本都已启用。 这些值通常在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">配置文件中</a>通过添加以下内容进行<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">配置</a> ： </p><br><pre> <code class="plaintext hljs">synchronous_commit = local synchronous_standby_names='*'</code> </pre> <br><p> 通过将<code>synchronous_commit</code>参数设置为<code>local</code> ，我们创建了一个系统，其中本地驱动器保持同步，但是默认情况下网络副本提交是异步的。 当然，除非我们决定使这些提交同步，如上所示。 </p><br><p> 如果您遵循<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Governor项目</a>的开发，您可能会注意到最近的一些更改（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">1、2</a> ），这些更改使Governor用户可以测试这些参数并控制其一致性。 </p><br><h2 id="esche-para-slov"> 再说几句话... </h2><br><p> 就在一周前，我会告诉您，不可能如此精细地调整PostgreSQL。 那时，Compose平台团队的成员Kurt坚持认为有这样的机会。 他平息了我的反对意见，并在PostgreSQL文档中找到了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">以下</a>内容： </p><br><p><img src="https://habrastorage.org/webt/yu/-p/qn/yu-pqnp2g5_ipnofxejmnmkc_uq.png"></p><br><p>  <em>该参数可以随时更改。</em>  <em>任何事务的行为都由提交时生效的设置决定。</em>  <em>因此，对于某些事务同步地提交提交，而对于其他事务异步地提交，则可能是有用的。</em>  <em>例如，要在参数的默认值相反时强制单个<code>multistatement</code>事务异步提交</em> <em>，请在事务</em> <em>中将</em> <code>SET LOCAL synchronous_commit TO OFF</code> <em>设置为</em> <code>SET LOCAL synchronous_commit TO OFF</code> <em>。</em> </p><br><p> 通过对配置文件进行的少量修改，我们使用户能够控制其一致性和性能。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN472364/">https://habr.com/ru/post/zh-CN472364/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN472354/index.html">椅子和显示器之间是系统中的主要漏洞：VAP人员</a></li>
+<li><a href="../zh-CN472356/index.html">Microsoft vs IBM：Java支持方面的重大变化</a></li>
+<li><a href="../zh-CN472358/index.html">10月30日17:00网络研讨会“在一个小时内在CROC云中部署Kubernetes集群”</a></li>
+<li><a href="../zh-CN472360/index.html">扫描Orchard CMS的代码以查找错误</a></li>
+<li><a href="../zh-CN472362/index.html">我们搜索并分析Orchard CMS代码中的错误</a></li>
+<li><a href="../zh-CN472366/index.html">Factorio中的新路径查找器算法</a></li>
+<li><a href="../zh-CN472368/index.html">语音钓鱼：我们分析攻击方法和针对它们的防护方法</a></li>
+<li><a href="../zh-CN472372/index.html">Android自动化 超级轻松的指南来创建您的第一个Espresso测试</a></li>
+<li><a href="../zh-CN472374/index.html">为什么我们将服务器移至冰岛</a></li>
+<li><a href="../zh-CN472378/index.html">闪存可靠性：预期和意外。 第2部分。USENIX协会的XIV会议。 文件存储技术</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

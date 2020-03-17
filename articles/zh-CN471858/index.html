@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👳🏿 🎚️ 👋🏿 RabbitMQ与Kafka：群集中的故障转移和高可用性 🌺 🥐 📅</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="容错和高可用性是主要话题，因此RabbitMQ和Kafka将分别撰写文章。 与RabbitMQ相比，本文是关于RabbitMQ的，而下一篇是关于Kafka的。 这篇文章很长，所以让自己舒服一点。 
+
+ 考虑容错，一致性和高可用性（HA）的策略，以及每种策略必须进行的权衡。 RabbitMQ可以在节点...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>RabbitMQ与Kafka：群集中的故障转移和高可用性</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/itsumma/blog/471858/"><img src="https://habrastorage.org/webt/hr/j2/oy/hrj2oyxwqv8-wo-vpmagx_dwmia.jpeg"><br><br> 容错和高可用性是主要话题，因此RabbitMQ和Kafka将分别撰写文章。 与RabbitMQ相比，本文是关于RabbitMQ的，而下一篇是关于Kafka的。 这篇文章很长，所以让自己舒服一点。 <br><br> 考虑容错，一致性和高可用性（HA）的策略，以及每种策略必须进行的权衡。  RabbitMQ可以在节点集群上运行-然后将其分类为分布式系统。 对于分布式系统，我们经常谈论一致性和可访问性。 <br><br> 这些概念描述了发生故障时系统的行为。 网络连接故障，服务器故障，硬盘故障，由于垃圾收集，数据包丢失或网络连接变慢而导致的临时服务器不可用。 所有这些都可能导致数据丢失或冲突。 事实证明，针对所有类型的故障，建立一个完全一致（无数据丢失，没有数据差异）并且可访问（将接受读取和写入操作）的系统几乎是不可能的。 <br><a name="habracut"></a><br> 我们将看到一致性和可访问性处于频谱的不同末端，您需要选择哪种优化方式。 好消息是，有了RabbitMQ，这样的选择是可能的。 您具有一种“书呆子”的杠杆作用，可以使平衡朝着更大的一致性或更大的可访问性转移。 <br><br> 我们将特别注意哪些配置会因确认记录而导致数据丢失。 发布者，经纪人和消费者之间存在责任链。 在消息发送给代理之后，不丢失消息是他的工作。 当经纪人向发布者确认消息的接收时，我们预计它不会丢失。 但是我们会看到，根据经纪人和发布者的配置，这确实可能发生。 <br><br><h1> 一节点稳定性的原语 </h1><br><h3> 持续队列/路由 </h3><br>  RabbitMQ中有两种类型的队列：持久/非持久。 所有队列都存储在Mnesia数据库中。 节点启动时将重新声明持久队列，从而在重新启动，系统崩溃或服务器崩溃（只要保存了数据）中幸免于难。 这意味着，当您声明路由（交换）和队列具有弹性时，队列/路由的基础结构将在线返回。 <br><br> 主机重新启动时，易变队列和路由将被删除。 <br><br><h3> 持久消息 </h3><br> 仅仅因为队列很长并不意味着它的所有消息都将在节点重启后幸存下来。 仅还原由发布者设置为持久性的消息。 持久消息的确给代理增加了负担，但是如果消息丢失是不可接受的，则没有其他方法。 <br><br><img src="https://habrastorage.org/webt/hl/nv/gv/hlnvgvt20t-fbikkajwnkirflyo.png"><br>  <i>图</i>  <i>1.稳定性矩阵</i> <br><br><h1> 队列镜像集群 </h1><br> 为了避免经纪人的损失，我们需要裁员。 我们可以将几个RabbitMQ节点合并到一个集群中，然后通过在几个节点之间复制队列来添加额外的冗余。 因此，如果一个节点掉落，我们不会丢失数据并保持可用状态。 <br><br> 队列镜像： <br><br><ul><li> 一个主队列（主机），接收所有写和读命令 <br></li><li> 一个或多个从主队列接收所有消息和元数据的镜像。 这些镜像不存在，只能用于冗余扩展。 </li></ul><br><img src="https://habrastorage.org/webt/am/-b/ol/am-boljly334-fiqfajsoowe3iu.png"><br>  <i>图</i>  <i>2.镜像队列</i> <br><br> 镜像由适当的策略设置。 在其中，您可以选择复制速率，甚至可以选择应放置队列的节点。 范例： <br><br><ul><li><code>ha-mode: all</code> <br> </li><li>  <code>ha-mode: exactly, ha-params: 2</code> （一个主控和一个镜像） <br></li><li> <code>ha-mode: nodes, ha-params: rabbit@node1, rabbit@node2</code> </li> </ul><br><h1> 确认发布者 </h1><br> 要实现顺序记录，必须确认发布者确认。 没有它们，就有可能丢失消息。 将消息写入磁盘后，将确认发送给发布者。  RabbitMQ不是在收到消息时而是在几百毫秒左右的时间内将消息写到磁盘上。 当对队列进行镜像时，仅在所有镜像也已将其消息副本写入磁盘后，才发送确认。 这意味着使用确认会增加延迟，但是如果数据安全性很重要，则必须使用确认。 <br><br><h1> 故障转移队列 </h1><br> 当代理关闭或崩溃时，此节点上的所有主要队列（主服务器）都将随之消失。 然后，集群选择每个主服务器的最旧镜像并将其升级为新的主服务器。 <br><br><img src="https://habrastorage.org/webt/pq/v_/_a/pqv__ahffpye5i6h_2pdzozyrgi.png"><br>  <i>图</i>  <i>3.几个镜像队列及其策略</i> <br><br> 经纪人3滴。 请注意，代理2上的队列C的镜像已升级为主服务器。 还要注意，已经为代理1上的队列C创建了新的镜像。RabbitMQ始终尝试维护策略中指定的复制速率。 <br><br><img src="https://habrastorage.org/webt/df/e7/la/dfe7laf8pyg0pobmrkgteky-wsw.png"><br>  <i>图</i>  <i>4.代理3崩溃，导致队列C失败</i> <br><br> 下一个经纪人1下跌！ 我们只剩下一位经纪人。 队列B的镜像升起为主服务器。 <br><br><img src="https://habrastorage.org/webt/b2/bd/qi/b2bdqi_lz21qoe8hcdmsjy8g5kc.png"><br>  <i>图</i>  <i>5</i> <br><br> 我们返回了Broker1。无论数据在代理的丢失和恢复中如何成功存活，所有镜像的队列消息在重新启动时都会被丢弃。 注意这一点很重要，因为会导致后果。 我们将尽快考虑这些后果。 因此，Broker 1现在再次成为集群的成员，并且该集群正在尝试遵守策略，因此在Broker 1上创建了镜像。 <br><br> 在这种情况下，Broker 1和数据的丢失已完成，因此非镜像队列D完全丢失。 <br><br><img src="https://habrastorage.org/webt/wi/ql/68/wiql68dzsoerzuibhspllun85ec.png"><br>  <i>图</i>  <i>6.经纪人1重新投入使用</i> <br><br>  Broker 3重新上线，因此A和B行将在其上创建镜像以适应其HA策略。 但是现在所有的主线都在一个节点上！ 这不是理想的；节点之间的均匀分布更好。 不幸的是，没有什么特别的方法可以重新平衡母版。 稍后，我们将回到这个问题，因为我们需要首先考虑队列同步。 <br><br><img src="https://habrastorage.org/webt/bg/hj/4n/bghj4n6pdd5ki4oideq7zbwmasi.png"><br>  <i>图</i>  <i>7.代理3重新投入使用。</i>  <i>所有主队列都在一个节点上！</i> <br><br> 因此，您现在应该了解镜像如何提供冗余和容错能力。 这样可以确保在单节点故障的情况下的可用性，并防止数据丢失。 但是我们还没有完成，因为实际上所有事情都更加复杂。 <br><br><h1> 同步处理 </h1><br> 创建新镜像时，所有新消息将始终复制到该镜像和其他任何镜像。 至于主队列中的现有数据，我们可以将其复制到一个新的镜像中，该镜像成为主数据库的完整副本。 当新消息到达末尾而现有消息离开主队列的头部时，我们也不能复制现有消息并允许主队列和新镜像及时收敛。 <br><br> 此同步是自动或手动执行的，并使用队列策略控制。 考虑一个例子。 <br><br> 我们有两条镜像线。 队列A自动同步，队列B手动同步。 这两行都有十条消息。 <br><br><img src="https://habrastorage.org/webt/vz/zm/5x/vzzm5x_2w3tphqi09kn6h_9_e1c.png"><br>  <i>图</i>  <i>8.两个具有不同同步模式的队列</i> <br><br> 现在我们正在失去经纪人3。 <br><br><img src="https://habrastorage.org/webt/5x/wp/ki/5xwpki1aoj_-e1hdt0i-gswn-nu.png"><br>  <i>图</i>  <i>9.经纪人3下跌</i> <br><br> 经纪人3重新投入使用。 集群为新节点上的每个队列创建一个镜像，并自动将新队列A与主服务器同步。 但是，新的Turn B的镜子仍然是空的。 因此，我们具有队列A的完全冗余，而队列B的现有消息只有一个镜像。 <br><br><img src="https://habrastorage.org/webt/zo/hb/ha/zohbhaicbgsjdynexgjhuh70ujg.png"><br>  <i>图</i>  <i>10.队列A的新镜像接收所有现有消息，但是队列B的新镜像未接收到</i> <br><br> 这两行都收到十条消息。 然后，代理2下降，并且队列A回滚到位于代理1上的最早的镜像。发生故障时，不会丢失任何数据。 向导中的队列B中有20条消息，而镜像中只有10条消息，因为此队列从不复制原始的10条消息。 <br><br><img src="https://habrastorage.org/webt/yy/hc/sz/yyhcszfowfi6eiidhubgqfy1zry.png"><br>  <i>图</i>  <i>11.行A回滚到代理1，而不会丢失消息</i> <br><br> 这两行都收到十条消息。 现在，代理1崩溃了，队列A可以毫无问题地切换到镜像而不会丢失消息。 但是，队列B有问题。 在这一点上，我们可以优化可访问性或一致性。 <br><br> 如果我们想优化可访问性，则应将<b><i>ha-momote-on-failure</i></b>策略设置为<b><i>always</i></b> 。 这是默认值，因此您可以完全忽略该策略。 实际上，在这种情况下，我们允许非同步镜像发生故障。 这将导致消息丢失，但是队列仍可读写。 <br><br><img src="https://habrastorage.org/webt/4h/hv/_n/4hhv_n4seyvz33pq_sk3my2bnmk.png"><br>  <i>图</i>  <i>12.行A回滚到代理3，而不会丢失消息。</i>  <i>B行回滚到Broker 3，丢失了十条消息</i> <br><br> 我们还可以将<code>ha-promote-on-failure</code>为<code>when-synced</code> 。 在这种情况下，队列将等待直到Broker 1及其数据返回联机模式，而不是回滚到镜像。 他返回后，主队列再次出现在Broker 1上，而没有数据丢失。 为了数据安全性，牺牲了可访问性。 但这是一种冒险的模式，甚至可能导致数据完全丢失，我们将在不久的将来考虑这种模式。 <br><br><img src="https://habrastorage.org/webt/fk/mx/gx/fkmxgxilgyi8bp_n_-osz6q8be0.png"><br>  <i>图</i>  <i>13.失去经纪人1后，B行仍然不可用</i> <br><br> 您可能会问一个问题：“也许最好不要使用自动同步？”。 答案是同步是一项阻塞操作。 在同步期间，主队列无法执行任何读取或写入操作！ <br><br> 考虑一个例子。 现在我们的行很长。 他们怎么能长到这么大？ 由于几个原因： <br><br><ul><li> 队列未积极使用。 <br></li><li> 这些是高速线路，现在消费者很慢 <br></li><li> 这些是高速队列，发生了故障，消费者正在追赶 </li></ul><br><img src="https://habrastorage.org/webt/es/6q/gy/es6qgy7p-1cu0avxb1xivijyjii.png"><br>  <i>图</i>  <i>14.两个具有不同同步模式的大队列</i> <br><br> 现在，代理3崩溃。 <br><br><img src="https://habrastorage.org/webt/vg/ta/ue/vgtauedea7kaitatv7oshzottps.png"><br>  <i>图</i>  <i>15.经纪人3跌倒，每个队列中剩下一个主服务器和一个镜像</i> <br><br>  Broker 3返回，并创建新的镜像。 主队列A开始将现有消息复制到新的镜像，在此期间，队列A不可用。 数据复制需要两个小时，导致此队列的停机时间为两个小时！ <br><br> 但是，B线在整个期间仍然可用。 为了获得方便，她牺牲了一些冗余。 <br><br><img src="https://habrastorage.org/webt/qn/rd/ep/qnrdep5m7sszgxjesb_kfwuw-zw.png"><br>  <i>图</i>  <i>16.同步期间队列仍然不可用</i> <br><br> 两个小时后，队列A也变得可用，并且可能再次开始接受读取和写入操作。 <br><br><h3> 更新内容 </h3><br> 同步期间的这种阻塞行为使升级具有很大队列的群集变得困难。 在某个时候，需要重新启动带有向导的节点，这意味着在服务器更新期间要么切换到镜像，要么关闭队列。 如果选择过渡，则如果镜像未同步，则会丢失消息。 默认情况下，在断开代理的过程中，不执行向非同步镜像的过渡。 这意味着一旦经纪人返回，我们就不会丢失任何消息，唯一的损失只是一个简单的队列。 禁用经纪人受<code>ha-promote-on-shutdown</code>政策的约束。 您可以设置以下两个值之一： <br><br><ul><li>  <code>always</code> =启用切换到非同步镜像 <br></li><li>  <code>when-synced</code> =仅切换到同步镜像，否则队列将无法访问以进行读写。 代理返回后，队列立即返回 </li></ul><br> 在队列很大的情况下，您必须在数据丢失和无法访问之间进行选择。 <br><br><h3> 当可用性提高数据安全性时 </h3><br> 在做出决定之前，必须考虑更多的复杂性。 虽然自动同步更适合冗余，但它如何影响数据安全性？ 当然，由于具有更好的冗余性，RabbitMQ丢失现有消息的可能性较小，但是来自发布者的新消息呢？ <br><br> 在这里，您需要考虑以下几点： <br><ul><li> 发布者可以仅返回错误，而更高的服务或用户以后可以重试吗？ <br></li><li> 发布者可以在本地或数据库中保存邮件以供稍后重试吗？ </li></ul><br> 如果发布者只能删除消息，那么实际上，提高可访问性也可以提高数据安全性。 <br><br> 因此，您需要寻求一种平衡，并且决定取决于特定的情况。 <br><br><h1>  ha-promote-on-failure的问题=同步时 </h1><br>  <i><b>ha-promote-on-failure</b></i> = <i><b>同步时</b></i>的想法是，我们防止切换到未同步的镜像，从而避免了数据丢失。 队列仍然不可访问以进行读取或写入。 取而代之的是，我们尝试返回一个损坏的代理，其中包含未损坏的数据，以便该代理恢复作为主服务器的工作而不会丢失数据。 <br><br> 但是（这很大）但是，如果经纪人丢失了他的数据，那么我们有一个大问题：队列丢失了！ 所有数据都消失了！ 即使您具有基本赶上主队列的镜像，这些镜像也将被丢弃。 <br><br> 要重新添加具有相同名称的节点，我们告诉集群忘记丢失的节点（使用<i>rabbitmqctlgot_cluster_node命令</i> ），并使用相同的主机名启动一个新的代理。 只要集群记住丢失的节点，它就会记住旧队列和未同步的镜像。 当集群被告知忘记丢失的节点时，该队列也会被忘记。 现在，您需要重新声明它。 我们丢失了所有数据，尽管我们拥有带有部分数据集的镜像。 最好切换到非同步镜像！ <br><br> 因此，我认为手动同步（和同步失败）与<code>ha-promote-on-failure=when-synced</code>结合在一起是非常危险的。 文档说存在此选项是为了保证数据安全，但这是一把双刃小刀。 <br><br><h1> 重新平衡大师 </h1><br> 如所承诺的，我们回到一个或多个节点上所有主机的累积的问题。 即使滚动滚动群集更新也可能发生这种情况。 在具有三个节点的群集中，所有主队列将累积在一个或两个节点上。 <br><br> 重新平衡母带可能会出现问题，原因有两个： <br><br><ul><li> 没有好的再平衡工具 </li><li> 队列同步 </li></ul><br> 为了实现平衡，有一个第三方<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">插件</a>不受官方支持。 关于第三方插件，RabbitMQ手册<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">说</a> ：“该插件提供了一些其他配置和报告工具，但是RabbitMQ团队不支持该插件，也未对其进行测试。 使用后果自负。” <br><br> 还有另一种技巧可以通过高可用性策略来移动主队列。 手册中提到了一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">脚本</a> 。 其工作方式如下： <br><br><ul><li> 使用优先级高于现有高可用性策略的临时策略删除所有镜像。 <br></li><li> 更改HA临时策略，以将节点模式与需要将主队列移动到的节点一起使用。 <br></li><li> 同步队列以进行强制迁移。 <br></li><li> 迁移完成后，删除临时策略。  HA初始策略生效，并创建所需数量的镜像。 </li></ul><br> 缺点是，如果队列很大或有严格的冗余要求，则此方法可能不起作用。 <br><br> 现在，让我们看看RabbitMQ集群如何与网络分区一起工作。 <br><br><h1> 连接中断 </h1><br> 分布式系统的节点通过网络链接连接，网络链接可以并且将断开连接。 中断的频率取决于本地基础架构或所选云的可靠性。 无论如何，分布式系统应该能够处理它们。 同样，我们可以在可访问性和一致性之间做出选择，而且好消息是RabbitMQ同时提供了两者（只是不同时提供）。 <br><br> 使用RabbitMQ，我们有两个主要选择： <br><br><ul><li> 允许逻辑分隔（裂脑）。 这提供了可访问性，但可能导致数据丢失。 <br></li><li> 禁止逻辑分离。 可能会导致短期可用性下降，具体取决于客户端如何连接到群集。 它还可能导致在两个节点的群集中完全无法访问。 </li></ul><br> 但是什么是逻辑分离呢？ 这是由于网络连接丢失而将群集一分为二的情况。 镜子的每一侧都升起了主镜，因此最后，每匝都有几个主镜。 <br><br><img src="https://habrastorage.org/webt/mi/4f/bb/mi4fbbuk9maj487alkqsbbykkns.png"><br>  <i>图</i>  <i>17.主线和两个镜像，每个镜像在单独的节点上。</i>  <i>然后发生网络故障，一个镜像分离。</i>  <i>分离节点发现其他两个已脱落，并将其镜像移至主节点。</i>  <i>现在我们有两条主线，并且都允许书写和阅读。</i> <br><br> 如果发布者将数据发送给两个母版，我们将获得队列的两个不同副本。 <br><br> 各种RabbitMQ模式提供可访问性或一致性。 <br><br><h3> 忽略模式（默认） </h3><br> 此模式提供辅助功能。 连接断开后，发生逻辑分离。 重新连接后，管理员必须决定首选哪个分区。 丢失方将重新启动，并且从该方收集的所有数据都将丢失。 <br><br><img src="https://habrastorage.org/webt/ih/rj/ow/ihrjow-ceolx0wy8y2o-cn2yiuk.png"><br>  <i>图</i>  <i>18.三个发行人与三个经纪人相关联。</i>  <i>在内部，集群将所有请求转发到Broker 2上的主队列。</i> <br><br> 现在我们正在失去经纪人3。他看到其他经纪人已经破产，并将他的镜像移到了主服务器上。 这是逻辑上的分离。 <br><br><img src="https://habrastorage.org/webt/u_/l8/af/u_l8af-qqcyv4ldqdgwrn4t22ei.png"><br>  <i>图</i>  <i>19.逻辑分离（裂脑）。</i>  <i>记录分为两行，两份不同。</i> <br><br> 恢复了连接性，但仍然保持逻辑隔离。 管理员必须手动选择失败者。 在以下情况下，管理员将重新启动Broker3。他未设法传输的所有消息都将丢失。 <br><br><img src="https://habrastorage.org/webt/_o/a9/ft/_oa9ftbuvl6dwnewtgfkrhkyva4.png"><br>  <i>图</i>  <i>20.管理员禁用Broker 3。</i> <br><br><img src="https://habrastorage.org/webt/ni/y_/xq/niy_xqsgzuvf5ktcta35z98zzxs.png"><br>  <i>图</i>  <i>21.管理员启动Broker 3，然后他加入集群，丢失了所有保留在该集群中的消息。</i> <br><br> 在失去连接期间以及恢复之后，群集和此队列可用于读取和写入。 <br><br><h3> 自动修复模式 </h3><br> 它的工作方式与忽略模式相似，不同之处在于，群集本身会在拆分和恢复连接后自动选择失败的一面。 丢失的一方返回到群集为空的队列，并且队列丢失了仅发送到该方的所有消息。 <br><br><h3> 暂停少数民族模式 </h3><br> 如果我们不想允许逻辑分离，那么我们唯一的选择是拒绝在集群分区之后的较小一侧进行读写。 当经纪人发现他处于次要位置时，他会暂停，即关闭所有现有连接并拒绝任何新连接。 每秒一次，它检查是否重新连接。 恢复连接后，它将恢复工作并加入群集。 <br><br><img src="https://habrastorage.org/webt/xl/cc/af/xlccafaylyx2nrsz5scaafo1h6u.png"><br>  <i>图</i>  <i>22.三个发行人与三个经纪人相关联。</i>  <i>在内部，集群将所有请求转发到Broker 2上的主队列。</i> <br><br> 然后，代理1和2与代理3分离。代理3暂停并无法访问，而不是将其镜像升级为主服务器。 <br><br><img src="https://habrastorage.org/webt/8h/0_/hc/8h0_hc8vj99u6zaht7cgymlckve.png"><br>  <i>图</i>  <i>23. Broker 3暂停，断开所有客户端的连接，并拒绝连接请求。</i> <br><br> 恢复连接后，它将返回到群集。 <br><br> 让我们看另一个示例，其中主行位于Broker 3上。 <br><br><img src="https://habrastorage.org/webt/rs/0s/if/rs0siffyxwpdc8imasvfvkapykw.png"><br>  <i>图</i>  <i>24.经纪人3的主线。</i> <br><br> 然后发生相同的连接丢失。 代理3暂停，因为它位于较小的一侧。 另一方面，节点会看到代理3发生故障，因此来自代理1和2的较旧镜像升为主服务器。 <br><br><img src="https://habrastorage.org/webt/ba/o3/gr/bao3gr7y31x5ljbbpkqkretaaty.png"><br>  <i>图</i>  <i>25.如果代理3不可用，请转换到代理2。</i> <br><br> 恢复连接后，Broker 3将加入集群。 <br><br><img src="https://habrastorage.org/webt/3z/rp/3k/3zrp3knvfoew7m25bg6bg4dlhju.png"><br>  <i>图</i>  <i>26.群集恢复正常运行。</i> <br><br> 重要的是要了解我们正在获得一致性，但是<i><b>如果我们</b></i>成功地将客户转移到本节的大部分内容， <i><b>那么我们</b></i>也将获得可访问性。 在大多数情况下，我个人会选择“暂停少数派”模式，但这实际上取决于特定情况。 <br><br> 为了确保可用性，确保客户端成功连接到站点非常重要。 考虑我们的选择。 <br><br><h1> 客户连接 </h1><br> 对于失去连接后，如何将客户端发送到群集的主要部分或工作节点（一个节点发生故障之后），我们有几种选择。 首先，让我们回想一下，特定队列托管在特定主机上，但是路由和策略复制在所有主机上。 客户端可以连接到任何节点，内部路由将在必要时引导它们。 但是，当一个节点挂起时，它会拒绝连接，因此客户端必须连接到另一个节点。 如果节点掉线，他将无能为力。 <br><br> 我们的选择： <br><br><ul><li> 使用负载平衡器访问群集，该负载平衡器简单地在节点之间循环，客户端反复尝试连接直到成功完成连接。      ,        ,        (  ).         ,    . <br></li><li>         /   ,    .    ,        ,     . <br></li><li>      ,          .       ,       ,   . <br></li><li>    /    DNS.      TTL. </li></ul><br><h1> 结论 </h1><br>   RabbitMQ    .      , : <br><br><ul><li>        ; <br></li><li>      . </li></ul><br>         .   RabbitMQ      ,     .        ,     .         RabbitMQ        .      RabbitMQ     : <br><br><ul><li>  . <br></li><li>  . <br></li><li>   . </li></ul><br>      ,   : <br><br><ul><li> <code>ha-promote-on-failure=always</code> <br> </li><li> <code>ha-sync-mode=manual</code> <br> </li><li> <code>cluster_partition_handling=ignore</code> ( <code>autoheal</code> ) <br></li><li>   <br></li><li> ,      ,  -     </li></ul><br>   ( )   : <br><br><ul><li> Publisher Confirms  Manual Acknowledgements    <br></li><li> <code>ha-promote-on-failure=when-synced</code> ,              !   <code>=always</code> . <br></li><li> <code>ha-sync-mode=automatic</code> (        ;  , ,       ) <br></li><li>  Pause Minority <br></li><li>   </li></ul><br>          ; ,      (,   ).        Shovel. <br><br>    - , ,  . <br><br> .   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="></a> ,       RabbitMQ   Docker  Blockade,      ,    . <br><br>   : <br> №1 — <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">habr.com/ru/company/itsumma/blog/416629</a> <br> №2 — <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">habr.com/ru/company/itsumma/blog/418389</a> <br> №3 — <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">habr.com/ru/company/itsumma/blog/437446</a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN471858/">https://habr.com/ru/post/zh-CN471858/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN471840/index.html">为什么要去面试</a></li>
+<li><a href="../zh-CN471844/index.html">访问哈萨克斯坦EPAM INSIDER的5个理由</a></li>
+<li><a href="../zh-CN471852/index.html">来自OpenStreetMap No.481的世界新闻（10/01/2019-07/10/2019）</a></li>
+<li><a href="../zh-CN471854/index.html">热死5G</a></li>
+<li><a href="../zh-CN471856/index.html">我们解决了所有42个版本的哈利波特魔药</a></li>
+<li><a href="../zh-CN471860/index.html">钉解析器</a></li>
+<li><a href="../zh-CN471862/index.html">PEG解析器实现</a></li>
+<li><a href="../zh-CN471864/index.html">PEG解析器生成</a></li>
+<li><a href="../zh-CN471866/index.html">PEG解析器可视化</a></li>
+<li><a href="../zh-CN471872/index.html">C＃8中的接口：默认实现中的危险假设</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

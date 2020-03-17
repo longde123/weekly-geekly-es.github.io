@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👰🏿 🌟 🍽️ 完美无瑕的RabbitMQ迁移到Kubernetes 🎭 ⚓️ 👨‍🔧</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="RabbitMQ是用Erlang语言编写的消息代理，它使您可以组织故障转移群集，并将其完整数据复制到多个节点，每个节点可以在其中处理读写请求。 在生产中有许多Kubernetes集群的情况下，我们支持大量RabbitMQ安装，并且面临着在不停机的情况下将数据从一个集群迁移到另一个集群的需求。 
+
+ ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>完美无瑕的RabbitMQ迁移到Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/450662/"><img src="https://habrastorage.org/webt/9j/vy/0w/9jvy0wqwfj4agrnnjerepzcv4qw.png"><br><br>  RabbitMQ是用Erlang语言编写的消息代理，它使您可以组织故障转移群集，并将其完整数据复制到多个节点，每个节点可以在其中处理读写请求。 在生产中有许多Kubernetes集群的情况下，我们支持大量RabbitMQ安装，并且面临着在不停机的情况下将数据从一个集群迁移到另一个集群的需求。 <a name="habracut"></a><br><br> 在至少两种情况下，此操作对我们来说是必需的： <br><br><ol><li> 将数据从不在Kubernetes中的RabbitMQ集群传输到已经被“调优”（即在K8s pod中运行）的新集群。 </li><li>  Kubernetes中RabbitMQ从一个名称空间迁移到另一个名称空间（例如，如果路径由名称空间分隔，则将基础结构从一个路径转移到另一路径）。 </li></ol><br> 本文中提出的方法主要针对（但不限于这些）情况，其中存在一个旧的RabbitMQ集群（例如3个节点），位于K8或某些旧服务器上。  Kubernetes中托管的应用程序可以使用（已经存在或将来使用）： <br><br><img src="https://habrastorage.org/webt/0t/nv/vw/0tnvvwspr5t-cwbvwzae5p2h9re.png"><br><br>  ...并且我们面临着将其迁移到Kubernetes的新产品中的挑战。 <br><br> 首先，将描述迁移本身的一般方法，然后介绍其实现的技术细节。 <br><br><h2> 迁移算法 </h2><br> 执行任何操作之前的第一步，即第一步，是验证是否在旧的RabbitMQ安装中启用了高可用性（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">HA</a> ）模式。 原因很明显-我们不想丢失任何数据。 要执行此检查，您可以转到RabbitMQ管理面板，并在管理→策略标签中，确保值<code>ha-mode: all</code> ： <br><br><img src="https://habrastorage.org/webt/fz/sj/cc/fzsjcc5rvcdzqvzrwklrkomoqny.png"><br><br> 下一步是在Kubernetes窗格中创建一个新的RabbitMQ集群（例如，在我们的示例中，该集群由3个节点组成，但是它们的数量可能不同）。 <br><br> 之后，我们合并旧的和新的RabbitMQ集群，获得单个集群（6个节点）： <br><br><img src="https://habrastorage.org/webt/br/ds/wx/brdswxtjfd97eg1jc6yuy0m6w6c.png"><br><br> 启动了新旧RabbitMQ集群之间的数据同步过程。 在集群中所有节点之间同步所有数据之后，我们可以将应用程序切换为使用新集群： <br><br><img src="https://habrastorage.org/webt/mh/wu/py/mhwupy0059dj_m8xn-guonlq_i0.png"><br><br> 完成这些操作后，从RabbitMQ集群中删除旧节点就足够了，并且可以认为移动已完成： <br><br><img src="https://habrastorage.org/webt/_2/_q/cr/_2_qcrxnt_1j4hzazxfsagyr9i8.png"><br><br> 我们已经在生产中反复使用此方案。 但是，为了他们自己的方便，我们在一个专用系统的框架内实现了它，该系统在Kubernetes集群的集合上分发典型的RMQ配置<i>（对于那些好奇的人：我们正在谈论的是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">addon-operator</a> ，我们<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">最近在谈论</a> ）</i> 。 下面提供了单独的说明，任何人都可以在其装置上应用这些说明，以尝试所建议的解决方案。 <br><br><h2> 我们在实践中尝试 </h2><br><h3> 要求条件 </h3><br> 细节非常简单： <br><br><ol><li>  Kubernetes集群（minikube也适用）； </li><li>  RabbitMQ集群（可以部署在裸机上，并根据官方Helm图表在Kubernetes中作为常规集群进行制作）。 </li></ol><br> 对于下面描述的示例，我将RMQ部署到Kubernetes，并将其命名为<code>rmq-old</code> 。 <br><br><h3> 展位准备 </h3><br>  1.下载Helm图表并对其进行一些编辑： <br><br><pre> <code class="bash hljs">helm fetch --untar stable/rabbitmq-ha</code> </pre> <br> 为了方便起见，我们设置密码<code>ErlangCookie</code>并设置<code>ha-all</code>策略，以便默认情况下，队列在RMQ集群的所有节点之间同步： <br><br><pre> <code class="plaintext hljs">rabbitmqPassword: guest rabbitmqErlangCookie: mae9joopaol7aiVu3eechei2waiGa2we definitions: policies: |- { "name": "ha-all", "pattern": ".*", "vhost": "/", "definition": { "ha-mode": "all", "ha-sync-mode": "automatic", "ha-sync-batch-size": 81920 } }</code> </pre> <br>  2.设置图表： <br><br><pre> <code class="bash hljs">helm install . --name rmq-old --namespace rmq-old</code> </pre> <br>  3.转到RabbitMQ管理面板，创建一个新队列并添加一些消息。 将需要它们，以便在迁移后我们可以确保所有数据都已保存并且我们没有丢失任何数据： <br><br><img src="https://habrastorage.org/webt/de/pb/_o/depb_oq1aa_rpozeaymiik6acqm.png"><br><br> 测试平台已经准备就绪：我们拥有“旧的” RabbitMQ，其中包含需要传输的数据。 <br><br><h3>  RabbitMQ集群迁移 </h3><br>  1.首先，使用用户<b>的相同</b> <code>ErlangCookie</code>和密码，将新RabbitMQ部署到<b>其他</b>名称空间中。 为此，我们执行上述操作，将最终的RMQ安装命令更改为以下内容： <br><br><pre> <code class="bash hljs">helm install . --name rmq-new --namespace rmq-new</code> </pre> <br>  2.现在，您需要将新群集与旧群集合并。 为此，请转到<b>新</b> RabbitMQ的每个吊舱并执行以下命令： <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">export</span></span> OLD_RMQ=rabbit@rmq-old-rabbitmq-ha-0.rmq-old-rabbitmq-ha-discovery.rmq-old.svc.cluster.local &amp;&amp; \ rabbitmqctl stop_app &amp;&amp; \ rabbitmqctl join_cluster <span class="hljs-variable"><span class="hljs-variable">$OLD_RMQ</span></span> &amp;&amp; \ rabbitmqctl start_app</code> </pre> <br>  <code>OLD_RMQ</code>变量<code>OLD_RMQ</code> <b>旧</b> RMQ群集的节点之一<code>OLD_RMQ</code>地址。 <br><br> 这些命令将停止<b>新</b> RMQ群集的当前节点，将其附加到旧群集，然后重新启动它。 <br><br>  3. 6个节点的RMQ集群已准备就绪： <br><br><img src="https://habrastorage.org/webt/1k/1z/cr/1k1zcrq3-hn-k_k6y10z-ktteqc.png"><br><br> 您必须等待，直到所有节点之间的消息同步为止。 不难猜测，消息的同步时间取决于部署集群的熨斗的容量以及消息的数量。 在所描述的场景中，它们只有10个，因此数据是立即同步的，但是由于有足够多的消息，同步可能要花费数小时。 <br><br> 因此，同步状态为： <br><br><img src="https://habrastorage.org/webt/32/rb/gl/32rbglvg5f9vnxjaee0ewii0pmo.png"><br><br> 在此， <code>+5</code>表示消息<b>已经</b>在<b>另外</b> 5个节点上（“ <code>Node</code>字段中指定的内容除外）。 因此，同步成功。 <br><br>  4.仅需将应用程序中的RMQ地址切换到新群集（此处的具体操作取决于您所使用的技术堆栈和其他应用程序特定条件），然后您就可以告别旧的了。 <br><br> 对于最后一个操作（即，将应用程序切换到新集群后），我们转到<b>旧</b>集群的每个节点并执行以下命令： <br><br><pre> <code class="bash hljs">rabbitmqctl stop_app rabbitmqctl reset</code> </pre> <br> 群集“忘记”了旧节点：您可以删除旧的RMQ，这将完成迁移。 <br><br>  <i><b>注意</b> ：如果将RMQ与证书一起使用，则基本上没有变化-移动过程将完全相同。</i> <br><br><h2> 结论 </h2><br> 当我们需要转移RabbitMQ或仅移至新集群时，所描述的方案几乎适用于所有情况。 <br><br> 在我们的案例中，当从许多地方访问RMQ时，困难仅发生一次，而我们没有机会在任何地方将RMQ地址更改为新地址。 然后，我们在具有相同标签的相同命名空间中启动了一个新的RMQ，以使其落入现有服务和Ingress的控制之下。当我们启动Pod时，我们用手操作了这些标签，并在开始时将其删除了，这样请求就不会落在一个空的RMQ上，并且消息同步后将其重新添加。 <br><br> 在将RabbitMQ更新为具有修改后配置的新版本时，我们使用了相同的策略-一切都像时钟一样工作。 <br><br><h2> 聚苯乙烯 </h2><br> 作为该材料的逻辑上的延续，我们正在准备有关MongoDB（从铁服务器迁移到Kubernetes）和MySQL（在Kubernetes中“准备”该DBMS的选项之一）的文章。 它们将在未来几个月内发布。 <br><br><h2>  PPS </h2><br> 另请参阅我们的博客： <br><br><ul><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">数据库和Kubernetes（审查和视频报告）</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">K8的技巧与窍门：加快大型数据库的引导速度。</a> ” </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN450662/">https://habr.com/ru/post/zh-CN450662/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN450648/index.html">PS2 / PSP模拟器+ Google云端硬盘+ YouTube =“疯狂”继续</a></li>
+<li><a href="../zh-CN450650/index.html">以应用程序为中心的基础架构。 未来的网络架构-从推理到业务</a></li>
+<li><a href="../zh-CN450652/index.html">给未来程序员的信息</a></li>
+<li><a href="../zh-CN450658/index.html">英特尔处理器Megazap-职位补充</a></li>
+<li><a href="../zh-CN450660/index.html">征收15％的税收会杀死外国在线贸易吗</a></li>
+<li><a href="../zh-CN450666/index.html">React对Angular有不好的影响吗？</a></li>
+<li><a href="../zh-CN450672/index.html">在SPDS中桩基础上的金属工位施工</a></li>
+<li><a href="../zh-CN450674/index.html">搬迁至亚美尼亚</a></li>
+<li><a href="../zh-CN450676/index.html">Metalworking 2019：适用于企业的高级3D解决方案</a></li>
+<li><a href="../zh-CN450678/index.html">Citymobil-在初创企业业务增长中提高可用性的手册。 第4部分</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

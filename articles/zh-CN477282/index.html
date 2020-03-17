@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌾 🎧 ♐️ 分析Go项目代码并解决内存分配问题 🐂 🧒🏼 👩🏻‍⚖️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="也许每个程序员都知道肯特·贝克（Kent Beck）的话：“使之工作，使其正确，使其快速”。 首先，您需要使程序正常运行，然后需要使其正确运行，然后才可以进行优化。 
+
+
+
+ 这篇文章的作者（我们已发表该文章的翻译）说，最近他决定对他的开源Go-project Flipt进行概要分析。 他想在项目中...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>分析Go项目代码并解决内存分配问题</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ruvds/blog/477282/"> 也许每个程序员都知道肯特·贝克（Kent Beck）的话：“使之工作，使其正确，使其快速”。 首先，您需要使程序正常运行，然后需要使其正确运行，然后才可以进行优化。 <br><br><img src="https://habrastorage.org/webt/nz/-z/sh/nz-zsh2ilh_sy0-ib_6ydrcs9p0.png"><br><br> 这篇文章的作者（我们已发表该文章的翻译）说，最近他决定对他的开源Go-project <a href="https://github.com/markphelps/flipt">Flipt</a>进行概要分析。 他想在项目中找到可以轻松优化的代码，从而加快程序速度。 在分析过程中，他在Flipt用来组织路由和中间件支持的流行开源项目中发现了一些意外问题。 结果，可以将应用程序在操作期间分配的内存量减少100倍。 反过来，这又减少了垃圾收集操作的数量，并提高了项目的整体性能。 就是这样。 <br><a name="habracut"></a><br><h2>  <font color="#3AC1EF">高流量产生</font> </h2><br> 在开始进行性能分析之前，我知道首先需要生成大量进入应用程序的流量，这将有助于我了解其行为的某些模式。 在这里，我立即遇到一个问题，因为我没有什么东西可以在生产中使用Flipt并获得一些流量，这些流量可以让我评估负载下的项目工作。 结果，我找到了一个用于负载测试项目的好工具。 这是<a href="https://github.com/tsenart/vegeta">贝吉塔</a> 。 该项目的作者说，Vegeta是用于负载测试的通用HTTP工具。 这个项目源于对HTTP服务进行加载的需要，该服务需要以给定的频率向服务发送大量请求。 <br><br> 事实证明，Vegeta项目正是我需要的工具，因为它使我能够创建对应用程序的连续请求流。 有了这些请求，您就可以根据需要对应用程序进行“外壳化”，以找出指示符，例如堆上的分配/内存使用情况，goroutines的功能以及在垃圾回收上花费的时间。 <br><br> 经过一些实验后，我转到了Vegeta启动的以下配置： <br><br><pre><code class="plaintext hljs">echo 'POST http://localhost:8080/api/v1/evaluate' | vegeta attack -rate 1000 -duration 1m -body evaluate.json</code> </pre> <br> 此命令以<code>attack</code>模式启动<a href="https://github.com/tsenart/vegeta">Vegeta</a> ，在一分钟内以每秒1000个请求的速度发送HTTP POST <a href="https://flipt.dev/architecture/">REST API Flipt请求</a> （诚​​然，这是一个沉重的负担）。  Flipt发送的JSON数据并不是特别重要。 仅对于正确形成请求主体才需要它们。  Flipt服务器收到了这样的请求，该服务器可以执行请求<a href="https://flipt.dev/concepts/">验证</a>过程。 <br><br> 请注意，我首先决定测试Flipt <code>/evaluate</code> 。 事实是，它运行实现项目逻辑并执行“复杂”服务器计算的大多数代码。 我认为分析此端点的结果将为我提供有关可以改进的应用程序领域的最有价值的数据。 <br><br><h2>  <font color="#3AC1EF">测量值</font> </h2><br> 现在，我已经有了生成足够大量流量的工具，我需要找到一种方法来衡量此流量对正在运行的应用程序的影响。 幸运的是，Go拥有一套相当不错的标准工具，可以衡量程序性能。 关于<a href="https://golang.org/pkg/runtime/pprof/">pprof</a>软件包。 <br><br> 我将不介绍使用pprof的细节。 我认为我会做得比朱莉娅·埃文斯（Julia Evans）更好，他写了<a href="https://jvns.ca/blog/2017/09/24/profiling-go-with-pprof/">这篇</a>精彩的文章，介绍了如何使用pprof对Go程序进行概要分析（如果您还没有读过，我绝对建议您看一下）。 <br><br> 由于Flipt中的HTTP路由器是使用<a href="https://github.com/go-chi/chi/">go-chi / chi实现的</a> ，因此使用<a href="">适当的</a> Chi中间处理程序启用pprof对我来说并不困难。 <br><br> 因此，Flipt在一个窗口中为我工作，而Vegeta（在请求中填充Flipt）在另一个窗口中工作。 我启动了第三个终端窗口，以收集和检查堆概要分析数据： <br><br><pre> <code class="plaintext hljs">pprof -http=localhost:9090 localhost:8080/debug/pprof/heap</code> </pre> <br> 它使用Google pprof工具，该工具可以直接在浏览器中可视化分析数据。 <br><br> 首先，我检查了<code>inuse_objects</code>和<code>inuse_space</code> ，以了解堆上正在发生的事情。 但是，我找不到任何出色的东西。 但是当我决定看一下<code>alloc_objects</code>和<code>alloc_space</code> ，有一些事情使我感到<code>alloc_space</code> 。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/12b/e26/640/12be2664018d279c2fcbc0fe4a0fcf2c.png"></div><br>  <i><font color="#999999">分析结果分析（ <a href="">原始</a> ）</font></i> <br><br> 感觉<code>flate.NewWriter</code>分配了19370 MB的内存一分钟。 顺便说一句，这超过了19 GB！ 显然，这里发生了奇怪的事情。 但是到底是什么呢？ 如果仔细观察上图的原始内容，就会发现从<code>gzip.(*Writer).Write</code>调用了<code>flate.NewWriter</code> ，而从<code>middleware.(*compressResponseWriter).Write</code> <code>flate.NewWriter</code>调用了<code>gzip.(*Writer).Write</code> 。 我很快意识到发生的事情与Flipt代码无关。 问题出在用于压缩来自API响应的<a href="https://github.com/go-chi/chi">Chi</a>中间件代码中。 <br><br><pre> <code class="plaintext hljs">//   r.Use(middleware.Compress(gzip.DefaultCompression))</code> </pre> <br> 我注释了以上内容，然后再次运行测试。 不出所料，大量的内存分配操作已消失。 <br><br> 在寻求解决此问题的方法之前，我想从另一端看一下这些内存分配操作，并了解它们如何影响性能。 我特别对它们对程序收集垃圾的时间产生的影响感兴趣。 我记得Go仍然有一个<a href="https://golang.org/cmd/trace/">跟踪</a>工具，使您可以在程序执行过程中对其进行分析，并在特定时间段内收集有关它们的信息。 通过跟踪收集的数据包括诸如堆使用率，正在执行的goroutine的数量，有关网络和系统请求的信息，以及对我来说特别有价值的有关在垃圾收集器上花费的时间的信息等重要指标。 <br><br> 为了有效地收集有关正在运行的程序的信息，我需要减少使用Vegeta每秒发送给应用程序的请求数量，因为服务器会定期给我<code>socket: too many open files</code>错误<code>socket: too many open files</code> 。 我以为这是因为<code>ulimit</code>在我的计算机上设置得太低，但是我当时不想进入。 <br><br> 因此，我使用以下命令重新启动了Vegeta： <br><br><pre> <code class="plaintext hljs">echo 'POST http://localhost:8080/api/v1/evaluate' | vegeta attack -rate 100 -duration 2m -body evaluate.json</code> </pre> <br> 结果，如果将其与以前的方案进行比较，则只有十分之一的请求被发送到服务器，但是这样做的时间更长。 这使我可以收集有关程序工作的高质量数据。 <br><br> 在另一个终端窗口中，我运行了以下命令： <br><br><pre> <code class="plaintext hljs">wget 'http://localhost:8080/debug/pprof/trace?seconds=60' -O profile/trace</code> </pre> <br> 结果，我可以随意使用一个文件，其中包含60秒内收集的跟踪数据。 您可以使用以下命令检查此文件： <br><br><pre> <code class="plaintext hljs">go tool trace profile/trace</code> </pre> <br> 该命令的执行导致在浏览器中发现收集的信息。 它们以方便的图形形式呈现出来供研究。 <br><br> 可以在<a href="https://making.pusher.com/go-tool-trace/">这篇</a>优秀文章中找到有关<code>go tool trace</code>详细信息。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/6fd/490/4da/6fd4904daee72efc1d0bc86b71450cc9.png"></div><br>  <i><font color="#999999">Flipt跟踪结果。</font></i>  <i><font color="#999999">堆上的内存分配的锯齿图清晰可见（ <a href="">原始</a> ）</font></i> <br><br> 在此图上，很容易看出，分配在堆上的内存量倾向于快速增长。 在这种情况下，增长之后应该会急剧下降。 分配内存下降的位置是垃圾回收操作。 在这里，您可以在GC区域中看到明显的蓝色列，代表花费在垃圾收集上的时间。 <br><br> 现在，我已经收集了我需要的所有“犯罪”证据，可以开始寻找分配内存问题的解决方案。 <br><br><h2>  <font color="#3AC1EF">解决问题</font> </h2><br> 为了找出调用<code>flate.NewWriter</code>导致如此多的内存分配操作的原因，我需要查看<a href="https://github.com/go-chi/chi/">Chi</a>源代码。 为了找出我使用的是哪个版本的Chi，我运行了以下命令： <br><br><pre> <code class="plaintext hljs">go list -m all | grep chi github.com/go-chi/chi v3.3.4+incompatible</code> </pre> <br> 到达源代码<a href="">chi / middleware / compress.go @ v3.3.4之后</a> ，我能够找到以下方法： <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">encoderDeflate</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(w http.ResponseWriter, level </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">io</span></span></span><span class="hljs-function">.</span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Writer</span></span></span></span> {    dw, err := flate.NewWriter(w, level)    <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err != <span class="hljs-literal"><span class="hljs-literal">nil</span></span> {        <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-literal"><span class="hljs-literal">nil</span></span>    }    <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> dw }</code> </pre> <br> 在进一步的研究中，我发现通过中间处理程序调用<code>flate.NewWriter</code>方法的每个响应。 这对应于我之前看到的大量内存分配操作，每秒向API加载一千个请求。 <br><br> 我不想拒绝压缩API响应或寻找新的HTTP路由器和新的中间件支持库。 因此，我首先决定通过更新Chi来找出是否有可能解决我的问题。 <br><br> 我运行<code>go get -u -v "github.com/go-chi/chi"</code> ，升级到Chi 4.0.2，但是在我看来，用于数据压缩的中间件代码看起来与以前相同。 当我再次运行测试时，问题并没有消失。 <br><br> 在结束此问题之前，我决定在Chi存储库中查找提及“压缩中间件”之类的问题或PR消息。 我遇到了一个带有以下标题的PR：“重新编写中间件压缩库”。 该PR的作者说：“此外，sync.Pool用于编码器，该编码器具有Reset方法（io.Writer），可减少内存负载。” <br><br> 在这里！ 幸运的是，此PR已添加到<code>master</code>分支中，但是由于未创建新的Chi版本，因此我需要像这样进行更新： <br><br><pre> <code class="plaintext hljs">go get -u -v "github.com/go-chi/chi@master"</code> </pre> <br> 这个令我非常高兴的更新是向后兼容的，它的使用不需要更改我的应用程序的代码。 <br><br><h2>  <font color="#3AC1EF">结果</font> </h2><br> 我运行了负载测试并再次进行了性能分析。 这使我能够验证Chi更新是否解决了该问题。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1ff/600/1df/1ff6001df0eccef0aa5b9c11b80a5dc8.png"></div><br>  <i><font color="#999999">现在flate.NewWriter使用以前使用的已分配内存量的百分之一（ <a href="">原始</a> ）</font></i> <br><br> 再次查看跟踪结果，我发现堆大小现在增长得慢得多。 另外，垃圾收集所需的时间减少了。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/348/584/1fb/3485841fb721f8d31ff3a1bca04bea24.png"></div><br>  <i><font color="#999999">再见-“锯”（ <a href="">原始</a> ）</font></i> <br><br> 一段时间后，我<a href="https://github.com/markphelps/flipt/pull/170">更新</a>了Flipt存储库，比以前更有信心，我的项目将能够充分应对高负载。 <br><br><h2>  <font color="#3AC1EF">总结</font> </h2><br> 这是我设法找到并解决上述问题后所得出的结论： <br><br><ol><li> 您不应该基于这样的假设，即开源库（甚至是流行的库）已经过优化，或者它们没有明显的问题。 </li><li> 一个无辜的问题可能会导致严重的后果，尤其是在重负荷下会导致“多米诺效应”的表现。 </li><li> 如果可能，应使用<a href="https://golang.org/pkg/sync/">sync.Pool</a> 。 </li><li> 随身携带用于测试负载项目并对其进行性能分析的工具非常有用。 </li><li> 使用工具包和开源-太好了！ </li></ol><br>  <b>亲爱的读者们！</b> 您如何研究Go项目的性能？ <br><br><div style="text-align:center;"> <a href="https://ruvds.com/vps_start/"><img src="https://habrastorage.org/webt/-o/2e/tu/-o2etuqogwhmdnmysb9_vivc9v4.png"></a> </div><br> <a href="https://ruvds.com/ru-rub/"><img src="https://habrastorage.org/files/1ba/550/d25/1ba550d25e8846ce8805de564da6aa63.png"></a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN477282/">https://habr.com/ru/post/zh-CN477282/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN477268/index.html">在github上搜索解决方案优化</a></li>
+<li><a href="../zh-CN477272/index.html">首次介绍AssemblyScript</a></li>
+<li><a href="../zh-CN477274/index.html">您如何摆脱未使用的CSS代码？ 第一部分</a></li>
+<li><a href="../zh-CN477276/index.html">您如何摆脱未使用的CSS代码？ 第二部分</a></li>
+<li><a href="../zh-CN477278/index.html">前端测试</a></li>
+<li><a href="../zh-CN477284/index.html">为什么JavaScript需要严格模式？</a></li>
+<li><a href="../zh-CN477286/index.html">Axios或Fetch：在2019年使用什么？</a></li>
+<li><a href="../zh-CN477288/index.html">约翰·刘易斯（John Lewis）在2018年抗衰老大会上</a></li>
+<li><a href="../zh-CN477290/index.html">11月25日至12月1日在莫斯科举行的数字活动</a></li>
+<li><a href="../zh-CN477292/index.html">11月25日至12月1日在圣彼得堡举行的数字活动</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

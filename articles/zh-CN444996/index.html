@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👷🏼 👇🏾 👩🏼‍⚕️ Redis流作为干净的数据结构 💏 🧛🏿 🤒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="名为流的新Redis 5数据结构引起了社区的强烈兴趣。 我将以某种方式与在生产中使用流的人进行交谈并进行撰写。 但是现在我想考虑一个稍微不同的主题。 在我看来，许多人开始将流视为解决超困难任务的一种超现实工具。 确实，此数据结构*还*提供消息传递，但是假设Redis Streams功能仅受此限制，这...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Redis流作为干净的数据结构</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/444996/"> 名为流的新Redis 5数据结构引起了社区的强烈兴趣。 我将以某种方式与在生产中使用流的人进行交谈并进行撰写。 但是现在我想考虑一个稍微不同的主题。 在我看来，许多人开始将流视为解决超困难任务的一种超现实工具。 确实，此数据结构*还*提供消息传递，但是假设Redis Streams功能仅受此限制，这将是一个令人难以置信的简化。 <br><br> 流是一个了不起的模板和“心理模型”，可以在系统设计中获得巨大成功，但是实际上，像大多数Redis数据结构一样，流是更通用的结构，可以用于其他任务。 在本文中，我们将流作为纯数据结构呈现，完全忽略了阻塞操作，收件人组和所有其他消息传递功能。 <br><a name="habracut"></a><br><h1> 流-这是类固醇上的CSV </h1><br> 如果要记录许多结构化数据元素，并认为此处的数据库将过多，则只需在“ <code>append only</code>模式下打开文件，然后将每行写为CSV（逗号分隔值）即可： <br><br><pre> <code class="plaintext hljs">(open data.csv in append only) time=1553096724033,cpu_temp=23.4,load=2.3 time=1553096725029,cpu_temp=23.2,load=2.1</code> </pre> <br> 看起来很简单。 人们很久以前就已经做到了，现在仍然这样做：如果您知道这是什么，它是一个可靠的模板。 但是，内存中的等效值是多少？ 在内存中，可以进行更高级的数据处理，并且自动删除CSV文件的许多限制，例如： <br><br><ol><li> 很难（效率不高）满足范围要求。 <br></li><li> 过多的冗余信息：每个记录几乎都具有相同的时间，并且这些字段是重复的。 同时，如果要切换到其他字段集，删除数据将使格式的灵活性降低。 <br></li><li> 元素偏移量只是文件中的字节偏移量：如果我们更改文件的结构，则偏移量将变为错误，因此没有真正的主标识符概念。 本质上，条目不能明确表示。 <br></li><li> 没有收集垃圾的能力，也没有重写日志的能力，您不能删除条目，而只能将它们标记为无效。 重写日志通常很糟糕，原因有几个，建议避免这种情况。 </li></ol><br> 同时，这样的CSV日志以其自己的方式很好：没有固定的结构，字段可以更改，生成它很简单，并且非常紧凑。  Redis流的想法是保留美德，但要克服局限性。 结果是一个混合数据结构，它与Redis排序集非常相似：它们看起来像基本数据结构，但是使用几种内部表示形式来获得这种效果。 <br><br><h1> 线程简介（如果您已经熟悉基本知识，则可以跳过） </h1><br>  Redis流表示为由基本树连接的增量压缩宏节点。 结果，您可以非常快速地搜索随机记录，获取范围，删除旧元素等。与此同时，程序员的界面与CSV文件非常相似： <br><br><pre> <code class="plaintext hljs">&gt; XADD mystream * cpu-temp 23.4 load 2.3 "1553097561402-0" &gt; XADD mystream * cpu-temp 23.2 load 2.1 "1553097568315-0"</code> </pre> <br> 从示例中可以看到，XADD命令自动生成并返回记录的标识符，该标识符单调增加并由两部分组成：&lt;time&gt;-&lt;counter&gt;。 时间（以毫秒为单位），并且计数器为相同时间的记录递增。 <br><br> 因此， <code>append only</code>模式下CSV文件概念的第一个新抽象是使用星号作为XADD的ID参数：这是我们免费从服务器获取记录标识符的方式。 该标识符不仅用于指示流中的特定元素，而且还与将记录添加到流中的时间相关联。 实际上，使用XRANGE，您可以执行范围查询或检索单个元素： <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097561402-0 1553097561402-0 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3"</code> </pre> <br> 在这种情况下，我使用相同的ID来开始和结束范围以标识一项。 但是，我可以使用任何范围和COUNT参数来限制结果数。 同样，无需指定范围的完整标识符，我可以仅使用unix时间来获取给定时间范围内的元素： <br><br><pre> <code class="plaintext hljs">&gt; XRANGE mystream 1553097560000 1553097570000 1) 1) "1553097561402-0" 2) 1) "cpu-temp" 2) "23.4" 3) "load" 4) "2.3" 2) 1) "1553097568315-0" 2) 1) "cpu-temp" 2) "23.2" 3) "load" 4) "2.1"</code> </pre> <br> 目前，无需向您展示其他API功能，有关此功能的文档。 现在，我们仅关注这种使用模式：XADD用于添加，XRANGE（以及XREAD）用于提取范围（取决于您要执行的操作），让我们看看为什么流如此强大以至于可以将它们称为数据结构。 <br><br> 如果您想了解有关流和API的更多信息，请务必阅读本<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">教程</a> 。 <br><br><h1> 网球员 </h1><br> 几天前，我的一个朋友开始研究Redis，我模拟了一个应用程序来跟踪当地的网球场，球员和比赛。 播放器建模的方法很明显，播放器是一个小对象，因此我们只需要一个带有<code>player:&lt;id&gt;</code>键的哈希即可<code>player:&lt;id&gt;</code> 。 然后，您将立即意识到，您需要一种跟踪特定网球俱乐部中比赛的方法。 如果<code>player:1</code>和<code>player:2</code>在<code>player:1</code>和<code>player:1</code>赢得比赛，我们可以将以下记录发送到信息流： <br><br><pre> <code class="plaintext hljs">&gt; XADD club:1234.matches * player-a 1 player-b 2 winner 1 "1553254144387-0"</code> </pre> <br> 如此简单的操作为我们提供了： <br><br><ol><li> 唯一匹配标识符：流中的ID。 <br></li><li> 无需创建用于匹配标识的对象。 <br></li><li> 针对特定日期和时间的分页匹配或观看匹配的自由范围请求。 </li></ol><br> 在流出现之前，我们必须按时间创建一个排序集：排序集的元素将是匹配标识符，它们以哈希值的形式存储在另一个键中。 这不仅需要更多的工作，还需要更多的内存。 更多的内存（请参阅下文）。 <br><br> 现在，我们的目标是证明Redis流是<code>append only</code>模式下的一种排序集，其键按时间排列，其中每个元素都是一个小的哈希。 简单来说，这是建模环境中的一次真正的革命。 <br><br><h1> 记忆 </h1><br> 上面的用例不仅是更具凝聚力的编程模式。 线程中的内存消耗与旧方法大不相同，旧方法对每个对象使用排序集+散列，以至于某些事情现在开始起作用，以前根本无法实现。 <br><br> 以下是有关在前面介绍的配置中用于存储一百万个匹配项的内存量的统计信息： <br><br><pre> <code class="plaintext hljs">  +  = 220  (242 RSS)  = 16,8  (18.11 RSS)</code> </pre> <br> 差异大于一个数量级（即13倍）。 这意味着能够处理以前过于昂贵而无法在内存中执行的任务。 现在他们已经很可行了。 魔术就是引入Redis流：宏节点可以包含几个元素，这些元素非常紧凑地编码在称为listpack的数据结构中。 例如，此结构将注意以二进制形式编码整数，即使它们在语义上是字符串。 另外，我们应用增量压缩并压缩相同的字段。 但是，仍然可以按ID或时间进行搜索，因为此类宏节点链接在基树中，基树也通过内存优化进行设计。 在一起，这说明了内存的经济使用，但是有趣的部分是，从语义上讲，用户看不到任何使线程如此高效的实现细节。 <br><br> 现在让我们数一数。 如果我可以在大约18 MB的内存中存储100万条记录，那么我可以在180 MB的存储量中存储1000万条，在1.8 GB的存储量中存储1亿条。 仅有18 GB的内存，我可以拥有10亿个项目。 <br><br><h1> 时间序列 </h1><br> 重要的是要注意，上面的网球比赛示例在语义上与将Redis流用于时间序列有很大不同。 是的，从逻辑上讲，我们仍在注册某种事件，但是存在根本的区别。 在第一种情况下，我们记录并创建用于渲染对象的记录。 在时间序列中，我们仅测量发生在外部的实际不代表对象的事物。 您可以说这种区别是微不足道的，但事实并非如此。 重要的是要理解Redis线程可用于创建具有相同顺序的小对象并为这些对象分配标识符的想法。 <br><br> 但是，即使使用时间序列的最简单方法也显然是一个巨大的突破，因为在线程问世之前，Redis实际上无能为力。 流的内存特性和灵活性以及限制流上限的能力（请参阅XADD参数）是开发人员手中非常重要的工具。 <br><br><h1> 结论 </h1><br> 流是灵活的，并提供许多用例，但是我想写一篇很短的文章，以清楚地显示示例和内存消耗。 也许对于许多读者来说，流的这种使用是显而易见的。 但是，最近几个月与开发人员的对话给我留下了这样的印象，即许多人在流和流数据之间有着很强的联系，就好像数据结构只在那儿很好。 事实并非如此。  :-) </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN444996/">https://habr.com/ru/post/zh-CN444996/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN444982/index.html">Mockito以及如何烹饪</a></li>
+<li><a href="../zh-CN444984/index.html">照片来自哪里，用于测试人脸识别系统？</a></li>
+<li><a href="../zh-CN444986/index.html">IETF批准ACME-这是使用SSL证书的标准</a></li>
+<li><a href="../zh-CN444992/index.html">系统中内置的错误：它们在统计中的作用</a></li>
+<li><a href="../zh-CN444994/index.html">关于驱动器及其在现代计算机上的使用</a></li>
+<li><a href="../zh-CN444998/index.html">植入的生命支持设备的严重漏洞使攻击者能够控制它们</a></li>
+<li><a href="../zh-CN445002/index.html">如何快速准备有关算法和技术问题的面试</a></li>
+<li><a href="../zh-CN445004/index.html">SQL事件探查器危险吗？</a></li>
+<li><a href="../zh-CN445006/index.html">从源头上为学生提供微电子学</a></li>
+<li><a href="../zh-CN445008/index.html">Azure考试（修订和修订版）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,126 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🆖 👲🏻 👨🏿‍💻 惊慌如何在Rust中发挥作用 🖌️ 🦎 😐</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Rust Panic的工作原理 
+
+
+当您致电panic!()时，会发生什么？ 
+ 最近，我花了很多时间研究与此相关的标准库的各个部分，结果证明答案很复杂！ 
+
+
+ 我找不到文档来说明Rust中的恐慌状况，因此值得写下。 
+
+
+ （无耻的文章：我对此主题感兴趣的原因是@Aaron1011在Miri中...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>惊慌如何在Rust中发挥作用</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/482358/"><h1 id="kak-rabotaet-panika-v-rust">  Rust Panic的工作原理 </h1><br><p>当您致电<code>panic!()</code>时，会发生什么？ <br> 最近，我花了很多时间研究与此相关的标准库的各个部分，结果证明答案很复杂！ </p><br><p> 我找不到文档来说明Rust中的恐慌状况，因此值得写下。 </p><a name="habracut"></a><br><p>  （无耻的文章：我对此主题感兴趣的原因是<code>@Aaron1011</code>在Miri中实现了对堆栈展开的支持。 </p><br><p> 我想从远古时代起就在Miri中看到它，而我却没有时间亲自实现它，因此，很高兴看到有人如何简单地发送<code>PR</code>来支持它。 </p><br><p> 经过大量的检查代码后，最近已将其注入。 </p><br><p> 仍然<a href="https://github.com/rust-lang/miri/issues%3Fq%3Dis%253Aissue%2Bis%253Aopen%2Blabel%253AA-panics">有一些粗糙的边缘</a> ，但基本定义明确。） </p><br><p> 本文的目的是记录在Rust方面起作用的高级结构和相关接口。 </p><br><p> 实际的堆栈展开机制是一个完全不同的问题（我无权发言）。 </p><br><p>  <em>注意：</em>本文介绍了<a href="https://github.com/rust-lang/rust/commit/7d761fe0462ba0f671a237d0bb35e3579b8ba0e8">此commit</a>引起的恐慌。 </p><br><p> 此处描述的许多接口都是libstd的不稳定内部组件，并且可能随时更改。 </p><br><h2 id="vysokourovnevaya-struktura"> 高层结构 </h2><br><p> 在阅读libstd中的代码时，尝试了解恐慌的工作原理，您很容易迷失在迷宫中。 <br> 仅通过链接器可以连接多个间接级别， <br> 有<a href="https://doc.rust-lang.org/nomicon/panic-handler.html"><code> #[panic_handler]</code></a>和一个<a href="">“运行时紧急恐慌处理程序”</a> （由通过<code>-C panic</code>设置的紧急恐慌<em>策略</em>控制）和<a href="https://doc.rust-lang.org/std/panic/fn.set_hook.html">“恐慌陷阱”</a> ，事实证明，在<code>#[no_std]</code>上下文中的恐慌需要完全不同的代码路径...非常很多事情。 </p><br><p> 更糟糕的是， <a href="">描述恐慌陷阱</a>的<a href="">RFC将</a>其称为“恐慌处理程序”，但此后此术语已重新定义。 </p><br><p> 我认为最好的起点是控制两个方向的接口： </p><br><ul><li><p>  libstd使用<em>运行时紧急处理程序</em>来控制将紧急信息打印到stderr之后发生的情况。 <br> 这是由恐慌<em>策略</em>决定的：我们中断（ <code>-C panic=abort</code> ）还是开始展开堆栈（ <code>-C panic=unwind</code> ）。 <br>  （处理运行时恐慌还提供了<a href="https://doc.rust-lang.org/std/panic/fn.catch_unwind.html"><code>catch_unwind</code></a>的实现，但在此我们不再赘述。） </p><br></li><li><p>  libcore使用<em>panic处理程序</em>来实现（a）通过代码生成插入的panic（例如由算术溢出或超出范围的数组/切片索引导致的panic）和（b） <code>core::panic!</code> 宏（这是libcore本身和<code>#[no_std]</code>上下文<code>#[no_std]</code>的<code>panic!</code>宏）。 </p><br></li></ul><br><p> 这两个接口都是通过<code>extern</code>块实现的：分别是listed / libcore，只需导入它们委托的某些函数，然后在板条树中的其他地方实现此函数。 </p><br><p> 仅在绑定期间才允许导入； 从本地查看代码，无法说出相应接口的实际实现所在的位置。 <br> 一路上我迷路了几次也就不足为奇了。 </p><br><p> 将来，这两个接口都将非常有用。 当你搞砸了。 首先要检查的是您是否已将应急处理程序和<em>运行时</em>应急处理程序混淆<em>了</em> 。 <br>  （请记住，还有一些紧急<em>拦截器</em> ，我们会去找他们的。） <br> 它一直在我身上发生。 </p><br><p> 而且， <code>core::panic!</code> 和<code>std::panic!</code>  <em>不</em>一样 正如我们将看到的，它们使用完全不同的代码路径。 </p><br><p>  libcore和libstd各自实现了自己的引起恐慌的方式： </p><br><ul><li><p> <code>core::panic!</code> 的libcore很小：它只是立即将紧急情况委托给<em>处理程序</em> 。 </p><br></li><li><p>  libstd <code>std::panic!</code>  （“正常” <code>panic!</code> Rust中的<code>panic!</code> ）启动了功能全面的紧急情况引擎，该引擎提供了用户控制的<a href="https://doc.rust-lang.org/std/panic/fn.set_hook.html">紧急情况<em>拦截</em></a> 。 <br> 默认的挂钩将在stderr中显示紧急消息。 <br> 拦截功能完成后，libstd将其委托给<em>运行时</em>紧急处理程序。 </p><br><p>  libstd还提供<em>了一个</em>调用相同机制<em>的</em> panic <em>处理程序</em> ，因此<code>core::panic!</code> 也到此为止。 </p><br></li></ul><br><p> 现在让我们更详细地研究这些部分。 </p><br><h2 id="obrabotka-paniki-vo-vremya-vypolneniya-programmy"> 在程序执行期间处理恐慌 </h2><br><p>  <a href="">紧急运行时的接口</a> （由<a href="">RFC</a>表示）是<code>__rust_start_panic(payload: usize) -&gt; u32</code> ，该<code>__rust_start_panic(payload: usize) -&gt; u32</code>由libstd导入，然后由链接程序解析。 </p><br><p> 这里的<code>usize</code>参数实际上是<code>*mut &amp;mut dyn core::panic::BoxMeUp</code>这是<code>*mut &amp;mut dyn core::panic::BoxMeUp</code> “有用数据”的地方（检测到信息时可用）。 </p><br><p>  <code>BoxMeUp</code>是一个不稳定的内部实现细节，但<a href="">查看此类型，</a>我们看到的是它实际上只包装<code>dyn Any + Send</code> ，这是<code>catch_unwind</code>和<code>thread::spawn</code>返回<a href="https://doc.rust-lang.org/std/thread/type.Result.html">的有用的紧急数据</a>的<a href="https://doc.rust-lang.org/std/thread/type.Result.html">类型</a> 。 </p><br><p>  <code>BoxMeUp::box_me_up</code>返回<code>Box&lt;dyn Any + Send&gt;</code> ，但作为原始指针（因为在定义此类型的上下文中<code>Box</code>不可用）；  <code>BoxMeUp::get</code>只是借用内容。 </p><br><p>  <a href="https://github.com/rust-lang/rust/tree/7d761fe0462ba0f671a237d0bb35e3579b8ba0e8/src/libpanic_unwind"><code>libpanic_unwind</code></a>中提供了此接口的两种实现： <code>-C panic=unwind</code> （在大多数平台上默认）的<a href="https://github.com/rust-lang/rust/tree/7d761fe0462ba0f671a237d0bb35e3579b8ba0e8/src/libpanic_abort"><code>libpanic_abort</code></a>和<a href="https://github.com/rust-lang/rust/tree/7d761fe0462ba0f671a237d0bb35e3579b8ba0e8/src/libpanic_abort"><code>libpanic_abort</code></a> <code>-C panic=abort</code> <a href="https://github.com/rust-lang/rust/tree/7d761fe0462ba0f671a237d0bb35e3579b8ba0e8/src/libpanic_abort"><code>libpanic_abort</code></a> 。 </p><br><h2 id="makros-stdpanic"> <code> std::panic!</code> </h2> <br><p> 在panic <em>运行时</em>界面的顶部，libstd在<a href=""><code>std::panicking</code></a>内部模块中实现了默认的Rust panic机制。 </p><br><h4 id="rust_panic_with_hook"> <code>rust_panic_with_hook</code> </h4> <br><p> 几乎所有内容都通过的关键函数是<a href=""><code>rust_panic_with_hook</code></a> ： </p><br><pre> <code class="rust hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">fn</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">rust_panic_with_hook</span></span></span></span>( payload: &amp;<span class="hljs-keyword"><span class="hljs-keyword">mut</span></span> dyn BoxMeUp, message: <span class="hljs-built_in"><span class="hljs-built_in">Option</span></span>&lt;&amp;fmt::Arguments&lt;<span class="hljs-symbol"><span class="hljs-symbol">'_</span></span>&gt;&gt;, file_line_col: &amp;(&amp;<span class="hljs-built_in"><span class="hljs-built_in">str</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">u32</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">u32</span></span>), ) -&gt; !</code> </pre> <br><p> 此函数接受紧急情况来源的位置，可选的未格式化消息（请参阅<a href="https://doc.rust-lang.org/std/fmt/struct.Arguments.html"><code>fmt::Arguments</code></a>文档）以及有用的数据。 </p><br><p> 它的主要任务是触发当前的恐慌拦截器。 <br> 紧急情况拦截器具有<a href="https://doc.rust-lang.org/core/panic/struct.PanicInfo.html"><code>PanicInfo</code></a>参数，因此我们需要紧急情况源的位置，紧急情况消息的格式信息以及有用的数据。 <br> 这与参数<code>rust_panic_with_hook</code>非常匹配！ <br>  <code>file_line_col</code>和<code>message</code>可以直接用于前两个元素；  <code>payload</code>通过<code>BoxMeUp</code>接口变成<code>&amp;(dyn Any + Send)</code> 。 </p><br><p> 有趣的是， <em>标准的</em>恐慌拦截器完全忽略了<code>message</code> 。 您所看到的是将有效负载转换为<a href=""><code>&amp;str</code>或<code>String</code></a> （无论如何工作）。 <br> 假定，调用者应确保<code>message</code>格式（如果存在）产生相同的结果。 <br>  （下面我们讨论的保证了这一点。） </p><br><p> 最后，将<code>rust_panic_with_hook</code>发送到当前的<em>运行时</em>紧急处理程序。 </p><br><p> 目前，仅<code>payload</code>仍然相关-以及重要的一点： <code>message</code> （有效期为<code>'_</code>表示可能包含寿命很短的链接，但有用的紧急数据将在堆栈中传播，因此有效期应为<code>'static</code> ）。 </p><br><p>  <code>'static</code>约束”已经很好地隐藏了，但是过了一会儿，我意识到<a href="https://doc.rust-lang.org/std/any/trait.Any.html"><code>Any</code></a>意味着<code>'static</code> （记住<code>dyn BoxMeUp</code>仅用于获取<code>Box&lt;dyn Any + Send&gt;</code> ）。 </p><br><h4 id="tochki-vhoda-v-libstd">  Libstd入口点 </h4><br><p>  <code>rust_panic_with_hook</code>是<code>std::panicking</code> <code>rust_panic_with_hook</code>的私有函数； 该模块在此中央功能的顶部提供了三个入口点，一个绕过了它： </p><br><ul><li><p> 支持（如我们将看到的）来自<code>core::panic!</code>的恐慌<a href="">的默认恐慌处理程序实现</a> <code>core::panic!</code> 和内置的恐慌（来自算术溢出或数组/切片索引）。 <br> 获取<a href="https://doc.rust-lang.org/core/panic/struct.PanicInfo.html"><code>PanicInfo</code></a>作为输入，并将其转换为<code>rust_panic_with_hook</code>参数。 <br> 奇怪的是，尽管<code>PanicInfo</code>组件和<code>rust_panic_with_hook</code>参数非常相似，而且似乎可以轻松转发，但事实<em>并非如此</em> 。 <br> 相反，libstd会完全<em>忽略</em> PanicInfo中的<code>payload</code>组件，并设置实际的<code>payload</code> （传递给<code>rust_panic_with_hook</code> ），以便它包含<a href=""><code> message</code></a> 。 </p><br><p> 特别是，这意味着<em>运行</em>时紧急处理程序对于<code>no_std</code>应用程序无关紧要。 <br> 它仅在使用libstd中的应急处理程序的实现时才起作用。 <br>  （通过<code>-C panic</code>情况选择<em>的</em>紧急情况<em>策略</em>仍然很重要，因为它还会影响代码生成。 <br> 例如，如果使用<code>-C panic=abort</code>代码可能会变得更简单，因为您不需要支持堆栈展开。 </p><br></li><li><p>  <a href=""><code>begin_panic_fmt</code></a> ，支持<a href=""><code>  std::panic!</code></a>的版本<a href=""><code>  std::panic!</code></a>  （即，当您将多个参数传递给宏时使用此函数）。 <br> 基本上，只是将格式字符串参数包装在<code>PanicInfo</code> （带有<a href="">虚拟有效负载</a> ）并调用我们刚刚讨论的默认panic处理程序。 </p><br></li><li><p>  <a href=""><code>begin_panic</code></a>支持<a href=""><code> std::panic!</code></a> 有<a href=""><code>  std::panic!</code></a>  。 <br> 有趣的是，它使用了与其他两个入口点完全不同的代码路径！ <br> 特别是，这是允许您传输<em>任意有用数据</em>的唯一入口点。 <br> 该有效负载仅<a href=""><code>  Box&lt;dyn Any + Send&gt;</code></a>以便可以将其传递到<code>rust_panic_with_hook</code> 。 </p><br><p> 尤其是，从<code>PanicData</code>看<code>message</code>字段的恐慌拦截器将<em>无法</em>在<code>std::panic!("do panic")</code> <em>中</em>看到消息，但<em>可以</em>在<code>std::panic!("panic with data: {}", data)</code>看到消息<code>std::panic!("panic with data: {}", data)</code>因为后者<code>begin_panic_fmt</code>通过<code>begin_panic_fmt</code> 。 <br> 看起来很棒。  （但也请注意， <code>PanicData::message()</code>尚不稳定。） </p><br></li><li><p>  <a href=""><code>update_count_then_panic</code></a>原来很奇怪：此入口点支持<a href="https://doc.rust-lang.org/nightly/std/panic/fn.resume_unwind.html"><code>resume_unwind</code></a> ，实际上并<em>不会</em>引起恐慌拦截。 <br> 相反，它会立即发送到紧急处理程序。 <br> 例如， <code>begin_panic</code>允许调用方选择任意有用的数据。 <br> 与<code>begin_panic</code>不同，调用函数负责包装和确定有效负载；  <code>update_count_then_panic</code>函数只是将其参数几乎逐字转发到运行时的紧急处理程序。 </p><br></li></ul><br><h2 id="obrabotchik-paniki"> 紧急处理 </h2><br><p> <code>std::panic!</code> 该机制确实很有用，但是它需要通过<code>Box</code>将数据放置在堆上，但并不总是可用的。 <br> 为了给libcore提供一种引起恐慌的方法，引入了恐慌<a href="">处理程序</a> 。 <br> 正如我们所看到的，如果libstd可用，它将提供此接口<code>core::panic!</code> 在libstd视图中感到恐慌。 </p><br><p>  <a href="">紧急处理程序的接口</a>是<code>fn panic(info: &amp;core::panic::PanicInfo) -&gt; !</code>函数<code>fn panic(info: &amp;core::panic::PanicInfo) -&gt; !</code>  libcore导入，而链接器稍后将解决此问题。 <br>  <a href="https://doc.rust-lang.org/core/panic/struct.PanicInfo.html"><code>PanicInfo</code></a>类型与恐慌拦截器的类型相同：它包含恐慌源的位置，恐慌消息和有用的数据（ <code>dyn Any + Send</code> ）。 <br> 紧急消息以<a href="https://doc.rust-lang.org/std/fmt/struct.Arguments.html"><code>fmt::Arguments</code></a>的形式表示，即，带有尚未格式化的参数的格式字符串。 </p><br><h2 id="makros-corepanic"> <code> core::panic!</code> </h2> <br><p> 除了应急处理器接口外，libcore还提供了一个<a href="">最小的应急API</a> 。 <br> <a href=""><code>core::panic!</code></a> 宏创建<code>fmt::Arguments</code> ，然后<a href="">传递到紧急处理程序</a> 。 <br> 此处不会进行格式化，因为这将需要在堆上分配内存。 这就是<code>PanicInfo</code>包含一个带有其参数的“未<code>PanicInfo</code> ”格式字符串的原因。 </p><br><p> 奇怪的是， <code>PanicInfo</code>的<code>payload</code>字段传递给了panic处理程序，始终设置为<a href="">哑数值</a> 。 <br> 这就解释了为什么libstd应急处理程序会忽略有效载荷数据（而是从<code>message</code>创建新的有效载荷数据），但是这使我想知道为什么此字段是应急处理程序API的一部分。 <br> 这样做的另一个结果是， <a href=""><code>core::panic!("message")</code></a>和<a href=""><code>std::panic!("message")</code></a> （不带任何格式的选项）实际上导致非常不同的恐慌：第一个变成<code>fmt::Arguments</code> ，通过panic处理程序接口传递，然后libstd通过格式化来创建有用的<code>String</code>数据。 <br> 但是，后者直接将<code>&amp;str</code>用作有用的数据，并且<code>message</code>字段保持为<code>None</code> （如上所述）。 </p><br><p>  libcore中的panic API的某些元素是语言元素，因为编译器会在代码生成期间插入对这些函数的调用： </p><br><ul><li> 当编译器需要引起不需要任何格式的紧急情况（例如，算术溢出）时，将调用<a href=""><code> panic</code></a>元素。 这个功能也支持<a href=""><code>core::panic!</code></a> 有一个论点<a href=""><code>core::panic!</code></a>  。 </li><li> 当数组/切片边界检查失败时，将调用<a href=""><code>  panic_bounds_check</code></a> ；它调用的方法与<a href=""><code>core::panic!</code></a>相同<a href=""><code>core::panic!</code></a>  <a href="">与格式化</a> 。 </li></ul><br><h2 id="vyvody"> 结论 </h2><br><p> 我们经历了4个API级别，其中2个通过导入的函数调用重定向并由链接器解析。 <br> 真是一段旅程！ <br> 但是我们到了尽头。 <br> 希望您<a href="https://en.wikipedia.org/wiki/Phrases_from_The_Hitchhiker%2527s_Guide_to_the_Galaxy">在此期间不要惊慌</a> 。  ;） </p><br><p> 我提到了一些令人惊奇的事情。 <br> 事实证明，所有这些都与以下事实有关：恐慌拦截器和恐慌处理器在其接口中共享<code>PanicInfo</code>结构，该结构包含可选格式的<code>message</code>和带有擦除类型的<code>payload</code> ： </p><br><ul><li> 紧急恐慌<em>拦截</em>器始终可以在<code>payload</code>找到已格式化的消息，因此该<code>message</code>对于拦截器似乎毫无意义，实际上，即使<code>payload</code>包含消息， <code>message</code>也可能不存在（例如，对于<code>std::panic!("message")</code> ）。 </li><li> 紧急<em>处理程序</em>将永远不会实际接收<code>payload</code> ，因此对于处理程序而言，该字段似乎毫无意义。 </li></ul><br><p>  <a href="">从panic处理程序的描述中</a>读取<a href="">RFC</a> ，似乎该计划是针对<code>core::panic!</code> 也支持任意有用的数据，但到目前为止尚未实现。 <br> 尽管如此，即使有这个将来的扩展，我认为我们也有不变性，当<code>message</code>为<code>Some</code> ， <code>payload == &amp;NoPayload</code> （因此有用的数据是冗余的）或<code>payload</code>是格式化的消息（因此该消息是冗余的）。 </p><br><p> 我想知道是否存在<em>两种</em>情况<em>都有</em>用的情况？ </p><br><p> 对于当前设计，可能有充分的理由反对该建议。 最好将它们放在文档格式中。  :) </p><br><p> 还有很多要说的，但是在这一点上，我邀请您关注上面包含的源代码的链接。 </p><br><p> 考虑到较高的层次结构，您应该能够遵循此代码。 <br> 如果人们认为该评论应该永远存在，我很乐意将这篇文章转变为某种文档的博客-尽管我不确定这是否是一个好地方。 </p><br><p> 如果您发现我写的内容有任何错误，请告诉我！ </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN482358/">https://habr.com/ru/post/zh-CN482358/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN482346/index.html">ASP.NET MVC-通过ADO.NET使用MySQL</a></li>
+<li><a href="../zh-CN482348/index.html">毫不怀疑的游戏开发者的拓扑和综合分析：压缩单个3D向量</a></li>
+<li><a href="../zh-CN482352/index.html">当我差点将150k投向风或者公寓中强制通风的安装历史时</a></li>
+<li><a href="../zh-CN482354/index.html">ConfigureAwait：常见问题</a></li>
+<li><a href="../zh-CN482356/index.html">从常规Windows用户的角度来看，在没有资源管理器的情况下使用Windows Server</a></li>
+<li><a href="../zh-CN482362/index.html">几乎无政府状态：Fidonet的简要历史，该项目不关心通过互联网获胜</a></li>
+<li><a href="../zh-CN482366/index.html">机器人专家对特斯拉自动驾驶仪有何看法</a></li>
+<li><a href="../zh-CN482370/index.html">nodejs：流程管理器和ES6模块</a></li>
+<li><a href="../zh-CN482372/index.html">在Hyper-V中为Arch Linux guest虚拟机启用增强的会话模式</a></li>
+<li><a href="../zh-CN482378/index.html">Wacom的简史：图形输入板技术如何应用​​于电子阅读器</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

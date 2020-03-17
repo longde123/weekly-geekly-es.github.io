@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👴🏽 🥕 📼 使用pprof优化Prometheus 2.6.0的启动时间 🤹🏼 🤹🏼 🧘🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Prometheus 2.6.0优化了WAL加载，从而加快了启动过程。 
+
+
+ 开发Prometheus 2.x TSDB的非官方目标是加快发布速度，以使发布时间不超过一分钟。 最近几个月，有报道称该过程花费了更长的时间，如果Prometheus由于某种原因而重启，那么这已经是一个问题。 几乎所有时...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>使用pprof优化Prometheus 2.6.0的启动时间</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/436922/"><p>  Prometheus <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">2.6.0</a>优化了WAL加载，从而加快了启动过程。 </p><br><p> 开发Prometheus 2.x TSDB的非官方目标是加快发布速度，以使发布时间不超过一分钟。 最近几个月，有报道称该过程花费了更长的时间，如果Prometheus由于某种原因而重启，那么这已经是一个问题。 几乎所有时间都加载了WAL（预记录录制），其中包括最近几个小时中尚未压缩成块的样本。 十月下旬，我终于设法弄清楚了。 结果是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PR＃440</a> ，这使CPU时间减少了6.5倍，计算时间减少了4倍。 让我们看看我如何进行这些改进。 </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/b59/bb0/1f7/b59bb01f785b863d244cb527c6b27632.png" alt="图片"></p><a name="habracut"></a><br><p>首先，需要测试设置。 我创建了一个小型Go程序，该程序可以用WAL生成TSDB，并在10,000个时间序列中散布十亿个样本。 然后，我打开了这个TSDB，查看了使用<code>time</code>实用程序（不是内置结构，因为它不包含内存统计信息）花费了多长时间，还使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">runtime / pprof包</a>创建了一个CPU配置文件： </p><br><pre> <code class="plaintext hljs">f, err := os.Create("cpu.prof") if err != nil { log.Fatal(err) } pprof.StartCPUProfile(f) defer pprof.StopCPUProfile()</code> </pre> <br><p>  CPU配置文件不允许我们直接确定我们感兴趣的计算时间，但是存在很大的相关性。 结果，在我的台式计算机（具有16 GB RAM和固态驱动器的i7-3770处理器）上，下载过程耗时约4分钟，而峰值时的RAM不到6 GB： </p><br><pre> <code class="plaintext hljs">1727.50user 16.61system 4:01.12elapsed 723%CPU (0avgtext+0avgdata 5962812maxresident)k 23625165inputs+95outputs (196major+2042817minor)pagefaults 0swaps</code> </pre> <br><p> 这不是嗡嗡声，所以让我们使用<code>go tool pprof cpu.prof</code>加载配置文件，并查看如果使用<code>top</code>命令，该过程将花费多长时间。 </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/562/0e1/996/5620e19968ec33e73d42238e1ed1e909.png" alt="图片"></p><br><p> 这里<code>flat</code>是花在给定功能上的时间，而<code>cum</code>是花在该功能上以及它所调用的所有功能上的时间。 在图形中查看此数据以了解问题也可能很有用。 我更喜欢使用<code>web</code>命令，但是还有其他选项，包括svg，png和pdf文件。 </p><br><p> 可以看出，大约有三分之一的CPU用于将样本添加到内部数据库中，大约三分之二用于WAL处理，四分之一用于清理内存（ <code>runtime.scanobject</code> ）。 让我们使用<code>list memSeries.*append</code>来查看其中第一个过程的代码<code>list memSeries.*append</code> </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/208/454/263/208454263da34943818a5f89ca2112da.png" alt="图片"></p><br><p> 令人震惊的是：在行1443上花费了一半以上的时间来获取该系列的主要数据。另外，在行1449上花费了不少时间来设置该数据中的样本数。完成行1465所花费的时间-预期的，因为这是此功能的核心。 因此，我预计该操作将花费大部分时间。 </p><br><p> 看一下<code>memSeries.head</code>元素：它计算每次返回的一条数据。 数据片段仅在每添加120次之后发生变化，因此，我们可以<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">将当前的head片段保存在系列的数据结构中</a> 。 这会占用一些RAM（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我将在稍后返回</a> ），但节省了大量CPU。 总体而言，它还可以加快Prometheus的速度。 </p><br><p> 然后让我们看一下<code>Head.processWALSamples</code> ： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/df3/677/ce9/df3677ce990c5d263a0790d88c4da721.png" alt="图片"></p><br><p> 上面已经对该附加组件进行了优化，因此请看一下下一个明显的罪魁祸首，第252行上的<code>getByID</code> ： <br>  （代码） </p><br><p> 似乎存在某种阻塞冲突，并且在进行两级地图搜索时浪费了时间。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">每个标识符的缓存</a>大大减少了该指标。 </p><br><p> 值得再次看一下<code>Head.processWALSamples</code> ，而您对第249行花了多少时间感到惊讶。让我们再回到WAL加载方式的问题：除了为读取和读取另一个CPU之外，还为每个可用的CPU创建了Head.processWALSamples <code>Head.processWALSamples</code>从磁盘解码WAL。 这些goroutine对行进行了分段，因此并发可能是一个优势。 实现方法如下：将所有样本发送到第一个gorutin，第一个gorutin处理所需的元素。 然后，她将所有样本发送到第二个gorutin，后者处理所需的元素，依此类推，直到最后一个gorutin <code>Head.processWALSamples</code>将所有数据发送回控制gorutin。 </p><br><p> 同时，附加组件分布在整个内核中（这是您所需要的），每个gorutin中执行许多重复的任务，必须处理所有样本并计算模块。 实际上，核心越多，重复工作就越多。 我进行了更改以对控制器gourutin中的数据进行分段，以便Head.processWALSamples的每个<code>Head.processWALSamples</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">现在仅获取所需的样本</a> 。 在我的计算机上-运行8个gorutin-虽然节省了一些计算时间，但是CPU体积还不错。 对于具有大量内核的计算机，好处应该更大。 </p><br><p> 我们再次回到问题：清除内存的时间。 我们通常不能通过CPU配置文件来确定这一点。 相反，请注意动态内存配置文件以找到引人注目的元素。 这需要在程序末尾进行一些代码扩展： </p><br><pre> <code class="plaintext hljs">runtime.GC() hf, err := os.Create("heap.prof") if err != nil { log.Fatal(err) } pprof.WriteHeapProfile(hf)</code> </pre> <br><p> 正式内存清除与动态内存中的某些信息相关联，这些信息的收集和清除仅在内存清除期间进行。 </p><br><p> 我们再次使用相同的工具，但是指定<code>-alloc_space</code>标签，因为我们对所有内存分配操作感兴趣，而不仅是在特定时刻使用内存的操作； 因此，运行<code>go tool pprof -alloc_space heap.prof</code> 。 如果看一下上层分配器，罪魁祸首很明显： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/8ba/0ba/cbf/8ba0bacbf8231b7fdac52a657212ee22.png" alt="图片"></p><br><p> 看一下代码： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/453/531/ca4/453531ca4cda944db146ce07c20edc2f.png" alt="图片"></p><br><p> 可扩展的<code>samples</code>数组似乎是一个问题。 如果我们可以在调用<code>RecordDecoder.Samples</code>的同时重用该数组，则将节省大量内存。 事实证明，代码是用这种方式编写的，但是很小的编码错误导致它无法正常工作。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">如果您对其进行修复</a> ，则将在CPU的8秒（而不是151秒）内清除内存。 </p><br><p> 总体结果是很明显的： </p><br><pre> <code class="plaintext hljs">269.18user 10.69system 1:05.58elapsed 426%CPU (0avgtext+0avgdata 3529556maxresident)k 23174929inputs+70outputs (815major+1083172minor)pagefaults 0swap</code> </pre> <br><p> 我们不仅将计算时间减少了4倍，将CPU时间减少了6.5倍，而且占用的内存量减少了2 GB以上。 </p><br><p> 看起来一切都很简单，但是诀窍是这样的：我在代码库中进行了相当大的翻阅，并以事后分析的方式分析了所有内容。 研究代码后，我几次<code>NumSamples</code> ，例如，删除<code>NumSamples</code>调用，在单独的线程中读取和解码以及以多种方式分割<code>processWALSamples</code> 。 我几乎可以肯定，通过调节gorutin的数量，可以实现更多的目标，但是对于这种测试，应该在比我的更强大的机器上进行，以便有更多的内核。 我实现了我的目标：提高生产率，并且我意识到最好不要将程序注册表太大，因此决定在此停下来。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN436922/">https://habr.com/ru/post/zh-CN436922/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN436912/index.html">2019年CRM趋势：有趣阅读，难以置信</a></li>
+<li><a href="../zh-CN436914/index.html">创业增长问题-监控</a></li>
+<li><a href="../zh-CN436916/index.html">VShard-Tarantool中的水平缩放</a></li>
+<li><a href="../zh-CN436918/index.html">为Game Boy创建游戏，第2部分</a></li>
+<li><a href="../zh-CN436920/index.html">从Pascal到JavaScript的PAS2JS转译器：与Delphi和解决方法不兼容</a></li>
+<li><a href="../zh-CN436924/index.html">关于机器人竞赛组织的一些话</a></li>
+<li><a href="../zh-CN436926/index.html">两因素身份验证的英雄，或者如何“走在别人的脚上”</a></li>
+<li><a href="../zh-CN436928/index.html">WebRTC-更加轻松（EasyRTC）</a></li>
+<li><a href="../zh-CN436934/index.html">天真数学：Mendocino运动和Earnshaw定理</a></li>
+<li><a href="../zh-CN436936/index.html">日本在滨海边疆区的核储存库或太平洋舰队核潜艇的处置场</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

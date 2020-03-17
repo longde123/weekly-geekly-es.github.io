@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐡 🤴🏼 ⛹🏽 什么是GraalVM编译器优化的内幕？ 🤰🏽 👲🏽 🕴🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我们将继续处理GraalVM的工作，这一次，我们翻译了Aleksandar Prokopec撰写的文章“ GraalVM JIT优化的内幕”，该文章最初发表在Medium博客上 。 这篇文章有一些有趣的链接，稍后我们将尝试翻译这些文章。 
+
+
+
+
+
+
+ 上次在Medium上，我们研究了与Java H...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>什么是GraalVM编译器优化的内幕？</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/jugru/blog/485024/"><p> 我们将继续处理GraalVM的工作，这一次，我们翻译了Aleksandar Prokopec撰写的文章“ GraalVM JIT优化的内幕”，该<a href="https://medium.com/graalvm/under-the-hood-of-graalvm-jit-optimizations-d6e931394797">文章</a>最初发表<a href="https://medium.com/graalvm/under-the-hood-of-graalvm-jit-optimizations-d6e931394797">在Medium博客上</a> 。 这篇文章有一些有趣的链接，稍后我们将尝试翻译这些文章。 </p><br><p><img src="https://habrastorage.org/webt/k-/0k/fz/k-0kfzbwnfrk_hswloa6dyyftjc.jpeg"></p><br><hr><br><p>  <a href="https://medium.com/graalvm/stream-api-performance-with-graalvm-be6cfe7fbb52">上次在Medium上，</a>我们研究了与Java HotSpot VM相比GraalVM上的Java Streams API性能问题。  <a href="https://www.graalvm.org/">GraalVM</a>具有高性能的特点，在这些实验中，我们将加速度提高了1.7到5倍。 当然，性能提升的具体值将始终取决于您运行的代码和加载数据，因此在做出任何结论之前，您应尝试自己在GraalVM上运行代码。 </p><br><p> 在本文中，我们将更深入地研究GraalVM的内部，并了解JIT编译是如何发生的。 </p><br><a name="habracut"></a><br><h2>  <font color="#D93740">GraalVM中的JIT优化</font> </h2><br><p> 让我们看一下GraalVM编译器使用的许多高级优化。 在本文中，我们将仅涉及最有趣的优化及其具体示例。 如果您想更深入地了解，可以在标题为<a href="https://www.researchgate.net/publication/320359502_Making_collection_operations_optimal_with_aggressive_JIT_compilation">“通过积极的JIT编译使收集操作达到最佳”</a>的工作中对GraalVM编译器优化进行全面概述。 </p><br><h2>  <font color="#D93740">内联</font> </h2><br><p> 如果您不提前接触组件，那么现代虚拟机中的大多数JIT编译器都会进行内部分析。 这意味着在每个特定的时间点都对一种方法进行了分析。 因此，过程内分析比整个程序的过程间分析要快得多，后者通常在JIT编译器的工作时间内没有时间完成。 在使用过程内优化（例如，一次优化一种方法）的编译器中，最重要的基础优化之一是内联。 内联很重要，因为它有效地增加了方法，这意味着编译器可以看到更多机会来同时优化看似无关的方法中使用的几段代码。 </p><br><p>以上一篇文章中的<code>volleyballStars</code>方法为例： </p><br><br><pre> <code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@Benchmark</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">double</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">volleyballStars</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> Arrays.stream(people) .map(p -&gt; <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Person(p.hair, p.age + <span class="hljs-number"><span class="hljs-number">1</span></span>, p.height)) .filter(p -&gt; p.height &gt; <span class="hljs-number"><span class="hljs-number">198</span></span>) .filter(p -&gt; p.age &gt;= <span class="hljs-number"><span class="hljs-number">18</span></span> &amp;&amp; p.age &lt;= <span class="hljs-number"><span class="hljs-number">21</span></span>) .mapToInt(p -&gt; p.age) .average().getAsDouble(); }</code> </pre> <br><p> 在此图中，我们在解析相应的Java字节码之后立即看到了GraalVM中该方法的中间表示（IR）的一部分。 </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/1cb/b4f/fd1/1cbb4ffd15a4c171de823accd8830071.png"></p><br><p> 您可以将此IR视为类固醇上的某种<a href="https://en.wikipedia.org/wiki/Abstract_syntax_tree">抽象语法树</a> -借助它，一些优化更易于执行。 此IR的工作方式无关紧要，但是如果您想更深入地理解该主题，可以查看一个名为<a href="http://citeseerx.ist.psu.edu/viewdoc/download%3Fdoi%3D10.1.1.726.5496%26amp%3Brep%3Drep1%26amp%3Btype%3Dpdf">“ Graal IR：可扩展的声明性中间表示”</a>的文档。 </p><br><p> 这里的主要结论是，由图形的黄色节点和红色线指示的方法的控制流依次执行<code>Stream</code>接口的方法： <code>Stream.filter</code> ， <code>Stream.mapToInt</code> ， <code>IntStream.average</code> 。 缺少对这些方法的代码的准确了解，编译器无法简化该方法-在此可以进行内联！ </p><br><p> 称为内联的转换是一件非常容易理解的事情：它只是查找调用方法的位置，并将它们替换为相应内联方法的主体，然后将其嵌入到内部。 内联一部分方法后，让我们看一下<code>volleyballStars</code>方法的IR。 这里仅<code>IntStream.average</code>调用之后的部分： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/d5a/717/c71/d5a717c711a64a653ae7784f5557a2e5.png"></p><br><p> 该图显示对<code>getAsDouble</code>调用（节点号71）已消失。 请注意，从<code>IntStream.average</code>返回的<code>getAsDouble</code>对象的<code>getAsDouble</code>方法（在<code>volleyballStars</code>方法中的最后一次调用）在JDK中定义如下： </p><br><br><pre> <code class="java hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">double</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">getAsDouble</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!isPresent) { <span class="hljs-keyword"><span class="hljs-keyword">throw</span></span> <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> NoSuchElementException(<span class="hljs-string"><span class="hljs-string">"No value present"</span></span>); } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> value; }</code> </pre> <br><p> 在这里，我们可以找到<code>isPresent</code>字段（节点号190， <code>LoadField</code> ）的加载并读取<code>value</code>字段。 但是， <code>NoSuchElementException</code>异常没有任何痕迹，也没有其他代码可以引发该异常。 </p><br><p> 这是因为GraalVM编译器猜测： <code>volleyballStars</code>方法永远不会引发异常。 在<code>getAsDouble</code>编译期间，通常无法获得此知识-可以在程序中的许多不同位置调用它，并且在某些其他情况下，异常仍然有效。 但是，在特定的排球明星方法中，不太可能发生异常，因为潜在的排球明星永远不会为空。 因此，GraalVM删除了分支， <code>FixedGuard</code>插入了<code>FixedGuard</code>一个在违反我们的假设的情况下<code>FixedGuard</code>代码进行优化的节点。 这是一个非常简单的示例，在现实生活中，内联如何帮助其他优化的情况要复杂得多。 </p><br><p> 我们知道程序调用树通常很深，甚至可能是无止境的。 因此，必须在某些时候停止内联-它对操作时间和内存大小有非常具体的限制。 知道这一点，就很清楚：确定什么以及何时进行内联非常困难。 </p><br><h2>  <font color="#D93740">多态内联</font> </h2><br><p> 仅当编译器可以确定方法调用操作针对的特定方法时，内联才有效。 但是在Java中，通常有许多间接调用那些方法的实现在静态中是未知的方法，这些方法在运行时使用虚拟调度进行搜索。 </p><br><p> 例如，采用<code>IntStream.average</code>方法。 它的典型实现如下所示： </p><br><br><pre> <code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@Override</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">final</span></span></span><span class="hljs-function"> OptionalDouble </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">average</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">long</span></span>[] avg = collect( () -&gt; <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> <span class="hljs-keyword"><span class="hljs-keyword">long</span></span>[<span class="hljs-number"><span class="hljs-number">2</span></span>], (ll, i) -&gt; { ll[<span class="hljs-number"><span class="hljs-number">0</span></span>]++; ll[<span class="hljs-number"><span class="hljs-number">1</span></span>] += i; }, (ll, rr) -&gt; { ll[<span class="hljs-number"><span class="hljs-number">0</span></span>] += rr[<span class="hljs-number"><span class="hljs-number">0</span></span>]; ll[<span class="hljs-number"><span class="hljs-number">1</span></span>] += rr[<span class="hljs-number"><span class="hljs-number">1</span></span>]; }); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> avg[<span class="hljs-number"><span class="hljs-number">0</span></span>] &gt; <span class="hljs-number"><span class="hljs-number">0</span></span> ? OptionalDouble.of((<span class="hljs-keyword"><span class="hljs-keyword">double</span></span>) avg[<span class="hljs-number"><span class="hljs-number">1</span></span>] / avg[<span class="hljs-number"><span class="hljs-number">0</span></span>]) : OptionalDouble.empty(); }</code> </pre> <br><p> 不要让代码的表面简单性欺骗您！ 此方法是根据<code>collect</code>调用定义的，神奇之处就在于此。 随着我们深入到<code>collect</code> ，此方法的调用树（例如，调用层次结构）迅速增长。 看看这个图： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/584/306/ce3/584306ce380584ae1266e1026040389f.png"></p><br><p> 从遍历调用树的过程中的某个点开始，内联器将<code>opWrapSink</code>来自Java <code>opWrapSink</code>框架的<code>opWrapSink</code>调用，这是一种抽象方法： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/be4/43b/b46/be443bb464f938c962b8649ef26de75d.png"></p><br><br><pre> <code class="java hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">abstract</span></span></span><span class="hljs-function">&lt;P_IN&gt; Sink&lt;P_IN&gt; </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">wrapSink</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(Sink&lt;P_OUT&gt; sink)</span></span></span></span>;</code> </pre> <br><p> 通常，内联不会走得更远，因为它是间接调用。 特定方法的确定将仅在程序执行期间进行，现在镶嵌程序根本不知道接下来要做什么。 </p><br><p> 对于GraalVM，会发生其他事情：它为每个间接调用点保存了目标方法类型的配置文件。 此配置文件实质上只是一个表，该表指示每个<code>wrapSink</code>实现的<code>wrapSink</code> 。 在我们的例子中，概要文件知道匿名类中的三种不同实现： <code>ReferencePipeline$2</code> ， <code>ReferencePipeline$3</code> ， <code>ReferencePipeline$4</code> 。 分别以50％，25％和25％的概率调用这些实现。 </p><br><br><pre> <code class="plaintext hljs">0.500000: Ljava/util/stream/ReferencePipeline$2; 0.250000: Ljava/util/stream/ReferencePipeline$4; 0.250000: Ljava/util/stream/ReferencePipeline$3; notRecorded: 0.000000</code> </pre><br><p> 此信息为编译器提供了宝贵的帮助，使您可以生成<em>typeswitch-</em>一个简短的<code>switch</code> ，该<code>switch</code>在运行时检查方法的类型，然后为上述每种情况调用特定的方法。 下图显示了中间视图的一部分，该视图显示typeswitch（三个节点），并检查接收者类型是<code>ReferencePipeline$2</code> ， <code>ReferencePipeline$3</code>还是<code>ReferencePipeline$4</code>某人。 现在，可以将每个<code>InstanceOf</code>检查成功分支中的每个直接调用内联或将一些其他优化与其连接。 如果所有类型均未通过测试，则在<code>Deopt</code>节点中对代码进行非优化（作为替代，您可以运行虚拟调度）。 </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/26e/688/ca8/26e688ca89ea6c397b72f9acaba08ff3.png"></p><br><p> 如果您想更深入地了解多态内联，我建议您参考<a href="https://dl.acm.org/citation.cfm%3Fid%3D679839">“虚拟方法的内联”</a>这一主题的经典著作。 </p><br><h2>  <font color="#D93740">局部逃逸分析</font> </h2><br><p> 让我们回到排球的例子。 请注意，在lambda内部分配给<code>map</code>函数的分配的<code>Person</code>对象中，没有一个逃脱<code>volleyballStars</code>方法的范围。 换句话说，在<code>volleyballStars</code>方法结束时，没有这样的内存区域指向<code>Person</code>类型的对象。 特别是， <code>getHeight</code>值的记录还仅用于高度过滤。 </p><br><p> 在<code>volleyballStars</code>方法的编译过程中的某个时刻，我们进入下图所示的IR。 从<code>Begin</code>节点-1621开始的块开始于<code>Person</code>对象的分配（在<code>Alloc</code>节点中），该分配使用以1为增量的<code>age</code>字段的值和<code>height</code>字段的先前值初始化。  <code>height</code>字段以前是在<code>LoadField</code> -1539节点中读取的。 分配的结果封装在<code>AllocatedObject</code> -2137中，并发送到<code>accept</code> -1625方法调用。 编译器此刻无法执行任何操作-从他的角度来看，该对象已从<code>volleyballStars</code>方法转义。  （ <em>译者注：“逃跑一个对象”在英语中称为“逃逸”，因此优化的名称为“逃逸分析”</em> ）。 </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/a02/cca/495/a02cca495ad607770a0111040e0a724a.png"></p><br><p> 之后，编译器决定内联<code>accept</code>调用-这似乎是合理的。 结果，我们得出以下IR： </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/334/5b9/029/3345b90295b77a64ded506f3042a146a.png"></p><br><p> 在这里，JIT编译器开始进行部分转义分析：它注意到<code>AllocatedObject</code>仅用于读取<code>height</code>字段（回想起， <code>height</code>仅在过滤条件下使用，请检查高度是否大于198）。 因此，编译器可以重新分配对<code>height</code> -2167字段的读取，以便直接使用先前写入<code>Person</code>对象的节点（ <code>Alloc</code> -2136节点），这就是我们的<code>LoadField</code> -1539。 而且，此后的<code>Alloc</code>节点不会转到任何其他节点的输入，因此您可以简单地将其删除-这是无效代码！ </p><br><p> 实际上，这种优化是<code>volleyballStars</code>示例切换到GraalVM后经历五倍加速的主要原因。 即使不需要所有<code>Person</code>对象并在创建后立即将其丢弃，它们仍需要在堆上分配，它们的内存仍需要初始化。 部分转义分析使您可以消除分配，也可以通过将其移到对象确实耗尽并且发生频率更低的那些代码分支来推迟分配或推迟分配。 </p><br><p> 在名为<a href="http://www.ssw.uni-linz.ac.at/Research/Papers/Stadler14/Stadler2014-CGO-PEA.pdf">Java的部分转义分析和标量替换</a>的论文中，您可以对部分转义分析有更深入的了解。 </p><br><h2>  <font color="#D93740">总结</font> </h2><br><p> 在本文中，我们研究了三种GraalVM优化：内联，多态内联和部分转义分析。 还有更多不同的优化方法：循环的升级和拆分，路径的重复，全局值的编号，常数的卷积，无效代码的删除，投机执行等。 </p><br><p> 如果您想了解有关GraalVM工作原理的更多信息，请随时打开<a href="http://www.graalvm.org/community/publications/">发布页面</a> 。 如果要确定GraalVM是否可以加快代码速度，可以<a href="https://www.graalvm.org/downloads/">下载二进制文件</a>并自己尝试。 </p><br><hr><br><h2>  <font color="#D93740">来自翻译者：其他材料</font> </h2><br> 在会议上，JPoint和Joker经常谈论GraalVM。 例如，在最后的JPoint 2019上，托马斯·伍尔辛格（Thomas Wuerthinger）（Oracle Labs的研究总监，负责GraalVM）和两位官方技术传播者之一奥列格·谢拉耶夫（Oleg Shelaev）参观了我们。 <br><br> 您可以在我们的YouTube频道上观看这些视频和其他视频： <br><br><ul><li>  Thomas Wuerthinger： <a href="https://www.youtube.com/watch%3Fv%3DR_SeDk16PLY">“使用GraalVM最大化性能”</a> </li><li> 奥列格·谢拉耶夫（Oleg Shelaev）： <a href="https://www.youtube.com/watch%3Fv%3DC5fATKdVxZ0">“超级</a>编译<a href="https://www.youtube.com/watch%3Fv%3DC5fATKdVxZ0">，部分评估，二村预测以及GraalVM将如何拯救世界”</a> </li><li>  Roberto Cortez： <a href="https://www.youtube.com/watch%3Fv%3DoY8sfg7A1kg">“ GraalVM和MicroProfile：多种语言的微服务解决方案”</a> </li><li>  Ionut Balosin： <a href="https://www.youtube.com/watch%3Fv%3DRYLEIRHWsVo">“两个编译器的竞赛：GraalVM JIT与HotSpot JIT C2。</a>  <a href="https://www.youtube.com/watch%3Fv%3DRYLEIRHWsVo">哪一个提供了更好的运行时性能？”</a> </li></ul><br><blockquote> 我们提醒您，下一次JPoint将于2020年5月15日至16日在莫斯科举行，门票已经可以<a href="https://jpoint.ru/registration/%3Futm_source%3Dhabr%26utm_medium%3D485024%26utm_campaign%3Djpoint20">在官方网站上</a>购买。 </blockquote><br></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN485024/">https://habr.com/ru/post/zh-CN485024/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN485012/index.html">如何在JavaScript和Reactjs中使用Control Inversion来简化代码处理</a></li>
+<li><a href="../zh-CN485014/index.html">我应该抱怨采访吗？</a></li>
+<li><a href="../zh-CN485016/index.html">Selectel的托管数据库：欢迎使用Beta</a></li>
+<li><a href="../zh-CN485018/index.html">在Unity LWRP中使用代码编写着色器</a></li>
+<li><a href="../zh-CN485022/index.html">Playme Sigma：功能齐全且价格合理的DVR</a></li>
+<li><a href="../zh-CN485026/index.html">佐治亚州IT专业人员的机会</a></li>
+<li><a href="../zh-CN485028/index.html">客户关系管理2020</a></li>
+<li><a href="../zh-CN485030/index.html">现在排名前8位的IEO费用及其资本化</a></li>
+<li><a href="../zh-CN485032/index.html">如何通过状态共托管使React应用程序更快</a></li>
+<li><a href="../zh-CN485034/index.html">在Travis CI中自动在Windows上构建Qt项目</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

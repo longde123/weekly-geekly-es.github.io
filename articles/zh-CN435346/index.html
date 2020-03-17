@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤶🏾 📽️ 🎖️ 通过HTTP或如何简化Web挂钩来订阅Kafka 👎🏾 🏴󠁧󠁢󠁥󠁮󠁧󠁿 🤳🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="有多种方法可以处理来自Pub-Sub系统的消息：使用单独的服务，隔离孤立的进程，编排进程/流池，复杂的IPC，Http-Poll等等。 今天，我想谈谈如何通过HTTP使用Pub-Sub以及专门为此编写的服务。 
+
+ 在某些情况下，使用现成的HTTP服务后端是处理消息队列的理想解决方案： 
+
+
+
+1....">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>通过HTTP或如何简化Web挂钩来订阅Kafka</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/435346/"> 有多种方法可以处理来自Pub-Sub系统的消息：使用单独的服务，隔离孤立的进程，编排进程/流池，复杂的IPC，Http-Poll等等。 今天，我想谈谈如何通过HTTP使用Pub-Sub以及专门为此编写的服务。 <br><br> 在某些情况下，使用现成的HTTP服务后端是处理消息队列的理想解决方案： <br><br><ol><li> 开箱即用的平衡。 通常，后端已经在平衡器后面，并且具有可立即加载的基础结构，这大大简化了消息处理。 </li><li> 使用常规的REST控制器（任何HTTP资源）。 如果后端混合在一起，则使用HTTP消息可以最大程度地减少针对不同语言的Compumer实现成本。 </li><li> 简化其他服务的Web挂钩的使用。 现在，几乎每个服务（Jira，Gitlab，Mattermost，Slack ...）都以某种方式支持Web挂钩，以便与外界进行交互。 如果您教队列执行HTTP调度程序的功能，则可以使生活更轻松。 </li></ol><br> 这种方法也有缺点： <br><br><ol><li> 您可以忘记解决方案的轻巧性。  HTTP是一个繁重的协议，在使用者方面使用框架会立即增加延迟和负载。 </li><li> 我们失去了“投票”方法的优势，而获得了“推”的劣势。 </li><li> 由与处理客户端相同的服务实例处理消息可能会影响响应能力。 这并不重要，因为它经过了平衡和隔离处理。 </li></ol><br> 我将该想法实现为Http-Over-Http服务，稍后将进行讨论。 该项目使用Spring Boot 2.1用Kotlin编写。 作为代理，当前仅提供Apache Kafka。 <br><a name="habracut"></a><br>  <i>在本文的进一步内容中，假定读者熟悉Kafka并了解消息的提交（commit）和偏移量（offset），组（group）和使用者（consumer）的原理，并且还了解分区（partition）与主题（topic）的区别。</i>  <i>如果有差距，建议您先阅读Kafka文档的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">这一</a>部分，然后再继续。</i> <br><br><h1> 目录内容 </h1><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">复习</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">提交</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">错误处理</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">留言内容</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">性能表现</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">示范</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">结论</a> </li></ul><br><a name="overview"></a><h1> 复习 </h1><br>  Queue-Over-Http是一种服务，充当消息代理与最终HTTP使用者之间的中介（该服务可以轻松实现对以任何其他方式（例如，各种* RPC）向消费者发送消息的支持。 目前，只有订阅，退订和查看使用者列表可用，由于没有生产者的特殊支持，无法保证消息的顺序，因此尚未通过HTTP将消息发送到代理（产生者）。 <br><br> 服务的关键人物是消费者，他们可以订阅特定的分区或仅订阅主题（支持主题模式）。 在第一种情况下，将关闭分区的自动平衡。 订阅后，指定的HTTP资源开始从分配的Kafka分区接收消息。 在架构上，每个订阅者都与一个本地Kafka Java客户端关联。 <br><br><div class="spoiler">  <b class="spoiler_title">关于KafkaConsumer的有趣故事</b> <div class="spoiler_text">  Kafka有一个很棒的Java客户端，可以做很多事情。 我在队列适配器中使用它来接收来自代理的消息，然后将其发送到本地服务队列。 值得一提的是，客户端仅在单个线程的上下文中工作。 <br><br> 适配器的想法很简单。 我们从一个线程开始，编写最简单的本机客户端调度程序，重点是减少延迟。 也就是说，我们写类似的东西： <br><br><pre><code class="kotlin hljs"><span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (!Thread.interrupted()) { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> hasWork = <span class="hljs-literal"><span class="hljs-literal">false</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (consumer <span class="hljs-keyword"><span class="hljs-keyword">in</span></span> kafkaConsumers) { <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> queueGroup = consumers[consumer] ?: <span class="hljs-keyword"><span class="hljs-keyword">continue</span></span> invalidateSubscription(consumer, queueGroup) <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> records = consumer.poll(Duration.ZERO) <span class="hljs-comment"><span class="hljs-comment">/*      */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!records.isEmpty) { hasWork = <span class="hljs-literal"><span class="hljs-literal">true</span></span> } } <span class="hljs-keyword"><span class="hljs-keyword">val</span></span> committed = doCommit() <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!hasWork &amp;&amp; committed == <span class="hljs-number"><span class="hljs-number">0</span></span>) { <span class="hljs-comment"><span class="hljs-comment">// ,    Thread.sleep(1) } }</span></span></code> </pre> <br> 看起来一切都很棒，即使有几十个用户，延迟也很小。 实际上，事实证明<code>KafkaConsumer</code>为这种操作模式<code>KafkaConsumer</code> ，并且在空闲时间提供了大约1.5 MB / s的分配速率。 拥有100个快递公司，分配速率达到150 MB / s，这使GC经常想到该应用程序。 当然，所有这些垃圾都在较年轻的地方，GC能够很好地处理此问题，但是解决方案仍然不是完美的。 <br><br> 显然，您需要按照<code>KafkaConsumer</code>典型方式进行<code>KafkaConsumer</code> ，现在我将每个订户放置在我的流中。 这给内存和调度增加了开销，但是没有其他方法。 <br><br> 我从上面重写了代码，删除了内部循环，并将<code>Duration.ZERO</code>更改为<code>Duration.ofMillis(100)</code> 。 事实证明，每个用户的分配速率下降到可接受的80-150 KB / s。 但是，具有100ms超时的轮询会将整个提交队列延迟到相同的100ms，这在很多情况下是不可接受的。 <br><br> 在寻找问题的解决方案的过程中，我记得<code>KafkaConsumer::wakeup</code> ，它抛出<code>WakeupException</code>并中断对使用者的任何阻塞操作。 使用这种方法，低延迟的路径很简单：当新的提交请求到达时，我们将其放入队列中，而在本机使用者上，我们将其称为<code>wakeup</code> 。 在工作周期中，捕获<code>WakeupException</code>并提交已累积的内容。 为了在例外的帮助下转移控制权，您必须立即将其交到您手中，但除此之外别无其他…… <br><br> 事实证明，此选项远非完美，因为对本机使用者的任何操作现在都将引发<code>WakeupException</code> ，包括提交本身。 处理这种情况会使代码混乱并带有允许完成<code>wakeup</code>的标志。 <br><br> 我得出的结论是，最好修改<code>KafkaConsumer::poll</code>方法，以便根据一个附加标志可以正常中断它。 结果， <a href="https://github.com/viirtus/queue-over-">科学怪人</a>诞生于反射，它精确地复制了原始的轮询方法，并通过标志从循环中添加了一个出口。 此标志由单独的interruptPoll方法设置，此外，该方法在客户端选择器上调用唤醒以释放I / O操作上的线程锁定。 <br><br> 以这种方式实现了客户端之后，从提交请求到处理到处理的整个过程中，我得到的响应速度高达100微秒，并且从代理那里获取消息的延迟非常长，这很好。 <br></div></div><br> 每个分区由一个单独的本地队列表示，适配器在其中写入来自代理的消息。 工作程序从中获取消息并将其发送以执行，即通过HTTP发送。 <br><br> 该服务支持批消息处理以增加吞吐量。 订阅时，您可以指定每个主题的<code>concurrencyFactor</code> （独立地应用于每个分配的分区）。 例如， <code>concurrencyFactor=1000</code>表示可以<code>concurrencyFactor=1000</code>将1000条HTTP请求形式的消息发送给使用者。 消费者明确确定了来自包装的所有消息后，该服务便决定下一次提交与Kafka中最后一条消息的偏移量有关的内容。 因此， <code>concurrencyFactor</code>的第二个值是在发生Kafka或Http上的队列崩溃时，使用者处理的最大消息数。 <br><br> 为了减少延迟，队列具有<code>loadFactor = concurrencyFactor * 2</code> ，这使您可以读取来自代理的消息，该消息是发送的消息的两倍。 由于在本机客户端上禁用了自动提交，因此这种方案不会违反“至少一次”保证。 <br> 高<code>concurrencyFactor</code>值可通过减少最坏情况下长达10毫秒的提交次数来增加队列的吞吐量。 同时，消费者的负担增加。 <br><br> 不能保证捆绑中发送消息的顺序，但是可以通过设置<code>concurrencyFactor=1</code>来实现。 <br><br><a name="commits"></a><h1> 提交 </h1><br> 提交是服务的重要组成部分。 当下一个数据包准备就绪时，该包中最后一条消息的偏移量立即提交给Kafka，只有成功提交后，下一个数据包才可用于处理。 通常这还不够，并且需要自动提交。 为此，有一个<code>autoCommitPeriodMs</code>参数，该参数与提交从分区读取的最后一条消息的本机客户端的经典自动提交期无关。 想象<code>concurrencyFactor=10</code> 。 该服务已发送所有10条消息，并正在等待它们中的每条消息准备就绪。 消息3的处理首先完成，然后是消息1，然后是消息10。此时，是时候进行自动提交了。 重要的是不要违反“至少一次”语义。 因此，您只能提交第一条消息，即偏移量2，因为此时仅成功处理了它。 此外，在下一次自动提交之前，将处理消息2、5、6、4和8，现在只需要提交偏移量7，依此类推。 自动提交对吞吐量几乎没有影响。 <br><br><a name="errors"></a><h1> 错误处理 </h1><br> 在正常操作模式下，服务一次向主管发送一条消息。 如果由于某种原因导致4xx或5xx错误，该服务将重新发送该消息，等待成功处理。 尝试之间的时间可以配置为单独的参数。 <br><br> 也可以设置尝试次数，之后将消息标记为已处理，无论响应状态如何，都将停止重发。 我不建议将其用于敏感数据，应始终手动调整使用者失败的情况。 粘性消息可以通过服务日志和使用者响应状态进行监视。 <br><br><div class="spoiler">  <b class="spoiler_title">关于坚持</b> <div class="spoiler_text"> 通常，为HTTP服务器提供4xx或5xx响应状态，它还会发送<code>Connection: close</code>标头。 以这种方式关闭的TCP连接将保持<code>TIME_WAITED</code>状态，直到一段时间后操作系统将其清除。 问题在于这种连接占用了整个端口，直到释放该端口才能重用。 这可能会导致机器上没有可用端口来建立TCP连接，并且每次发送时都会在日志中抛出该服务异常。 实际上，在Windows 10上，端口在1-2分钟内发送了10-20 000条错误消息后终止。 在标准模式下，这不是问题。 <br></div></div><br><a name="messages"></a><h1> 留言内容 </h1><br> 从代理提取的每个消息都会通过HTTP发送到预订期间指定的资源的顾问。 默认情况下，正文中的POST请求发送一条消息。 可以通过指定任何其他方法来更改此行为。 如果该方法不支持在正文中发送数据，则可以指定将在其中发送消息的字符串参数的名称。 此外，在订阅时，您可以指定将添加到每个消息的其他标题，这对于使用令牌进行基本授权很方便。 标头会添加到每条消息中，并带有使用者，主题和分区的标识符（从中读取消息），消息号，分区键（如果适用）以及代理的名称。 <br><br><a name="performance"></a><h1> 性能表现 </h1><br> 为了评估性能，我使用了一台运行该服务的PC（Windows 10，OpenJDK-11（G1，未进行调整），i7-6700K，16GB）和一台笔记本电脑（Windows 10，i5-8250U，8GB），在笔记本电脑上运行了消息生成器HTTP资源使用方和Kafka具有默认设置。  PC通过1Gb / s有线连接连接到路由器，笔记本电脑通过802.11ac连接到路由器。 生产者每110毫秒每110毫秒将110字节的消息写入到不同组的订阅者所关注的指定主题（ <code>concurrencyFactor=500</code> ，关闭了自动提交）。 架子远不是理想的，但是您可以得到一些图片。 <br><br> 关键的衡量参数是服务对延迟的影响。 <br><br> 让： <br>  -t <sub>q-</sub>从本地客户端接收消息的服务时间戳 <br>  -d <sub>t0</sub>是t <sub>q</sub>到消息从本地队列发送到执行人员池之间的时间 <br>  -d <sub>t</sub>是介于t <sub>q</sub>和HTTP请求发送时间之间的时间。  d <sub>t</sub>是服务对消息等待时间的影响。 <br><br> 在测量期间，获得了以下结果（C-消费者，T-主题，M-消息）： <br><br><img src="https://habrastorage.org/webt/p4/r7/pq/p4r7pqavkke1d3glzc7u8o6a5gu.png"><br><br> 在标准操作模式下，服务本身几乎不影响延迟，并且内存消耗最小。  d <sub>t</sub>的最大值（约60ms）没有具体说明，因为它们取决于GC的操作，而不取决于服务本身。  GC的特殊调整或用Shenandoah代替G1可以帮助平滑最大值的分布。 <br><br> 当使用者无法应对来自队列的消息流并且服务打开限制模式时，一切都会发生巨大变化。 在这种模式下，内存消耗增加，因为对请求的响应时间显着增加，这妨碍了及时清理资源。 这里对延迟的影响保持在与先前结果相同的水平，并且较高的dt值是由本地队列中的消息预加载引起的。 <br><br> 不幸的是，由于笔记本电脑已经以1300 RPS的速度弯曲，因此无法在更高的负载下进行测试。 如果有人可以帮助组织高负载下的测量，我将很乐意提供用于测试的组件。 <br><br><a name="demo"></a><h1> 示范 </h1><br> 现在让我们继续演示。 为此，我们需要： <br><br><ul><li> 卡夫卡经纪人，准备出发。 我将使用Bitnami在192.168.99.100:9092上提出的实例。 </li><li> 一个将接收消息的HTTP资源。 为了清楚起见，我从Slack获得了Web挂钩。 </li></ul><br> 首先，您需要提高Queue-Over-Http服务本身。 为此，请在空的<code>application.yml</code>目录中创建以下内容： <br><br><pre> <code class="plaintext hljs">spring: profiles: default logging: level: com: viirrtus: queueOverHttp: DEBUG app: persistence: file: storageDirectory: "persist" brokers: - name: "Kafka" origin: "kafka" config: bootstrap.servers: "192.168.99.100:9092"</code> </pre><br> 在这里，我们向服务指示特定代理的连接参数，以及在何处存储订户，以便在启动之间不会丢失订户。 在“ app.brokers []。Config”中，您可以指定本机Kafka客户端支持的任何连接参数；可以在<a href="">此处</a>找到完整列表。 <br><br> 由于配置文件是由Spring处理的，因此您可以在其中编写很多有趣的东西。 包括配置日志记录。 <br><br> 现在运行服务本身。 我们使用最简单的方法<code>docker-compose.yml</code> ： <br><br><pre> <code class="plaintext hljs">version: "2" services: app: image: viirrtus/queue-over-http:0.1.3 restart: unless-stopped command: --debug ports: - "8080:8080" volumes: - ./application.yml:/application.yml - ./persist:/persist</code> </pre><br>  <i>如果此选项不适合您，则可以从源代码编译服务。</i>  <i>自述文件项目中的组装说明，在文章末尾提供了指向该链接的链接。</i> <br><br> 下一步是注册第一个订户。 为此，您需要执行对服务的HTTP请求，并带有使用者的描述： <br><br><pre> <code class="plaintext hljs">POST localhost:8080/broker/subscription Content-Type: application/json { "id": "my-first-consumer", "group": { "id": "consumers" }, "broker": "Kafka", "topics": [ { "name": "slack.test", "config": { "concurrencyFactor": 10, "autoCommitPeriodMs": 100 } } ], "subscriptionMethod": { "type": "http", "delayOnErrorMs": 1000, "retryBeforeCommit": 10, "uri": "&lt;slack-wh-uri&gt;", "additionalHeaders": { "Content-Type": "application/json" } } }</code> </pre><br> 如果一切顺利，则响应将与发送的内容几乎相同。 <br><br> 我们来看一下每个参数： <br><br><ul><li>  <code>Consumer.id</code>我们的订户ID </li><li>  <code>Consumer.group.id</code>组标识符 </li><li>  <code>Consumer.broker</code>指示您需要订阅哪些服务代理 </li><li>  <code>Consumer.topics[0].name</code>我们要从中接收消息的主题的名称 </li><li> <code>Consumer.topics[0].config. concurrencyFactor</code>  <code>Consumer.topics[0].config. concurrencyFactor</code>发送的最大消息数 </li><li> <code>Consumer.topics[0].config. autoCommitPeriodMs</code>  <code>Consumer.topics[0].config. autoCommitPeriodMs</code>就绪消息的强制提交期 </li><li>  <code>Consumer.subscriptionMethod.type</code>订阅类型。 当前仅HTTP可用。 </li><li>  <code>Consumer.subscriptionMethod.delayOnErrorMs</code>重新发送以错误结尾的消息之前的时间 </li><li>  <code>Consumer.subscriptionMethod.retryBeforeCommit</code>重新发送错误消息的尝试次数。 如果为0-消息将旋转直到成功处理。 在我们的案例中，保证完全交付不如保持流量恒定那么重要。 </li><li>  <code>Consumer.subscriptionMethod.uri</code>将消息发送到的资源 </li><li>  <code>Consumer.subscriptionMethod.additionalHeader</code>将与每个消息一起发送的其他头。 请注意，每封邮件的正文中将包含JSON，以便Slack可以正确解释请求。 </li></ul><br>  <i>在此请求中，省略了HTTP方法，因为默认的POST，Slack非常好。</i> <br><br> 从此刻起，该服务将监视slack.test主题的分配分区中是否有新消息。 <br><br> 为了向该主题编写消息，我将使用Kafka中的内置实用程序，它们位于启动的Kafka映像的<code>/opt/bitnami/kafka/bin</code> （其他Kafka实例中的实用程序位置可能不同）： <br><br><pre> <code class="plaintext hljs">kafka-console-producer.sh --broker-list localhost:9092 --topic slack.test &gt; {“text”: “Hello!”}</code> </pre><br> 同时，Slack将通知您新消息： <br><br><img src="https://habrastorage.org/webt/kl/eh/z7/klehz7ev6x1y2eaqpf_ylpnjic4.png"><br><br>  <i>要取消订阅用户，只需向订阅“经纪人/取消订阅”发出与订阅期间相同的内容的POST请求即可。</i> <br><br><a name="the-end"></a><h1> 结论 </h1><br> 目前，仅实现了基本功能。 进一步计划改进批处理，尝试实现完全一次语义，增加通过HTTP向代理发送消息的能力，最重要的是，增加对其他流行的Pub-Sub的支持。 <br><br> 目前正在积极开发基于HTTP的Queue-Over服务。  0.1.3版足够稳定，可以在开发人员和舞台上进行测试。 性能已在Windows 10，Debian 9和Ubuntu 18.04上进行了测试。 您可能需要自担风险使用prod。 如果您想为开发提供帮助或对服务提出任何反馈，欢迎来到<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=https://github.com/viirtus/queue-over-">Github</a>项目。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN435346/">https://habr.com/ru/post/zh-CN435346/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN435334/index.html">对冷信的反应</a></li>
+<li><a href="../zh-CN435336/index.html">找到了一些东西：在OZON与Elasticsearch Moscow聚会的论文</a></li>
+<li><a href="../zh-CN435338/index.html">我们创建了比赛电子计时系统</a></li>
+<li><a href="../zh-CN435340/index.html">研究人员为Facebook发布蠕虫工作代码示例</a></li>
+<li><a href="../zh-CN435344/index.html">亚马逊推出了Showroom，或者为什么我们很快就会在网上购买所有家具</a></li>
+<li><a href="../zh-CN435348/index.html">简单的MCerver-Minecraft服务器的小外壳</a></li>
+<li><a href="../zh-CN435352/index.html">DEFCON Conference 18.使用手机进行的间谍活动。 第二部分</a></li>
+<li><a href="../zh-CN435354/index.html">DEFCON Conference 18.使用手机进行的间谍活动。 第一部分</a></li>
+<li><a href="../zh-CN435358/index.html">上古：iPod时代的微型磁盘</a></li>
+<li><a href="../zh-CN435360/index.html">片段vs三叶草-击败最受欢迎的实时测验</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

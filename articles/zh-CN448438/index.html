@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👋🏽 ⚖️ 👖 限制处理请求的速度，或如何不对客户端进行DDoS攻击 👩🏽‍🍳 👦🏼 🧙🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="有时，在开发高负载产品时，会出现一种情况，即需要处理尽可能少的请求，而是限制每单位时间的请求数。 在我们的案例中，这是发送给最终用户的推送通知的数量。 了解有关限速算法及其优缺点的更多信息-切入本文。 
+
+
+
+ 首先，关于我们一些。 Pushwoosh是一项b2b服务，用于我们的客户与其用户之间的通...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>限制处理请求的速度，或如何不对客户端进行DDoS攻击</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/448438/"><p>有时，在开发高负载产品时，会出现一种情况，即需要处理尽可能少的请求，而是限制每单位时间的请求数。 在我们的案例中，这是发送给最终用户的推送通知的数量。 了解有关限速算法及其优缺点的更多信息-切入本文。 </p><br><a name="habracut"></a><br><p> 首先，关于我们一些。  Pushwoosh是一项b2b服务，用于我们的客户与其用户之间的通信。 我们为企业提供全面的解决方案，以通过推送通知，电子邮件和其他沟通渠道与用户进行沟通。 除了实际发送消息之外，我们还提供了用于细分受众群体，收集和处理统计信息等的工具。 为此，我们从零开始在许多技术的交界处创建了一个高负载产品，其中只有一小部分是PHP，Golang，PostgreSQL，MongoDB，Apache Kafka。 我们的许多解决方案都是独特的，例如高速通知。 我们每天处理超过20亿个API请求，数据库中有超过30亿个设备，并且在整个时间内，我们向这些设备发送了超过5,000亿条通知。 </p><br><p> 在这里，我们遇到了这样一种情况：通知必须尽快传递到数百万个设备（不像已经提到的高速），而是人为地限制速度，以便用户在打开通知时将转到的客户服务器不会同时关闭加载。 <br></p><br><p> 在这里，各种速率限制算法将为我们提供帮助，这使我们能够限制每单位时间的请求数。 通常，例如在设计API时会使用此方法，因为这样我们可以保护系统免受意外或恶意的过多请求的影响，从而导致对其他客户端的服务延迟或拒绝。 如果实施了速率限制，则每单位时间将所有客户端限制为固定数量的请求。 另外，在访问与敏感数据相关的系统部分时，可以使用速率限制。 因此，如果攻击者可以访问它们，那么他将无法快速访问所有数据。 <br></p><br><p> 有许多不同的方法可以实现速率限制。 在本文中，我们将考虑各种算法的优缺点，以及扩展这些解决方案时可能出现的问题。 <br></p><br><h2> 请求处理速度限制算法 </h2><br><h3> 漏斗（漏斗） </h3><br><p>  <i>泄漏存储桶</i>是一种算法，它提供了一种最简单，最直观的方法来使用队列限制处理速度，该队列可以表示为包含请求的“存储桶”。 收到请求后，它将被添加到队列的末尾。 定期地处理队列中的第一个元素。 这也称为<abbr title="先进先出">FIFO</abbr>队列。 如果队列已满，则其他请求将被丢弃（或“泄漏”）。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/fo/jw/hy/fojwhyst1w3e6fij2eh6lsb04y8.gif" alt="渲染令牌桶"></div><br><p> 该算法的优势在于，它可以以大致相同的速度平滑突发和处理请求，易于在单个服务器或负载均衡器上实施，并且由于每个用户的队列大小受到限制，因此在内存使用方面非常有效。 <br> 但是，随着流量的急剧增加，队列中可能充满了旧请求，并使系统无法处理更多最新请求。 他也不保证将在任何固定时间内处理请求。 另外，如果您使用负载平衡器提供容错能力或提高吞吐量，则必须实施协调策略并确保它们之间的全局限制。 <br></p><br><p> 此算法有一个变体- <i>令牌桶</i> （“ <i>令牌桶</i> ”或“标记篮算法”）。 <br></p><br><p> 在这样的实现中，令牌以恒定的速度被添加到“桶”，并且当处理请求时，从“桶”中的令牌被删除； 如果没有足够的令牌，该请求将被丢弃。 您可以简单地将时间戳记用作令牌。 <br></p><br><p> 使用多个“存储桶”会有所不同，而各个“存储桶”的大小和接收令牌的速率可能会有所不同。 如果第一个“存储桶”中没有足够的令牌来处理请求，则检查第二个令牌中的令牌是否存在，等等，但是降低了请求处理的优先级（通常，例如，当您可以更改字段值时，这将用于网络接口的设计中） <abbr title="区分服务代码点">DSCP</abbr>处理的数据包）。 <br></p><br><p> 与<i>Leaky Bucket</i>实现的主要区别在于，令牌可以在系统空闲时累积，而突发可能在以后发生，而请求将被处理（因为有足够的令牌），而<i>Leaky Bucket可以</i>保证平滑负载即使在停机的情况下。 <br></p><br><h3> 固定窗 </h3><br><p> 该算法使用n秒的窗口来跟踪请求。 通常，使用60秒（分钟）或3600秒（小时）之类的值。 每个传入请求都会增加此窗口的计数器。 如果计数器超过某个阈值，则该请求将被丢弃。 通常，窗口由当前时间间隔的下边界确定，即，当窗口为60秒宽时，到达12:00:03的请求将转到窗口12:00:00。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/w3/lz/di/w3lzdijb2gk80a6rltf7rs2ejz8.gif" alt="渲染固定窗口"></div><br><p> 该算法的优点是它可以处理较新的请求，而不必依赖于旧请求的处理。 但是，靠近窗口边界的单个流量突发可能会使已处理请求的数量增加一倍，因为它允许在短时间内请求当前窗口和下一个窗口。 另外，如果许多用户正在等待窗口计数器重置（例如，在一个小时结束时），由于他们将同时访问API，因此他们此时可能会导致负载增加。 <br></p><br><h3> 滑动日志 </h3><br><p> 该算法涉及跟踪每个用户请求的时间戳。 这些记录存储在例如哈希集或表中，并按时间排序； 超出监视时间间隔的记录将被丢弃。 当新请求到达时，我们计算记录数以确定请求的频率。 如果请求超出允许数量，则将其丢弃。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/nv/8a/9z/nv8a9zz0_ycg7sm4htfair2fk44.gif" alt="可视化滑动日志"></div><br><p> 该算法的优点是它不会受到<i>固定窗口</i>边界处出现的问题的影响，也就是说，将严格遵守速度限制。 此外，由于每个客户的请求都受到单独监控，因此在某些点没有峰值负载增长，这是以前算法的另一个问题。 <br></p><br><p> 但是，存储有关每个请求的信息可能会很昂贵，此外，每个请求都需要计算可能在整个群集上的先前请求的数量，因此，此方法无法很好地扩展以处理大量流量和拒绝服务攻击。 <br></p><br><h3> 推拉窗 </h3><br><p> 这是一种混合方法，将处理<i>固定窗口的</i>低成本和对边界情况“ <i>滑动日志”的</i>高级处理结合在一起。 就像在简单的“ <i>固定窗口”中一样</i> ，我们跟踪每个窗口的计数器，然后根据当前时间戳考虑上一个窗口的请求频率的加权值，以消除流量突发。 例如，如果当前窗口中25％的时间已经过去，那么我们将前一个窗口中75％的请求考虑在内。 跟踪每个键所需的数据量相对较小，因此我们可以在大型群集中进行扩展和工作。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/jx/yz/ps/jxyzpszmkozfruckcg2s5lhsmd0.gif" alt="可视化滑动窗口"></div><br><p> 该算法允许您扩展速率限制，同时保持良好的性能。 另外，这是一种向客户传达有关限制请求数量的信息的可理解的方式，并且还避免了在实现其他速率限制算法时出现的问题。 <br></p><br><h2> 分布式系统中的速率限制 </h2><br><h3> 同步政策 </h3><br><p> 如果要在访问由多个节点组成的集群时设置全局速率限制，则需要实施限制策略。 如果每个节点仅跟踪自己的限制，则用户可以通过简单地向不同节点发送请求来绕过它。 实际上，节点数越多，用户越有可能超过全局限制。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/nb/iq/30/nbiq30phqg_b0zibtuoagajyl50.gif" alt="可视化缺乏同步"></div><br><p> 设置限制的最简单方法是在平衡器上配置“粘性会话”，以便将用户定向到同一节点。 该方法的缺点是群集节点过载时缺乏容错能力和伸缩性问题。 <br></p><br><p> 允许使用更灵活的负载平衡规则的最佳解决方案是使用集中式数据仓库（您选择）。 它可以存储每个窗口和用户的请求数计数器。 这种方法的主要问题是由于存储请求和竞争条件导致的响应时间增加。 <br></p><br><h3> 比赛条件 </h3><br><p> 集中式数据仓库的最大问题之一是竞争时竞争条件的可能性。 当您使用自然的获取然后设置方法时，会发生这种情况，在这种方法中，您提取当前计数器，对其进行递增，然后将结果值发送回存储。 该模型的问题在于，在完成这些操作的整个周期（即读取，递增和写入）所需的时间内，可能会出现其他请求，在每个请求中，计数器将以无效（较低）值存储。 这允许用户发送比限速算法提供的请求更多的请求。 <br></p><br><p> 避免此问题的一种方法是在有问题的密钥周围设置锁，以防止对计数器进行任何其他进程的读取或写入。 但是，这可能很快成为性能瓶颈，并且无法很好地扩展，尤其是在使用远程服务器（例如Redis）作为附加数据存储时。 <br></p><br><p> 一种更好的方法是基于原子运算符的“先设置然后获取”，它使您可以快速增加并检查计数器值，而不会干扰原子操作。 <br></p><br><h3> 性能优化 </h3><br><p> 使用集中式数据仓库的另一个缺点是由于检查用于实现速率限制的计数器的延迟（ <i>往返时间</i>或“ <i>往返</i>延迟”）而导致响应时间增加。 不幸的是，即使检查诸如Redis之类的快速存储，也会导致每个请求几毫秒的额外延迟。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/vn/y_/oc/vny_ocyqyqddljb5lbqnd5wlrgw.gif" alt="可视化往返时间"></div><br><p> 为了以最小的延迟定义约束，有必要在本地存储器中执行检查。 这可以通过放宽检查速度的条件并最终使用一致的模型来完成。 <br></p><br><p> 例如，每个节点可以创建一个数据同步周期，在该周期中它将与存储库同步。 每个节点定期将每个用户的计数器值和受影响的窗口传输到商店，商店将自动更新这些值。 然后，该节点可以接收新值并更新本地内存中的数据。 此周期最终将使集群中的所有节点都保持最新状态。 <br></p><br><p> 节点同步的时间段必须可自定义。 当负载均匀分布在群集的多个节点上时，较短的同步间隔将导致较少的数据差异（例如，在平衡器根据“循环”原则确定节点的情况下），而较长的间隔将减少存储的读取/写入负载并降低了每个节点接收同步数据的成本。 <br></p><br><h2> 限速算法比较 </h2><br><p> 具体而言，在我们的案例中，我们不应该拒绝客户端对API的请求，但是相反，不要基于数据创建请求； 但是，我们无权“丢失”请求。 为此，在发送通知时，我们使用send_rate参数，该参数指示发送时每秒发送的最大通知数。 <br></p><br><p> 因此，我们有一个特定的Worker在分配的时间内执行工作（在我的示例中是从文件读取），它接收RateLimitingInterface接口作为输入，告知在给定时间是否可以执行请求以及该请求将运行多长时间。 <br></p><br><pre><code class="php hljs"><span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">interface</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">RateLimitingInterface</span></span></span><span class="hljs-class"> </span></span>{ <span class="hljs-comment"><span class="hljs-comment">/** * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> int $rate Expected send rate */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">__construct</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(int $rate)</span></span></span></span>; <span class="hljs-comment"><span class="hljs-comment">/** * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@param</span></span></span><span class="hljs-comment"> float $currentTime Current timestamp in microseconds * </span><span class="hljs-doctag"><span class="hljs-comment"><span class="hljs-doctag">@return</span></span></span><span class="hljs-comment"> bool */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">canDoWork</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(float $currentTime)</span></span></span><span class="hljs-function">: </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">bool</span></span></span></span>; }</code> </pre> <br><p> 所有代码示例都可以在GitHub上<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">找到</a> 。 <br></p><br><p> 我将立即解释为什么您需要将时间片转移给Worker。 事实是，运行一个单独的守护程序来处理一个具有速度限制的消息的发送太昂贵了，因此send_rate实际上用作参数“每单位时间的通知数”，它取决于负载为0.01-1秒。 <br></p><br><p> 实际上，我们以每秒send_rate的速度处理多达100个不同的请求，为每个时间段分配1 / N秒，其中N是此守护程序处理的推送次数。 在处理过程中，我们最感兴趣的参数是是否要遵守send_rate（一个方向或另一个方向允许小的错误）和硬件的负载（对存储，CPU和内存的最小访问次数）。 <br></p><br><p> 首先，让我们弄清楚Worker在什么时间真正起作用。 为简单起见，此示例处理了一个具有send_rate = 1000的10,000行文件（也就是说，我们每秒从文件读取1000行）。 <br></p><br> 在屏幕截图中，标记标记了所有算法的时刻和fgets调用的数量。 实际上，这可以吸引数据库，第三方资源或任何其他查询，我们希望每单位时间限制其数量。 <br><br><p> 在X标度上-从处理开始的时间，从0到10秒，每秒被分为十分之一，因此时间表是从0到100。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/tb/vk/9u/tbvk9usi0mai17koyki16flm6im.png" alt="令牌桶操作"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/77/t0/av/77t0avq7kqwhkm_4tqlcurek4qc.png" alt="固定窗口算法操作"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/w9/xo/yi/w9xoyihrbuezu0exbewj8mru9mm.png" alt="滑动日志算法的操作"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/et/ye/u0/etyeu0hvzzd4hygu8outelbr2ru.png" alt="滑动窗口算法的操作"></div><br><p> 我们看到，尽管事实上所有算法都符合send_rate的要求（为此，它们是有目的的），但是<i>固定窗口</i>和<i>滑动日志</i>几乎同时“发出”了整个负载，这不太适合我们，而<i>令牌桶</i>和<i>滑动Windows</i>按单位时间平均分配它（启动时的峰值负载除外，原因是缺少有关先前时间点的负载数据）。 <br></p><br><p> 由于实际上该代码通常不适用于本地文件系统，但是具有第三方存储，因此答案可能会延迟，可能存在网络问题以及许多其他问题，我们将尝试检查当请求花费一些时间时该算法的行为。不是。 例如，在4和6秒后。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/fj/lj/gg/fjljggb06hkp7yannsyvtt3b_rw.png" alt="延迟令牌桶操作"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/qq/jp/nw/qqjpnw6rtcp7wmgmnsu3omlqkrw.png" alt="固定的窗口操作延迟"></div><br><p> 在这里，似乎<i>固定窗口</i>无法正常工作，并且在第一秒和7到8秒内处理的时间比预期的请求多2倍，但实际上并非如此，因为时间是从图表上启动之时算起的，并且算法使用当前的unix时间戳。 <br></p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/yh/0k/-k/yh0k-ko8ragfy0mb1n4vcjj8c2o.png" alt="延迟记录操作"></div><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/wh/jx/ww/whjxwwdpzkgxx1hikrb2ogpag-o.png" alt="延迟滑动窗口操作"></div><br><p> 总的来说，什么都没有根本改变，但是我们看到<i>令牌桶可以</i>更平滑地平滑负载，并且永远不会超过指定的速率限制，但是在停机的情况下， <i>滑动日志</i>可以超过允许值。 <br></p><br><h2> 结论 </h2><br><p> 我们研究了实现速率限制的所有基本算法，每种算法都有其优缺点，并且适合于各种任务。 我们希望阅读本文后，您将选择最合适的算法来解决您的问题。 <br></p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN448438/">https://habr.com/ru/post/zh-CN448438/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN448424/index.html">55年后：标志性的IBM System / 360大型机崇拜控制台</a></li>
+<li><a href="../zh-CN448430/index.html">Pro Content 2019：三份硬性报告和简短内容</a></li>
+<li><a href="../zh-CN448432/index.html">胶粘剂辐射：诱导的放射性，放射性污染，去污...</a></li>
+<li><a href="../zh-CN448434/index.html">顶级移动应用开发公司</a></li>
+<li><a href="../zh-CN448436/index.html">卷积层：矩阵乘法优化技术</a></li>
+<li><a href="../zh-CN448440/index.html">公民向STSI和FSSP支付的数十万笔款项属于公有领域</a></li>
+<li><a href="../zh-CN448442/index.html">SSD GIGABYTE Aorus RGB M.2：小巧，甚至可以遥控RGB LED（1个）</a></li>
+<li><a href="../zh-CN448444/index.html">摆脱对首次就业的恐惧</a></li>
+<li><a href="../zh-CN448448/index.html">SWIFT报告：黑客入侵银行的资金在三年后减少了10倍，减少了1亿美元</a></li>
+<li><a href="../zh-CN448450/index.html">适用于新手营销人员，产品营销人员和分析的Web分析工具</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👧 🚿 🤺 服务器之间如何协商：Raft分布式共识算法 👂🏽 💾 🤽🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="当群集达到数百台（有时甚至几千台）计算机时，就会出现服务器状态相对于彼此的一致性的问题。 筏式分布式共识算法可提供最严格的一致性保证。 在本文中，我们将从工程师的角度考虑Raft，并尝试回答“如何？”的问题。 和“为什么？” 他正在工作。 
+
+
+
+
+ 文章作者： Dmitry Pavlushin （...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>服务器之间如何协商：Raft分布式共识算法</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/dodopizzadev/blog/469999/"> 当群集达到数百台（有时甚至几千台）计算机时，就会出现服务器状态相对于彼此的一致性的问题。 筏式分布式共识算法可提供最严格的一致性保证。 在本文中，我们将从工程师的角度考虑Raft，并尝试回答“如何？”的问题。 和“为什么？” 他正在工作。 <br><br><img src="https://habrastorage.org/webt/e7/yf/fs/e7yffsk5gyqcjqxclgt9oqvnyrs.png"><br><br><a name="habracut"></a><br><blockquote> 文章作者： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Dmitry Pavlushin</a> （开发人员Dodo Pizza Engineering）。 </blockquote><br>  Raft是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">一种分布式共识算法</a> ，需要使多个参与者共同决定事件是否发生以及随后发生的事情。 <br><br>  Raft群集提供的数据是由记录组成的日志。 当用户想要更改存储在集群中的数据时，他尝试使用以下命令将新记录添加到日志中： <br><br><img src="https://habrastorage.org/webt/vo/wu/sl/vowusleov4a4bpnob0koux_7vns.png"><br> 这些命令由分布式状态机执行。 为简单起见，在本文的框架中，我们将假定在读取给客户时仅给出这些记录，该客户基于已发生的事件来恢复系统的当前状态<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">（请参阅事件源）</a> 。 <br><br> 为了确保在Raft中达成共识，首先要选择一个负责人，由他负责管理分布式日志。 领导者接受来自客户端的请求，并将其复制到群集中的其他服务器。 如果领导者失败，则会在集群中选择一个新的领导者。 这是短短的三句话。 详情将在后面。 <br><br><h2> 基本概念 </h2><br><ol><li> <b>服务器状态</b> 在Raft群集中，每个给定时间的每个服务器都处于以下三种状态之一： <br><ul><li> 领导者（leader）-处理所有客户端请求，是日志中所有数据的真实来源，支持跟随者日志。 </li><li> 追随者（追随者）是被动服务器，它仅“侦听”领导者的新日志条目，并将所有来自客户端的传入请求重定向到领导者。 实际上，它是领导者的热备份副本。 </li><li> 候选（candidate）是服务器的一种特殊状态，仅在选择新领导者时才有可能。 </li></ul><br> 在群集中正常运行期间，只有一台服务器是领导者，其余所有服务器都是其跟随者。 <br><br><div class="spoiler">  <b class="spoiler_title">关于异步</b> <div class="spoiler_text"> 这里值得注意的是条件是一个相对的概念。 由于服务器异步通信，因此不同的服务器可以在不同的时间观察其他服务器从一种状态到另一种状态的转换。 <br></div></div></li><li>  <b>木筏将时间分成任意长度的段，称为截止时间</b> 。 每个术语都有一个单调递增的数字。 该术语以当一个或多个服务器成为候选服务器时选举领导者开始。 如果候选人获得多数票，则他将成为领导人，直到这一时期结束为止。 如果对票进行了分割，并且没有候选人能获得多数票，则会触发超时，并且该时间段结束。 此后，新任期从新候选人和选举开始。 这种情况称为拆分投票。 下图中的第三个术语说明了一个示例： <br><br><img src="https://habrastorage.org/webt/uw/uj/cr/uwujcro7y3jflbpmc1y2iek_wlg.png"><br> 术语数字在Raft群集中用作逻辑时间戳记。 它可以帮助服务器确定当前更相关的信息。 <br><br><div class="spoiler">  <b class="spoiler_title">服务器交互规则和条款</b> <div class="spoiler_text"><ul><li> 每个服务器跟踪其当前期限的编号。 </li><li> 服务器在每个发送的消息中都包括其到期号。 </li><li> 如果服务器收到的邮件的条款编号比其自己的邮件编号少，则它将忽略此邮件。 </li><li> 如果服务器接收到的消息的截止日期编号比其自己的消息的截止日期长，则服务器会更新其截止日期编号以匹配接收到的消息。 </li><li> 如果候选人或领导者收到的消息的截止日期比自己的截止日期长，则他知道其他服务器已经启动了新的截止日期，因此他的截止日期不再重要。 因此，除了更新其编号之外，它还从当前状态变为“从属”状态。 </li></ul></div></div><br></li><li>  <b>服务器通信。</b>  Raft中的服务器通过交换请求和响应进行交互。 基本算法仅使用两种类型的调用： <br><br><ul><li> 候选人在选举期间使用<b>RequestVote</b> 。 该请求包含候选人的学期号和有关候选人日志的元数据，下面将对其进行详细讨论。 响应中包含响应服务器的截止日期编号，如果服务器对该候选人进行投票，则该值包含“ true”； 如果服务器对候选人投反对票，则为False。 </li><li> 领导者使用<b>AppendEntries</b>进行日志复制以及心跳机制。 该请求包含领导者的任期编号，需要添加到日志中的条目的集合（在心跳情况下为空集合），有关领导者日志的一些元数据，下面也将详细讨论。 如果关注者成功将条目添加到其日志中，则响应中包含关注者术语编号和值“ true”。 如果添加日志条目失败，则为“ False”。 </li></ul></li></ol><br><h2> 工作算法 </h2><br><h4>  1.选择一个领导者 </h4><br> 为了确定何时开始新的选举，Raft依靠心跳。 追随者一直是追随者，直到他从当前领导者或候选人那里收到消息为止。 领导者定期向所有其他服务器发送心跳。 <br><br> 如果追随者一段时间未收到任何消息，他很自然地会认为领导者已经死了，这意味着该是主动采取行动的时候了。 此时，前追随者开始选举。 <br><br> 要启动选举，关注者将增加其任期编号，切换为“候选”状态，对其进行投票，然后将“ RequestVote”请求发送给所有其他服务器。 之后，候选人等待以下三个事件之一： <br><br><ol><li>  <b>候选人获得多数选票（包括他自己的选票）并赢得选举。</b> 每个服务器在每个学期中只投票一次，才能获得第一个候选人（某些例外情况，将在下面讨论），因此，只有一个候选人可以在特定任期中获得多数票。 获胜的服务器将成为领导者，开始发送心跳并为群集提供客户端请求。 </li><li>  <b>候选人从当前任期的当前领导者或任何具有较早任期的服务器接收消息</b> 。 在这种情况下，候选人知道他参加的选举不再重要。 他别无选择，只能认出一个新的领导者/新任期并进入追随者状态。 </li><li>  <b>在特定的超时时间内，候选人不会获得大多数选票。</b> 当有几位追随者成为候选人，并且投票数在他们之中分配，从而没有人获得多数票时，就会发生这种情况。 在这种情况下，该任期在没有领导者的情况下结束，候选人立即开始下一任期的新选举。 </li></ol><br><h4>  2.我们复制日志 </h4><br> 选择领导者后，他将负责管理分布式日志。 领导者接受包含一些团队的客户的请求。 领导者将包含命令的新记录放入其日志中，然后将“ AppendEntries”发送给所有关注者，以便用新记录复制该记录。 <br><br> 在大多数服务器上成功复制记录后，领导者将开始考虑关闭记录并响应客户端。 领导者跟踪哪个记录是最后一个。 它将此记录的编号发送到AppendEntries（包括心跳），以便关注者可以将记录提交给自己。 <br><br> 如果领导者无法联系到某些关注者，他将把AppendEntries追溯到无穷大。 下图显示了Raft群集中日志的组织方式： <br><br><img src="https://habrastorage.org/webt/s3/2l/-z/s32l-zuwjn3u0eoz83j8pysn_uc.png"><br><br> 每个框是日志中的一个条目。 每个记录存储一个命令，例如，x←3将值3分配给键x。 该记录还存储生成它的术语的编号。 在图片中，这由正方形顶部的数字表示。 正方形的彩色显示也表示项号。 每个记录都有一个序列号（日志索引）。 <br><br><h4>  3.我们保证算法的可靠性 </h4><br> 到目前为止，从我们的研究来看，目前尚不清楚筏是否可以至少提供一些保证。 但是，该算法提供了一组属性，这些属性共同保证了其执行的可靠性： <br><br><ul><li>  <b>选举安全</b> ：单个任期内最多只能选一位领导人。 此属性来自以下事实：每个服务器在每个术语内只投票一次，并且对于组长而言，需要多数票 </li><li>  <b>仅限领导者追加</b> ：领导者不会覆盖或擦除，不会移动其日志中的条目，只会添加新条目。 此属性直接来自算法的描述-领导者可以对其日志执行的唯一操作是在末尾添加条目。 就是这样。 </li><li>  <b>日志匹配：</b>如果两个服务器的日志包含具有相同索引和有效期号的条目，则直到并包括此记录，两个日志都是相同的。 <br><br><div class="spoiler">  <b class="spoiler_title">使用数学归纳法和图片证明</b> <div class="spoiler_text"> 当第一步是证明一个简单案例的陈述时，数学归纳法就是一种证明方法。 在第二步中，我们接受对于某些情况X的陈述为true。基于此，我们尝试证明对某些相邻案例X + 1的陈述。 这两个步骤在一起可以帮助证明所有情况的陈述。 <br><br> 在我们的情况下，一个简单的情况是空日志。 没有记录，因此没有违反该财产的情况。 <br><br> 现在，让我们假设日志中有一些条目对应于我们的属性。 筏具有一种机制，可以防止在任何日志更改时损坏属性。 这种机制称为<b>一致性检查</b> 。 让我们立即看一下示例。 <br><br>  <b>很好的例子</b> 。 例如，有一个第四届的领导者，有一个跟随者。 它们都有来自三个条目的匹配日志。 <br><br><img src="https://habrastorage.org/webt/ob/kl/qj/obklqjfsspdfwyxwmpodpyvc-ia.png"><br><br> 客户的请求传到了领导者，领导者将一个条目添加到他的日志中。 <br><br><img src="https://habrastorage.org/webt/e9/d0/_x/e9d0_xsxyddboyfr9yjjdfake8m.png"><br><br> 领导者将AppendEntries发送给关注者。 但是，除了增加最多的记录外，领导者还在请求中指出必须在索引4处添加该记录，并且在索引3之前必须在第2项中添加一条记录。 <br><br><img src="https://habrastorage.org/webt/eo/7l/x0/eo7lx0m8xul1tmtzqfkk4cgjdic.png"><br><br> 跟随者日志中索引3处的日志条目与请求中指定的条目匹配，因此跟随者将条目添加到他的日志中，并成功地响应领导者。 结束了。 <br><br><img src="https://habrastorage.org/webt/ef/e8/kg/efe8kg2uspvnflbnx6mnkx5-1ko.png"><br><br>  <b>也是一个很好的例子，但是有着悲惨的开始。</b> 现在，关注者的日志与当前领导者的日志不同。 <br><br><img src="https://habrastorage.org/webt/t8/5d/ae/t85daek6x0n9spztxu-jeu5qee8.png"><br><br> 领导者收到向日志中添加条目的请求时，他将发送与上一个示例相同的AppendEntries。 <br><br><img src="https://habrastorage.org/webt/ka/q5/gw/kaq5gw5c0ezpdflgrdinqmpbmmk.png"><br><br> 但是，这次，由于关注者与先前的记录不匹配，因此关注者失败。 <br><br><img src="https://habrastorage.org/webt/41/wk/zf/41wkzfixq1dr2x8artbwph2s3jw.png"><br><br> 领导在这种情况下会做什么？ 领导者只是略微回滚，并尝试向跟随者提供他本人认为站在索引3处的记录。他还将先前的记录包括在请求中。 <br><br><img src="https://habrastorage.org/webt/y_/gw/br/y_gwbrjzohvl83zh-e2hploan5m.png"><br><br> 现在，跟随者成功完成响应，并覆盖从索引3开始的日志中的条目。 <br><br><img src="https://habrastorage.org/webt/8l/oa/wp/8loawpe9iqskomaw0p7zbwek9f8.png"><br><br> 追随者的日志可能与领导者的日志有所不同。 其中可能没有足够的条目，其中可能有多余的条目。 无论如何，一致性检查可确保关注者的日志早晚与领导者的日志一致。 <br></div></div><br></li><li>  <b>领导者完整性</b> ：如果在给定时间提交了日志条目，则随后所有时期的领导者日志将包括该记录。 此属性为我们提供了耐用性保证。 <br><br><div class="spoiler">  <b class="spoiler_title">证明和图片</b> <div class="spoiler_text"> 请考虑以下情况：群集中的三台服务器。 服务器S1是当前第一任期的负责人。 所有服务器都有三个日志条目。 <br><br><img src="https://habrastorage.org/webt/g6/c9/zb/g6c9zbx5fsewp_4nn0komxcnikm.png"><br><br> 领导者S1收到来自客户端的请求，并将新记录添加到他的日志中，并将AppendEntries发送到其他S2和S3服务器。 <br><br><img src="https://habrastorage.org/webt/rz/ki/gf/rzkigfvgmygzxg4qbwy9tfgf914.png"><br><br> 记录成功到达S2，但是S1和S3之间的网络闪烁，并且请求丢失。 由于S1知道该记录存在于三个服务器中的两个中，因此它可以确定该记录已提交并成功响应客户端。 <br><br>  S1还将重试向S3添加一个条目，直到成功为止。 但是，如果S1发生故障并关闭，会发生什么？ 而且，如果S3是第一个厌倦了等待并成为候选者的人，将会发生什么？  S2将投票支持它，S3将成为第二任期的领导者，并且在下一个添加记录的请求下，S3是否会覆盖我们的记录？ <br><br><img src="https://habrastorage.org/webt/_g/ij/l3/_gijl3pklfn6g5xme0ta7-svaus.png"><br><br> 实际上，这种情况不会在Raft集群中发生。 这里的问题是S2不会投票给S3。 怎么了 因为投票时的S3服务器日志不如S2服务器日志重要。 这种机制称为<b>选举限制</b> -只有当候选人的日志与投票人的日志相关程度不低时，服务器才会投票给另一台服务器。 <br><br>  Raft通过两种方式比较日志的相关性： <br><br><ul><li> 上次记录日期 </li><li> 日志长度 </li></ul><br> 候选人在RequestVote请求中包括这两个参数，以便关注者可以将其日志与候选人日志的相关性进行比较。 <br><br>  “最重要”是最后一条记录较旧的日志。 <br><br><img src="https://habrastorage.org/webt/7o/2a/-v/7o2a-vpncoa6z4qwmn-xdgckh1m.png"><br><br> 如果最后一个条目的术语编号一致，则“ main”是更长的日志。 <br><br><img src="https://habrastorage.org/webt/qf/kx/nk/qfkxnk-qv4py6t6lvw3i8wuphu4.png"><br><br> 如果它们两者重合，则日志是同等相关的，并且，如先前属性所述，它们也是绝对相同的。 <br><br><img src="https://habrastorage.org/webt/hp/ej/x8/hpejx8hkcwkm-fjs7qs98gzn8pc.png"><br><br> 事实证明，具有安全记录的服务器日志将始终比没有安全记录的服务器更为相关。 具有安全记录的服务器将不会投票给没有安全记录的服务器。 而且，由于大多数服务器上都有记录的记录，因此没有此记录的候选人将无法获得大多数选票并成为领导者，以便将该记录从其他服务器上删除。 <br></div></div><br></li><li>  <b>状态机安全</b> ：此属性最初是按照分布式状态机描述的，就我们的文章而言，此属性可以描述如下：当服务器提交具有特定索引的记录时，没有其他服务器为此索引提交另一条记录。 <br><br> 此属性来自过去。 如果追随者在索引N处提交某些记录，那么他的日志与领导者直至N（包括N）的日志相同。 领导者完整性属性保证所有后续领导者也将在索引N处包含此安全记录，这意味着在后续期间在索引N处提交记录的关注者将提交相同的值。 <br></li></ul><br><h2> 链接到进一步研究的材料 </h2><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">筏共识算法</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">寻找一种可以理解的共识算法</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">共识：桥接理论与实践</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">不带盒子的薛定inger猫：分布式系统中的共识问题</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN469999/">https://habr.com/ru/post/zh-CN469999/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN469987/index.html">全球排名前20位的市场开发公司</a></li>
+<li><a href="../zh-CN469989/index.html">C＃正则表达式示例</a></li>
+<li><a href="../zh-CN469991/index.html">我们使用RabbitMQ和TypeScript处理来自在线商店的订单</a></li>
+<li><a href="../zh-CN469995/index.html">Python SAX解析器与python DOM解析器。 Parsim FIAS房屋</a></li>
+<li><a href="../zh-CN469997/index.html">哪些标题最有可能引起注意或进行HabraHabr分析</a></li>
+<li><a href="../zh-CN470001/index.html">Linux技巧和窍门：服务器，开放</a></li>
+<li><a href="../zh-CN470005/index.html">通过浏览器进行远程计算机控制</a></li>
+<li><a href="../zh-CN470009/index.html">按EXIF + PHP中的数据对照片排序</a></li>
+<li><a href="../zh-CN470011/index.html">互动热力学实验室作为模拟培训的有效手段</a></li>
+<li><a href="../zh-CN470013/index.html">俄罗斯亿万富翁寻找外星人如何帮助揭示宇宙最大的奥秘之一</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

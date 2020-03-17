@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔑 ♏️ 🎟️ 为Clang Static Analyzer创建插件以搜索整数溢出 🚘 👩🏾‍🤝‍👩🏽 🍎</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="文章作者： 0x64rem 
+ 参赛作品 
+
+
+ 一年半以前，我有实现我的相位器的想法，这是大学论文的一部分。 我开始研究有关控制流程图，数据流程图，符号执行等的材料。 接下来是搜索工具，这是不同库（Angr，Triton，Pin，Z3）的示例。 最后没有什么具体的事情发生，直到今年夏天我参加了Di...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>为Clang Static Analyzer创建插件以搜索整数溢出</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/dsec/blog/473412/"><p><img src="https://habrastorage.org/getpro/habr/post_images/e69/d01/efb/e69d01efbeff395f19dbb543055a5493.jpg" title="无花果1个"></p><br><p>  <em>文章作者： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" class="user_link">0x64rem</a></em> </p><br><h2 id="vstuplenie"> 参赛作品 </h2><br><p> 一年半以前，我有实现我的相位器的想法，这是大学论文的一部分。 我开始研究有关控制流程图，数据流程图，符号执行等的材料。 接下来是搜索工具，这是不同库（Angr，Triton，Pin，Z3）的示例。 最后没有什么具体的事情发生，直到今年夏天我参加了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Digital Security</a>的Summer of Hack 2019计划，在那里为我提供了Clang Static Analyzer的扩展作为该项目的主题。 在我看来，该主题将帮助我将理论知识摆在架子上，开始执行重要的工作，并从经验丰富的导师那里获得建议。 接下来，我将告诉您编写插件的过程如何进行，并描述实习期间的想法。 </p><a name="habracut"></a><br><h2 id="clang-static-analyzer">  lang静态分析仪 </h2><br><p> 对于开发，Clang提供了三个用于交互的界面选项： </p><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">LibClang</a>是高级C接口，允许您与AST交互，但不能完全交互。 如果您需要与另一种语言（例如， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">bindings</a>的实现）或稳定的接口进行交互，则是一个不错的选择。 </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Clang插件</a> -编译时调用的动态库。 允许您完全操纵AST。 </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">LibTooling-</a>一个用于基于Clang创建单独工具的库。 还提供了与AST交互的完全访问权限。 生成的代码可以在已检查项目的构建环境之外运行。 </li></ul><br><p> 由于我们将扩展Clang Static Analyzer的功能，因此我们选择插件的实现。 您可以使用C ++或Python为该插件编写代码。 </p><br><p> 对于后者，可以使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">绑定器</a>来解析源代码，在生成的抽象语法树的节点上进行迭代，还可以访问节点的属性，并且可以将节点映射到源代码行。 这样的组合适合于简单的检查器。 有关更多详细信息，请参见<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">llvm存储库</a> 。 </p><br><p> 我的任务需要对代码进行详细的分析，因此选择了C ++进行开发。 接下来是对该工具的介绍。 </p><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Clang Staic Analyzer</a> （以下<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">称为</a> CSA）是用于基于符号执行对C / C ++ / Objective-C代码进行静态分析的工具。 可以通过在Clang前端中将-cc1和-analyze标志添加到build命令中来调用分析器，也可以通过单独的scan-build binar来调用分析器。 除了分析本身之外，CSA还可以生成可视的html报告。 </p><br><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># ,      clang' clang -cc1 --help #  CSA  №1 clang++ -cc1 -x c++ -load path/to/Checker.so -analyze -analyzer-checker=test.Me -analyzer-config $BUILD_OPTIONS Checker.cpp</span></span></code> </pre> <br><pre> <code class="bash hljs"> <span class="hljs-comment"><span class="hljs-comment">#  CSA  №2 scan-build -load-plugin path/to/Checker.so -enable-checker test.Me $BUILD_COMMAND</span></span></code> </pre> <br><pre> <code class="bash hljs"> <span class="hljs-comment"><span class="hljs-comment">#       DivideZero clang++ -cc1 -analyze -analyzer-checker=core.DivideZero -o reports div-by-zero-test.cpp</span></span></code> </pre> <br><p><img src="https://habrastorage.org/getpro/habr/post_images/6dd/b8e/302/6ddb8e302c62b6cc58c4533a894d49e9.jpg" alt=" " title="无花果2"></p><br><p>  CSA具有出色的库，可以使用AST（抽象语法树），CFG（控制流图）来解析源代码。 从结构中，您可以进一步了解变量的声明，变量的类型，二进制和一元运算符的使用，可以获得符号表达式等。 我的插件将使用AST类的功能，此选择将​​进一步合理。 以下是在插件的实现中使用的类的列表，该列表将帮助您初步了解CSA的功能： </p><br><ul><li><p>  Stmt-这包括二进制操作。 </p><br></li><li><p>  Decl-变量声明。 </p><br></li><li><p>  Expr-存储表达式的左，右部分及其类型。 </p><br></li><li><p>  ASTContext-有关树（当前节点）的信息。 </p><br></li><li><p> 源管理器-有关与树的一部分相对应的实际代码的信息。 </p><br></li><li><p>  RecursiveASTVisitor，ASTMatcher-用于遍历树的类。 </p><br><p> 我重复一遍，CSA为开发人员提供了详细检查代码结构的机会，并且上面列出的类只是可用代码的一小部分。 如果您不知道如何提取任何数据，我绝对建议您查看Clang版本的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文档</a> 。 很可能已经写了一些合适的东西。 </p><br></li></ul><br><h2 id="poisk-celochislennyh-perepolneniy"> 整数溢出搜索 </h2><br><p> 要开始实施插件，您需要选择它将解决的任务。 对于这种情况，llvm网站提供<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">了潜在检查程序的列表</a> ；您还可以修改现有的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">稳定</a>检查程序或<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">alpha</a>检查程序。 在检查可用检查器的代码期间，很明显，为了更成功地开发libclang，最好从头开始编写检查器，因此从一系列<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">未实现的想法中进行选择</a> 。 结果，选择了该选项以创建用于整数溢出检测的检查器。  Clang已经具有防止此漏洞的功能（指示使用了-ftrapv，-fwrapv等标志），它已内置在编译器中，并且这种精疲力尽被灌入警告中，因此在这里并不经常出现。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">仍然存在UBSan</a> ，但是它们是消毒剂，并不是每个人都使用它们，并且该方法用于在运行时识别问题，并且CSA插件在编译时起作用，分析源。 </p><br><p> 接下来是有关所选漏洞的资料集合。 整数溢出曾经很简单，但并不严重。 实际上，该漏洞很有趣，并可能产生令人印象深刻的后果。 <br> 整数溢出是一种漏洞，可能导致代码中的整数类型数据采用意外值。 上溢-如果变量变得比预期的大，则下溢-小于其原始类型。 可能由于程序员和编译器而出现此类错误。 </p><br><p> 在C ++中，在算术比较操作期间，将整数值转换为相同的类型，就位深度而言，更常见的是转换为较大的值。 这些鬼影无处不在，并且不断出现，它们可以是显性的或隐性的。 有几种发生鬼影的规则[1]： </p><br><ul><li> 从带符号转换为带符号但更大的类型：只需添加高位。 </li><li> 将有符号整数转换为相同容量的无符号整数：负数将转换为正数，并具有新的含义。  <a href="">DirectVE中</a>类似错误的一个示例是<a href="">CVE-2014-2977</a> 。 </li><li> 将有符号整数转换为具有更大位容量的无符号整数：首先，位容量将扩展，然后，如果数字为负，则将错误地更改该值。 例如：0xff（-1）变为0xffffffff。 </li><li> 一个无符号整数，其符号具有相同的位容量：数字可以更改值，具体取决于高位的值。 </li><li> 一个无符号整数，其整数带有更大的符号：首先，一个无符号数字的容量增加，然后转换为有符号的整数。 </li><li> 下转换：位只是被截断。 这会使无符号值变为负数，依此类推。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PHP</a>中此类<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">漏洞的</a>一个示例。 </li></ul><br><p> 即 漏洞的触发因素可能是优化过程中程序员或编译器引起的用户输入不安全，算术不正确，类型转换不正确。 当一段代码对一个版本的编译器无害，但随着新优化算法的发布，“爆炸”并导致意外行为时，也可以使用定时炸弹选项。 在历史上，SafeInt类已经出现了这种情况（非常具有讽刺意味）[5，6.5.2]。 </p><br><p> 整数溢出会打开一个广泛的向量：有可能迫使执行采用不同的路径（如果溢出影响条件语句），则导致缓冲区溢出。 为了清楚起见，您可以熟悉特定的CVE，并查看其原因和后果。 自然，最好在开源产品中查找整数溢出，这样您不仅可以阅读说明，还可以看到代码。 </p><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CVE-2019-3560</a> -Fizz中的整数溢出（一个为Facebook实现TLS的项目）可以利用局促的网络数据包利用此漏洞进行DoS攻击。 </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CVE-2018-14618-</a>由于密码长度，整数溢出导致Curl中的缓冲区溢出。 </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CVE-2018-6092-</a>在32位系统上，Chrome的WebAssembly中的漏洞允许通过特殊的HTML页面实现RCE。 </li></ul><br><p> 为了避免重新发明轮子，考虑了在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CppCheck</a>静态分析器中检测整数溢出的代码。 他的方法如下： </p><br><ol><li> 确定表达式是否为二进制运算符。 </li><li> 如果是，则检查两个参数是否均为整数类型。 </li><li> 确定类型的大小。 </li><li> 通过计算检查该值是否可以超过其最大或最小限制。 <br> 但是在这一阶段，它还没有给出明确的说明。 事实证明，有许多不同的故事，因此，信息的系统化变得更加困难。 一切都放在了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CWE</a>的列表中。 总共，站点上分配了9种类型的整数溢出： <br><ul><li>  190-整数oveflow </li><li>  191-整数下溢 </li><li>  192-整数强制错误 </li><li>  193-一对一 </li><li>  194-意外的标志扩展 </li><li>  195-有符号到无符号转换错误 </li><li>  196-未签名到已签名的转换错误 </li><li>  197-数值截断错误 </li><li>  198-使用不正确的字节顺序 </li></ul></li></ol><br><p> 我们考虑每个选项的原因，并理解溢出会发生在不正确的显式/隐式强制转换的情况下。 而且因为 任何类型转换都显示在抽象语法树的结构中，我们将使用AST进行分析。 在下图（图3）中，可以看到导致树中进行强制转换的任何操作都是一个单独的节点，并且在树中四处游荡，我们可以基于具有可能导致错误的转换的表检查所有类型转换。 </p><br><div class="scrollable-table"><table><thead><tr><th></th><th> 标志g </th><th> 标志l </th><th> 签到 </th><th> 取消签名 </th><th> 取消签名 </th><th> 取消签名 </th></tr></thead><tbody><tr><td> 签收 </td><td>  + </td><td>  -- </td><td>  + </td><td>  -- </td><td>  -- </td><td>  -- </td></tr><tr><td> 取消签名 </td><td>  + </td><td>  -- </td><td>  -- </td><td>  -- </td><td>  -- </td><td>  + </td></tr></tbody></table></div><br><p><img src="https://habrastorage.org/getpro/habr/post_images/e72/315/acb/e72315acbeaf57dcf7ea2f85670fe4e0.jpg" title="无花果3"></p><br><p> 更具体地说，该算法听起来像这样：我们遍历Casts并查看IntegralCast（整数转换）。 如果找到合适的节点，请查看其后代以查找二进制运算或Decl（变量声明）。 在第一种情况下，您需要检查二进制操作使用的符号和位深度。 在第二种情况下，仅比较声明的类型。 </p><br><h2 id="realizaciya-chekera"> 检查器实施 </h2><br><p> 让我们开始实施。 我们需要检查程序的框架，该框架可以是独立的库，也可以作为Clang的一部分进行组装。 在代码中，差异将很小。 如果您已经打算编写自己的插件，我建议您立即阅读一个小pdf文件： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“ Clang静态分析器：Checker开发人员指南”</a> ，尽管那里可能不再有用，但基本内容已在此处进行了描述，该库会定期更新，但是您可以立即抓住。 </p><br><p> 如果要将检查器添加到您的clang程序集，则需要： </p><br><ol><li><p> 用大约以下内容编写检查器本身： </p><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">namespace</span></span> { <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">SuperChecker</span></span></span><span class="hljs-class"> :</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> Checker&lt;check::PreStmt&lt;BinaryOperator&gt;&gt; { <span class="hljs-comment"><span class="hljs-comment">//       ,    .       struct CheckerOpts { //       string FlagOne; int FlagTwo; }; CheckerOpts Opts; //cool code }; } void ento::registerSuperChecker(CheckerManager &amp;mgr) { auto checker = mgr.registerChecker&lt;SuperChecker&gt;(); //       ,   4    //       ,  stand-alone    . AnalyzerOptions &amp;AnOpts = mgr.getAnalyzerOptions(); SuperChecker::CheckerOpts &amp;ChOpts = checker-&gt;Opts; ChOpts.FlagOne = AnOpts.getCheckerStringOption("Inp1", "", checker); ChOpts.FlagTwo = AnOpts.getCheckerIntegerOption("Inp2", 0, checker); // getCheckerIntegerOption:  ,  ,   }</span></span></code> </pre> <br></li><li><p> 然后，在Clang的源代码中，您将需要更改文件<code>CMakeLists.txt</code>和<code>Checkers.td</code> 。 住在这里<code>${llvm-source-path}/clang/lib/StaticAnalyzer/Checkers/CMakeLists.txt</code> <br>  <code>${llvm-source-path}/clang/include/clang/StaticAnalyzer/Checkers/Checkers.td</code> 。 <br> 在第一个中，您只需要在文件名中添加代码，在第二个中，您需要添加结构性描述： </p><br><pre> <code class="cpp hljs"> #Checkers.td def SuperChecker : Checker&lt;<span class="hljs-string"><span class="hljs-string">"SuperChecker"</span></span>&gt;, HelpText&lt;<span class="hljs-string"><span class="hljs-string">"test checker"</span></span>&gt;, Documentation&lt;HasDocumentation&gt;;</code> </pre> <br></li></ol><br><p> 如果不清楚，那么在<code>Checkers.td</code>文件中，有足够的示例说明如何执行操作。 </p><br><p> 最有可能的是您不想重建Clang，您将在库程序集（so / dll）中使用该选项。 然后在检查器的代码中应该是这样的： </p><br><pre> <code class="cpp hljs"><span class="hljs-keyword"><span class="hljs-keyword">namespace</span></span> { <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">class</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">SuperChecker</span></span></span><span class="hljs-class"> :</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> Checker&lt;check::PreStmt&lt;BinaryOperator&gt;&gt; { <span class="hljs-comment"><span class="hljs-comment">//       ,    .       struct CheckerOpts { string FlagOne; int FlagTwo; }; CheckerOpts Opts; //cool code }; } void initializationFunction(CheckerManager &amp;mgr){ SuperChecker *checker = mgr.registerChecker&lt;SuperChecker&gt;(); //       ,   4    AnalyzerOptions &amp;AnOpts = mgr.getAnalyzerOptions(); TestChecker::CheckerOpts &amp;ChOpts = checker-&gt;Opts; ChOpts.FlagOne = AnOpts.getCheckerStringOption("Inp1", "", checker); ChOpts.FlagTwo = AnOpts.getCheckerIntegerOption("Inp2", 0, checker); // getCheckerIntegerOption:  ,  ,   } extern "C" void clang_registerCheckers (CheckerRegistry &amp;registry) { registry.addChecker(&amp;initializationFunction, "test.Me", "SuperChecker description", "doc_link"); } extern "C" const char clang_analyzerAPIVersionString [] = "8.0.1";</span></span></code> </pre> <br><p> 接下来，收集您的代码，您可以编写自己的汇编脚本，但是如果对此有任何问题（如作者所遇到的问题:)），则可以在clang源代码中使用Makefile并以一种奇怪的方式创建clangStaticAnalyzerCheckers命令。 </p><br><p> 接下来，调用检查器： </p><br><ul><li><p> 用于内置检查器 </p><br><pre> <code class="bash hljs">clang++ -cc1 -analyze -analyzer-checker=core.DivideZero test.cpp</code> </pre> <br></li><li><p> 对于外部 </p><br><pre> <code class="bash hljs">clang++ -cc1 -load <span class="hljs-variable"><span class="hljs-variable">${PATH_TO_CHECKER}</span></span>/SuperChecker.so -analyze -analyzer-checker=test.Me -analyzer-config test.Me:UsrInp1=<span class="hljs-string"><span class="hljs-string">"foo"</span></span> test.Me:Inp1=<span class="hljs-string"><span class="hljs-string">"bar"</span></span> -analyzer-config test.Me:Inp2=123 test.cpp</code> </pre> <br><p> 在这一阶段，我们已经有了某种结果（图4），但是编写的代码只能检测到潜在的溢出。 这意味着大量误报。 </p><br></li></ul><br><p><img src="https://habrastorage.org/getpro/habr/post_images/ac1/79d/29b/ac179d29b330efd513343fdd5f9a2ddd.jpg" title="无花果4"></p><br><p> 要解决此问题，我们可以： </p><br><ul><li> 来回浏览该图并检查变量的特定值，以防可能发生溢出。 </li><li> 在AST遍历期间，立即保存变量的特定值并在必要时检查它们。 </li><li> 使用污点分析。 </li></ul><br><p> 为了证实更多的论据，值得一提的是，在分析Clang时， <code>#include</code>指令中指定的所有文件也会解析，结果，最终AST的大小会增加。 结果，在建议的选项中，只有一项对于特定任务是合理的： </p><br><ul><li> 首先，它需要很多时间才能完成。 走进一棵树，搜索并计算所需的一切将花费很长时间，使用此类代码来分析大型项目可能会变得困难。 要在代码中遍历树，我们将使用<code>clang::RecursiveASTVisitor</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">类</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">该类</a>执行递归深度搜索。 这种方法的时间估计为 <img src="https://wikimedia.org/api/rest_v1/media/math/render/svg/a7cf317fbe3965ae3164f28c1f6858696adb23f4" title="难度等级">  ，其中V是顶点集合，E是图形边的集合。 </li><li> 第二个-您当然可以存储，但是我们不知道我们将需要什么，不需要什么。 此外，我们在分析中使用的树结构本身需要大量内存，因此在其他资源上花费此类资源是一个坏主意。 </li><li> 第三是一个好主意，对于这种方法，您可以找到足够的研究和示例。 但是在CSA中，没有现成的污点。 有一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">检查器</a> ，该<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">检查器</a>后来被添加到源代码中的alpha检查器列表（alpha.security.tai​​nt.TaintPropagation）中，在文件<code>GenericTaintChecker.cpp</code>中进行了描述。 该检查器很好，但是仅适用于C中已知的不安全I / O函数，它仅“标记”变量，这些变量是危险函数的参数或结果。 除了描述的选项外，还需要考虑全局变量，类字段等，以便正确还原“分布”模型。 </li></ul><br><p> 实习的剩余时间花费在阅读<code>GenericTaintChecker.cpp</code>并尝试重新制作以满足您的需求。 到学期末，它并没有成功解决问题，但是它仍然是一项改进任务，已经超出了DSec的培训范围。 同样在开发过程中，很明显，识别危险功能是一项单独的任务，项目中并非总是危险位置来自某些标准功能，因此在检查器中添加了一个标志，以指示将被视为“中毒” /“标记”的功能列表在污染分析中。 <br> 此外，添加了检查以确定该变量是否为位字段。 通过标准的CSA工具，大小由类型确定，如果我们使用位字段，则其大小将具有整个字段的位类型的值，而不是变量声明中指定的位数。 </p><br><h2 id="chto-v-itoge"> 结果如何？ </h2><br><p> 目前，已经实现了一个简单的检查器，该检查器仅可以警告潜在的整数溢出。 改进的污点分析类，仍有很多工作要做。 之后，您需要使用SMT来确定溢出。 为此，Z3 SMT求解器是合适的，它已在5.0.0版中添加到了Clang组件中（根据<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">发行说明</a>判断）。 要使用求解器，必须使用<code>CLANG_ANALYZER_BUILD_Z3=ON</code>选项构建Clang，并且当直接调用CSA插件时，将<code>-Xanalyzer -analyzer-constraints=z3</code>标志。 </p><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GitHub结果存储库</a> </p><br><h2 id="ssylki"> 参考文献： </h2><br><ol><li><p>  Howard M.，Leblanc D.，Viega J.“计算机安全的24个罪过” </p><br></li><li><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">如何在24小时内编写检查程序</a> </p><br></li><li><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Clang静态分析器：Checker开发人员指南</a> </p><br></li><li><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CSA检查器开发手册</a> </p><br></li><li><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Dietz W.等。</a>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">了解C / C ++中的整数溢出</a> </p><br></li></ol></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN473412/">https://habr.com/ru/post/zh-CN473412/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN473394/index.html">你们都在撒谎！ 关于CRM广告</a></li>
+<li><a href="../zh-CN473396/index.html">我们需要另一个bitrix</a></li>
+<li><a href="../zh-CN473400/index.html">使用LPCNet的高质量，轻量级和自适应的文本语音转换技术</a></li>
+<li><a href="../zh-CN473406/index.html">免费马拉松比赛“数据科学与人工智能：教机器为该系列编写脚本”</a></li>
+<li><a href="../zh-CN473408/index.html">调试Ruby中的隐藏内存泄漏</a></li>
+<li><a href="../zh-CN473416/index.html">ZeroNights 2019会议日程</a></li>
+<li><a href="../zh-CN473418/index.html">OSCP-进攻安全</a></li>
+<li><a href="../zh-CN473420/index.html">我们将于11月2日在下诺夫哥罗德开启PHP竞赛的季节</a></li>
+<li><a href="../zh-CN473424/index.html">ARM宣布图形解决方案Mali-G57 Valhall和Mali-D37，神经处理器Ethos-N57和N37</a></li>
+<li><a href="../zh-CN473426/index.html">集成信息系统的End-2-End测试自动化。 第1部分。组织</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

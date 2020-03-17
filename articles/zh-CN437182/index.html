@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>♻️ 📡 💤 Linux内核模块中的系统调用拦截 👩🏻‍⚖️ 🍶 ✍🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="该模块是我2010年硕士论文的一部分。 论文的主题是Linux内核中的Keylogging 。 主要思想是找到一种方法来拦截针对x64 arch Linux内核的系统调用，尤其是对于2.6.34.7-61.fc13.x86_64内核。 
+ 引言 
+
+
+ 关于x32 arch的系统调用拦截有很多不同的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Linux内核模块中的系统调用拦截</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/437182/"><p> 该模块是我2010年硕士论文的一部分。 论文的主题是<em>Linux内核中的Keylogging</em> 。 主要思想是找到一种方法来拦截针对x64 arch Linux内核的系统调用，尤其是对于2.6.34.7-61.fc13.x86_64内核。 </p><a name="habracut"></a><br><h1 id="introduction"> 引言 </h1><br><p> 关于x32 arch的系统调用拦截有很多不同的文章。 作为研究的一部分，我遇到了如何通过Linux内核模块拦截对x86_64 arch的系统调用的问题。 </p><br><p> 我们如何截获系统调用？ </p><br><ol><li> 找出系统调用表地址。 </li><li> 用新的替换原来的系统调用。 </li></ol><br><h2 id="syscall-table-address">  Syscall表地址 </h2><br><p>  IDT（ <em>中断描述</em>能力）限制<em>中断处理程序</em>和<em>中断代码</em> 。 在保护模式下，IDT是存储在内存中的描述符数组。 每个处理器都有一个特殊的<strong>IDTR</strong>寄存器。 寄存器由IDT物理地址和IDT长度组成。 第一个假设是从IDTR寄存器获取IDT地址，然后计算syscall表地址。 但是，这种假设是错误的，因为在这种情况下，我们获得了x32处理程序地址。 </p><br><p>第二个假设更有趣。 在继续之前，我想描述一下MSR（Macodell Specific Register）。  MSR是x86指令集中用于调试，程序执行跟踪，计算机性能监视和切换某些CPU功能的各种控制寄存器中的任何一个。 让我们谈谈<code>MSR_LSTAR</code> - <code>0xc0000082</code> （长模式SYSCALL目标）。 您可以在<code>/usr/include/asm/msr-index.h</code>获得完整列表。 </p><br><p>  <code>MSR_LSTAR</code>存储用于x86-64体系结构的系统调用条目。 您可以获得地址： </p><br><pre> <code class="plaintext hljs">int i, lo, hi; asm volatile("rdmsr" : "=a" (lo), "=d" (hi) : "c" (MSR_LSTAR)); system_call = (void*)(((long)hi&lt;&lt;32) | lo);</code> </pre> <br><p> 让我们走得更远。 我有地址并正在搜索<code>\xff\x14\xc5</code> 。  <code>\xff\x14\xc5</code>是一个魔术数字。 如果查看内核2.6.34.7-61.fc13.x86_64代码，尤其是函数<code>system_call</code> ，则会发现接下来的4个字节是syscall_table地址。 </p><br><p> 我们知道syscall表地址，这意味着我们可以获取syscall处理程序地址并替换/拦截它。 </p><br><p> 源代码： </p><br><pre> <code class="plaintext hljs">unsigned char *ptr; for (ptr=system_call, i=0; i&lt;500; i++) { if (ptr[0] == 0xff &amp;&amp; ptr[1] == 0x14 &amp;&amp; ptr[2] == 0xc5) return (void*)(0xffffffff00000000 | *((unsigned int*)(ptr+3))); ptr++; }</code> </pre> <br><h2 id="system-call-interception"> 系统调用拦截 </h2><br><p> 我遇到了一个问题。 更改系统调用表中的地址时出错。 幸运的是，这很容易做到： </p><br><ul><li> 禁用内存保护。 </li><li> 重写系统调用处理程序地址。 </li><li> 启用内存保护。 </li></ul><br><p> 如果要禁用存储器保护，应该知道：寄存器<code>CR0</code>由标志组成。 这些标志管理处理器行为。 标志WP是<code>Write Protect</code> ，它是<code>CR0</code>的第48位。 </p><br><p> 禁用内存保护： </p><br><pre> <code class="plaintext hljs">asm("pushq %rax"); asm("movq %cr0, %rax"); asm("andq $0xfffffffffffeffff, %rax"); asm("movq %rax, %cr0"); asm("popq %rax");</code> </pre> <br><p> 启用内存保护： </p><br><pre> <code class="plaintext hljs">asm("pushq %rax"); asm("movq %cr0, %rax"); asm("xorq $0x0000000000001000, %rax"); asm("movq %rax, %cr0"); asm("popq %rax");</code> </pre> <br><h1 id="conclusion"> 结论 </h1><br><iframe width="560" height="315" src="https://www.youtube.com/embed/FgPVCQa0qsw" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><p> 一方面，它足以应付系统调用拦截，但另一方面，我不确定自2010年以来没有任何变化。因此，请按原样使用它。 源代码位于<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">github.com/ultral/linux-keylogger</a> 。 </p><br><p> 聚苯乙烯 </p><br><ul><li> 这是我<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文章</a>的翻译。 </li><li> 这是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">交叉路口</a> 。 </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">源代码</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN437182/">https://habr.com/ru/post/zh-CN437182/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN437170/index.html">Facebook建议使用太空激光器进行全球交流</a></li>
+<li><a href="../zh-CN437172/index.html">IBM MQ和JMeter：首次联系</a></li>
+<li><a href="../zh-CN437174/index.html">.NET，TensorFlow和Kaggle的风车-旅程开始</a></li>
+<li><a href="../zh-CN437176/index.html">Kotlin + Flutter UI上的iOS和Android应用程序</a></li>
+<li><a href="../zh-CN437180/index.html">严苛的西伯利亚JVM：关于Excelsior JET的精彩采访</a></li>
+<li><a href="../zh-CN437184/index.html">Nikolay Durov 90％完成了Telegram开放网络平台的开发</a></li>
+<li><a href="../zh-CN437186/index.html">整体到微服务。 基础设施观点</a></li>
+<li><a href="../zh-CN437190/index.html">关于监控</a></li>
+<li><a href="../zh-CN437194/index.html">云检查清单，或客户如何评价我们</a></li>
+<li><a href="../zh-CN437196/index.html">Global Game Jam 2019（公告）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

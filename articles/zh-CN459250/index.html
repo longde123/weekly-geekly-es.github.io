@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📵 🦑 🕋 PostgreSQL中的WAL：2.预记录日志 🕯️ 👨‍⚕️ 🔄</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="上次，我们遇到了共享内存的重要对象之一，即缓冲区缓存的设备。 从RAM中丢失信息的可能性是需要从故障中恢复的主要原因。 今天我们将讨论这些工具。 
+
+ 杂志杂志 
+ las，奇迹不会发生：为了避免RAM中信息丢失，必须将所有必要的内容及时写入磁盘（或其他非易失性设备）。 
+
+ 因此，这就是所做的。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL中的WAL：2.预记录日志</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/459250/">  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">上次，</a>我们遇到了共享内存的重要对象之一，即缓冲区缓存的设备。 从RAM中丢失信息的可能性是需要从故障中恢复的主要原因。 今天我们将讨论这些工具。 <br><br><h1> 杂志杂志 </h1><br>  las，奇迹不会发生：为了避免RAM中信息丢失，必须将所有必要的内容及时写入磁盘（或其他非易失性设备）。 <br><br> 因此，这就是所做的。 除数据更改外，还将保留这些更改的<em>日志</em> 。 当我们更改缓冲区缓存中页面上的某些内容时，我们会在日志中创建有关此更改的记录。 该记录包含足够的最少信息，以便在必要时可以重复进行更改。 <br><br> 为此，日记条目必须<em>在</em>修改后的页面到达磁盘<em>之前</em>必须进入磁盘。 因此，名称为：预写日志。 <br><br> 如果发生故障，则磁盘上的数据处于不一致状态：某些页面写得较早，有些页面写得较晚。 但是，仍然存在可以由故障之前已经完成但其结果未到达磁盘的那些操作可以读取和重新执行的日志。 <br><a name="habracut"></a><br><blockquote> 为什么不强制将数据页本身写入磁盘，为什么要执行双重作业呢？ 事实证明如此有效。 <br> 首先，日志是要写入的顺序数据流。 甚至HDD在顺序记录方面也做得很好。 但是数据本身的记录是随机的，因为页面或多或少地随机分布在磁盘上。 <br> 其次，日记帐分录可以比页面小得多。 <br> 第三，在记录时，您不必担心确保磁盘上的数据在任何时间点都保持一致（此要求极大地延长了使用寿命）。 <br> 第四，正如我们稍后将要看到的，该日志（因为它存在）不仅可以用于恢复，还可以用于备份和复制。 <br></blockquote><br> 您需要记录所有操作，在此期间，如果发生故障，磁盘上可能会出现不一致的风险。 特别是，将记录以下操作： <br><br><ul><li> 更改缓冲区高速缓存中的页面（通常是表和索引页面）-因为更改后的页面不会立即进入磁盘； </li><li> 提交和取消事务-状态更改发生在XACT缓冲区中，并且不会立即到达磁盘； </li><li> 文件操作（创建和删除文件和目录，例如，在创建表时创建文件）-因为这些操作必须与数据更改同时进行。 </li></ul><br> 未记录： <br><br><ul><li> 使用非日志化（未记录）表的操作-它们的名称不言而喻； </li><li> 临时表的操作-没有意义，因为此类表的生存期不超过创建它们的会话的生存期。 </li></ul><br> 在PostgreSQL 10之前，没有记录<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">哈希索引</a> （它们仅用于将哈希函数映射到不同的数据类型），但现在已修复。 <br><br><h1> 逻辑设备 </h1><br><img src="https://habrastorage.org/webt/vx/vj/67/vxvj673dzyqmhumlxby7i8wt5q0.png"><br><br> 从逻辑上讲，日记可以看作是各种长度的记录序列。 每个记录都包含有关特定操作的<em>数据</em> ，并在其后带有标准<em>标头</em> 。 标题除其他外指示： <br><br><ul><li> 记录所属的事务号。 </li><li> 资源管理器-负责记录的系统组件； </li><li> 校验和（CRC）-允许您确定数据损坏； </li><li> 记录长度并链接到上一条记录。 </li></ul><br> 数据本身具有不同的格式和含义。 例如，它们可以表示页面的某些片段，需要以一定的偏移量覆盖页面内容。 指定的资源管理器“了解”如何解释其记录中的数据。 对于表，每种索引类型，事务状态等，都有单独的表管理器。如果命令需要，可以获取它们的完整列表。 <br><br><pre><code class="plaintext hljs">pg_waldump -r list</code> </pre> <br><h1> 物理设备 </h1><br> 在磁盘上，日志作为文件存储在$ PGDATA / pg_wal目录中。 每个文件默认为16 MB。 可以增加大小以避免在一个目录中出现大量文件。 在PostgreSQL 11之前，只能在编译源代码时完成此操作，但是现在您可以在初始化集群时指定大小（ <code>--wal-segsize</code> ）。 <br><br> 日志条目属于当前使用的文件； 当它结束时，开始使用下一个。 <br><br> 在服务器的共享内存中为日志分配了特殊的缓冲区。 日志高速缓存的大小由<em>wal_buffers</em>参数设置（默认值表示自动配置：已分配缓冲区高速缓存的1/32）。 <br><br> 日志高速缓存的排列方式类似于缓冲区高速缓存，但是它主要在环形缓冲区模式下工作：将条目添加到“头”，然后从“尾部”写入磁盘。 <br><br> 记录（“尾部”）和插入（“头”）位置分别显示函数pg_current_wal_lsn和pg_current_wal_insert lsn： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_lsn(), pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_lsn | pg_current_wal_insert_lsn --------------------+--------------------------- 0/331E4E64 | 0/331E4EA0 (1 row)</code> </pre><br> 为了引用特定记录，使用了数据类型pg_lsn（LSN =日志序列号）-这是一个64位数字，表示相对于日志开头的记录前的字节偏移。  LSN作为两个32位数字以十六进制表示形式输出。 <br><br> 您可以找出我们将在哪个文件中找到所需的位置以及与文件开头的偏移量： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> file_name, upper(to_hex(file_offset)) file_offset <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_walfile_name_offset(<span class="hljs-string"><span class="hljs-string">'0/331E4E64'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> file_name | file_offset --------------------------+------------- 000000010000000000000033 | 1E4E64 \ /\ /  0/331E4E64 </code> </pre><br> 文件名由两部分组成。 高8位十六进制数字显示时间分支的编号（在从备份还原时使用），其余部分对应于最高LSN数字（其余的较低LSN数字指示偏移量）。 <br><br> 可以在$ PGDATA / pg_wal /目录中的文件系统上查看日志文件，但是从PostgreSQL 10开始，还可以使用特殊功能来查看日志文件： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_ls_waldir() <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-type"><span class="hljs-type">name</span></span> = <span class="hljs-string"><span class="hljs-string">'000000010000000000000033'</span></span>;</code> </pre><pre> <code class="plaintext hljs"> name | size | modification --------------------------+----------+------------------------ 000000010000000000000033 | 16777216 | 2019-07-08 20:24:13+03 (1 row)</code> </pre><br><h1> 转发写 </h1><br> 让我们看看日志如何发生以及如何提供主动记录。 创建一个表： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> wal(id <span class="hljs-type"><span class="hljs-type">integer</span></span>); =&gt; <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> wal <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> (<span class="hljs-number"><span class="hljs-number">1</span></span>);</code> </pre><br> 我们将看一下表格页面的标题。 为此，我们需要一个已经熟悉的扩展： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXTENSION</span></span> pageinspect;</code> </pre><br> 让我们开始事务并记住日志中的插入位置： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; =&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_insert_lsn --------------------------- 0/331F377C (1 row)</code> </pre><br> 现在让我们做一些操作，例如，更新该行： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> wal <span class="hljs-keyword"><span class="hljs-keyword">set</span></span> id = id + <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre><br> 此更改已记录在日志中，插入位置已更改： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_insert_lsn --------------------------- 0/331F37C4 (1 row)</code> </pre><br> 为了确保修改后的数据页不早于日志条目被推入磁盘，与该页面相关的最后一个日志条目的LSN存储在页眉中： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> lsn <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> page_header(get_raw_page(<span class="hljs-string"><span class="hljs-string">'wal'</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>));</code> </pre><pre> <code class="plaintext hljs"> lsn ------------ 0/331F37C4 (1 row)</code> </pre><br> 请记住，该日志对于整个集群都是通用的，并且新条目始终都在其中。 因此，页面上的LSN可能小于pg_current_wal_insert_lsn函数刚刚返回的值。 但是在我们的系统中什么也没发生，所以数字是相同的。 <br><br> 现在完成交易。 <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span>;</code> </pre><br> 提交记录也进入日志，并且位置再次更改： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_insert_lsn --------------------------- 0/331F37E8 (1 row)</code> </pre><br> 提交在称为XACT的结构中更改了事务的状态（我们<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">已经讨论过</a> ）。 状态存储在文件中，但是它们也使用自己的缓存，该缓存在共享内存中占据128页。 因此，对于XACT页面，必须跟踪最后一个日记条目的LSN。 但是此信息不是存储在页面本身中，而是存储在RAM中。 <br><br> 在某个时候，创建的日记帐分录将被写入磁盘。 在哪种情况下-我们将再谈一次，但是在我们的情况下，这已经发生： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_current_wal_lsn(), pg_current_wal_insert_lsn();</code> </pre><pre> <code class="plaintext hljs"> pg_current_wal_lsn | pg_current_wal_insert_lsn --------------------+--------------------------- 0/331F37E8 | 0/331F37E8 (1 row)</code> </pre><br> 此后，可以将数据和XACT页面推出缓存。 但是，如果需要将它们更早地强制退出，则将对其进行检测，并且将强制首先记录日记帐分录。 <br><br> 知道了两个LSN位置，您可以通过简单地从另一个位置减去一个位置来获得它们之间的日记条目的大小（以字节为单位）。 您只需要将职位转换为pg_lsn类型： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-string"><span class="hljs-string">'0/331F37E8'</span></span>::pg_lsn - <span class="hljs-string"><span class="hljs-string">'0/331F377C'</span></span>::pg_lsn;</code> </pre><pre> <code class="plaintext hljs"> ?column? ---------- 108 (1 row)</code> </pre><br> 在这种情况下，行更新和提交需要日志中的108个字节。 <br><br> 以相同的方式，您可以估计在特定负载下服务器每单位时间生成多少日记条目。 这是安装过程中将需要的重要信息（我们将在下一次讨论）。 <br><br> 现在，我们将使用pg_waldump实用程序来查看创建的日志条目。 <br><br> 该实用程序可以使用LSN范围（如本例中所示），并选择指定事务的记录。 它应该代表postgres OS用户运行，因为她需要访问磁盘上的日志文件。 <br><br><pre> <code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_waldump -p /var/lib/postgresql/11/main/pg_wal -s 0/331F377C -e 0/331F37E8 000000010000000000000033</code> </pre><pre> <code class="plaintext hljs">rmgr: Heap len (rec/tot): 69/ 69, tx: 101085, lsn: 0/331F377C, prev 0/331F3014, desc: HOT_UPDATE off 1 xmax 101085 ; new off 2 xmax 0, blkref #0: rel 1663/16386/33081 blk 0</code> </pre><pre> <code class="plaintext hljs">rmgr: Transaction len (rec/tot): 34/ 34, tx: 101085, lsn: 0/331F37C4, prev 0/331F377C, desc: COMMIT 2019-07-08 20:24:13.945435 MSK</code> </pre><br> 在这里，我们看到两个条目的标题。 <br><br> 第一个是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">HOT_UPDATE</a>操作，与堆资源管理器有关。 文件名和页码显示在blkref字段中，并与更新的表格页面匹配： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_relation_filepath(<span class="hljs-string"><span class="hljs-string">'wal'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> pg_relation_filepath ---------------------- base/16386/33081 (1 row)</code> </pre><br> 第二项是COMMIT，与事务资源管理器有关。 <br><br> 不是最易读的格式，但是如有必要，您可以找出来。 <br><br><h1> 恢复 </h1><br> 当我们启动服务器时，postmaster进程首先启动，然后依次启动启动过程，其任务是确保在发生故障时进行恢复。 <br><br> 为了确定是否需要恢复，启动将查看特殊控制文件$ PGDATA / global / pg_control并查看集群状态。 我们可以使用pg_controldata实用程序自己检查状态： <br><br><pre> <code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_controldata -D /var/lib/postgresql/11/main | grep state</code> </pre><pre> <code class="plaintext hljs">Database cluster state: in production</code> </pre><br> 干净停止的服务器将处于“关闭”状态。 如果服务器不工作，并且状态仍为“生产中”，则意味着DBMS已下降，然后将自动执行恢复。 <br><br> 为了恢复，启动过程将顺序读取日志，并在必要时将条目应用于页面。 您可以通过将磁盘上页面的LSN与日记条目的LSN进行比较来验证需求。 如果页面的LSN较大，则不需要记录。 但是实际上-甚至不可能，因为记录是为严格一致的应用而设计的。 <br><br><blockquote> 也有例外。 某些记录形成为整页图像（FPI，整页图像），很明显，此类图像可以在任何状态下应用于页面-仍会擦除那里的所有内容。 事务状态的另一种更改可以应用于XACT页面的任何版本-因此，在此类页面内无需存储LSN。 <br></blockquote><br> 像在正常工作期间一样，在恢复过程中更改页会在缓冲区缓存中发生-为此邮局局长启动必要的后台进程。 <br><br> 同样，日记帐分录也适用于文件：例如，如果一条记录表明该文件必须存在，但不存在，则创建该文件。 <br><br> 好了，在恢复过程的最后，所有未分类的表都被其<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">初始层中的</a> “虚拟”覆盖。 <br><br> 这是该算法的非常简化的表示。 特别是，我们对于从何处开始阅读日记帐条目一无所知（必须将对话推迟到考虑检查点之前）。 <br><br> 最后的澄清。  “经典”恢复过程包括两个阶段。 在第一个阶段（前滚）中，将对日记帐分录进行滚动，并且服务器重复失败期间丢失的所有工作。 在第二个（回滚）上，故障时未提交的事务将回滚。 但是PostgreSQL不需要第二阶段。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">如前所述</a> ，由于实现了多版本事务的特殊性，因此无需进行物理回滚。 仅在XACT中不设置固定位就足够了。 <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">待续</a> 。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN459250/">https://habr.com/ru/post/zh-CN459250/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN459240/index.html">在IT中诊断为精神分裂症的10年经验，生存技巧</a></li>
+<li><a href="../zh-CN459242/index.html">在T + Conf 2019会议之后</a></li>
+<li><a href="../zh-CN459244/index.html">Notes产品经理：应用商店中游戏页面上的用户行为。 下载游戏需要多长时间</a></li>
+<li><a href="../zh-CN459246/index.html">为什么网站转换减少？ 60个设计和可用性错误的示例</a></li>
+<li><a href="../zh-CN459248/index.html">7月9日至7月14日在莫斯科举行的数字活动</a></li>
+<li><a href="../zh-CN459252/index.html">安全周28：入侵智能家居</a></li>
+<li><a href="../zh-CN459254/index.html">更好的拉链炸弹</a></li>
+<li><a href="../zh-CN459256/index.html">我们如何针对不同平台优化主题医院</a></li>
+<li><a href="../zh-CN459258/index.html">14,000英里未勾</a></li>
+<li><a href="../zh-CN459262/index.html">22岁退休</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

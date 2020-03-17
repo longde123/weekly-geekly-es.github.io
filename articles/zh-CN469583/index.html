@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍖 🐮 👨‍👨‍👦‍👦 OpenVPN和Active Directory（不带用户证书的Kerberos） 🏇🏽 👈 ⛺️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="已经编写了许多有关OpenVPN的指南，包括通过Active Directory进行授权。 他们中的大多数归结为使用LDAP，但我没有找到使用Kerberos的方法，该方法写在完整的文章中。 但是，这里不会发明新的东西，我只是编译了在我之前已经做过的事情，PAM与Kerberos可以很好地工作，并且...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>OpenVPN和Active Directory（不带用户证书的Kerberos）</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/469583/"> 已经编写了许多有关OpenVPN的指南，包括通过Active Directory进行授权。 他们中的大多数归结为使用LDAP，但我没有找到使用Kerberos的方法，该方法写在完整的文章中。 但是，这里不会发明新的东西，我只是编译了在我之前已经做过的事情，PAM与Kerberos可以很好地工作，并且OpenVPN具有本机PAM插件。 我还决定拒绝用户证书和提示，他们只是建议所有用户都颁发一个证书，但这些证书不适合我，因此发现了另一个对所有客户端都有效的解决方案。 <br><br><img src="https://habrastorage.org/webt/p3/4c/z3/p34cz3ohasstjrgwkx2zlamhiu8.png"><br><a name="habracut"></a><br><h3> 关于NSS的一些知识 </h3><br> 就我而言，我将Centos 7与sssd结合使用。 但是，没有什么可以阻止使用winbind的。 最主要的是要在域中拥有汽车和Kerberos票证。 我不会写这是怎么做的，因为 我不会说什么新鲜的东西，网络上有很多不错的手册。 <br><br> 如果以前没有做过，那么有必要更改<code>/etc/nsswitch.conf</code>的设置。 根据所使用的模块，您需要分别输入<abbr title="完全sss">sss</abbr>或winbind而不是module_name。 可以使用<code>man nsswitch.conf</code>读取参数说明。 <br><br> 以下设置应足够： <br><br><pre> <code class="xml hljs">passwd: files module_name shadow: files module_name group: files module_name</code> </pre> <br> 对于sssd，我们不会忘记[sssd]块中的<code>/etc/sssd/sssd.conf</code>等其他信息： <br><br><pre> <code class="xml hljs">services = nss, pam</code> </pre> <br> 至于winbind，我很难说些什么，我还没使用过。 <br><br> 最终目标是从getent获得正确的结果。 检查机器是否可以接收有关域用户和组的信息： <br><br><pre> <code class="bash hljs">&gt; getent passwd kanlas kanlas:*:14123583:1257570:Kanlas Kanlasovich:/home/kanlas@example.com:/bin/bash &gt; getent group VPN vpn:*:13821391:kanlas,igor,marina</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">注意事项</b> <div class="spoiler_text"> 如果您使用sssd并且仅使用全名（即kanlas@example.com）获得用户数据，请在域块中的sssd.conf中添加<code>use_fully_qualified_names = False</code>参数。 <br></div></div><br><h3> 配置PAM </h3><br> 现在，您需要创建自己的PAM模块。 为了不使用系统access.conf，我们将从读取访问组的位置创建一个单独的文件。 我不太擅长PAM模块，因此无法在下面的示例中说明是否需要所有代码行。 通常，我们只对<code>account required pam_listfile.so onerr=fail item=group sense=allow file=/etc/openvpn/auth/access-groups</code>的行<code>account required pam_listfile.so onerr=fail item=group sense=allow file=/etc/openvpn/auth/access-groups</code>感兴趣<code>account required pam_listfile.so onerr=fail item=group sense=allow file=/etc/openvpn/auth/access-groups</code> 。 <br><br> 最简单的选择是采用例如登录模块，并向其中添加所需的行。 完成了 <br><br> 我们得到： <br><br><pre> <code class="xml hljs">#%PAM-1.0 auth [user_unknown=ignore success=ok ignore=ignore default=bad] pam_securetty.so auth substack system-auth auth include postlogin account required pam_listfile.so onerr=fail item=group sense=allow file=/etc/openvpn/auth/access-groups account include system-auth password include system-auth session required pam_selinux.so close session required pam_loginuid.so session optional pam_console.so session required pam_selinux.so open session required pam_namespace.so session optional pam_keyinit.so force revoke session include system-auth session include postlogin -session optional pam_ck_connector.so</code> </pre> <br> 我们将其放在<code>/etc/pam.d</code> ，并自行命名。 <br><br> 在模块中指定的<code>/etc/openvpn/auth/access-groups</code> ，访问组将被写入此处，您可以根据需要指定路径。 您将需要使用域指定组的名称（通用名称）。 就我而言，我在那里写了<i>VPN@example.com</i> 。 <br><br> 还需要向OpenVPN解释它需要使用PAM。 我们在服务器配置中添加了以下几行： <br><br><pre> <code class="xml hljs">plugin /usr/lib64/openvpn/plugins/openvpn-plugin-auth-pam.so __pam username-as-common-name</code> </pre> <br>  <i><b>不同的发行版可能有不同的路径！</b></i>  <i><b>按路径检查文件，或使用查找。</b></i> <br><br> 使用username-as-common-name参数的原因是，否则，在客户端具有auth-user-pass之后， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">证书中指定</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">名称将被发送到服务器。</a> <br><br> 在客户端配置中，添加以下行 <br><br><pre> <code class="xml hljs">auth-user-pass</code> </pre> <br> 在此设置完成后，即可进行测试。 <br><br><h3> 我们删除用户证书 </h3><br> 现在，我们已经通过域获得了授权，并且用户证书已无用，放弃它似乎是一个合理的决定。 但是移动客户端对此有问题，只是不接受这种配置，而台式机虽然可以工作，但却在恶意诅咒。 首先，我们将重新配置服务器，使其不再需要证书。 <br><br><pre> <code class="xml hljs">verify-client-cert none</code> </pre> <br> 接下来，我们添加到客户端配置 <br><br><pre> <code class="xml hljs">setenv CLIENT_CERT 0</code> </pre> <br> 就是这样，现在客户不会对证书发誓。 有趣的是，此选项隐藏在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">iOS的“问答”</a>部分。 我尚未在iOS上进行过测试，但是Android，MacOS（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">测试版客户端</a> ）和Windows都接受了这些设置。 目前只有Android上<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的第三方OpenVPN客户端</a>无法执行此操作（在撰写本文时，他们已经可以对其进行修复）。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN469583/">https://habr.com/ru/post/zh-CN469583/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN469569/index.html">Arend-基于HoTT的依存类型语言（第1部分）</a></li>
+<li><a href="../zh-CN469573/index.html">Linux Piter 2019：等待大型Linux会议的来宾以及为什么不容错过</a></li>
+<li><a href="../zh-CN469575/index.html">如何重新设定睡眠模式：每天早上30天，我的眼睛闪着明亮的绿光</a></li>
+<li><a href="../zh-CN469577/index.html">磁盘取证，内存取证和日志取证。 波动率框架和尸检。 用r0ot-mi解决问题。 第一部分</a></li>
+<li><a href="../zh-CN469581/index.html">Picabu效果分析</a></li>
+<li><a href="../zh-CN469587/index.html">机长证据建议...或正确文字的100,500次</a></li>
+<li><a href="../zh-CN469589/index.html">安全周40：Apple Mobile BootROM漏洞</a></li>
+<li><a href="../zh-CN469591/index.html">棋盘游戏心理学：游戏与气质</a></li>
+<li><a href="../zh-CN469593/index.html">Citrix Cloud数字工作区架构</a></li>
+<li><a href="../zh-CN469599/index.html">在WinForms上汇报开发2D引擎</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

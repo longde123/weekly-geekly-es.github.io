@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌇 💑 🧗 FFmpeg DXVA2硬件解码实践 🌎 🤾🏽 🍚</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="你好 本文是我的FFmpeg文章（继续Visual Studio ）的延续。 在这里，我们开始进行全高清RTSP流的硬件解码。 我会事先说，即使是Intel ATOM Z8350也可以轻松地完成此任务。 
+
+ 目标：硬件解码并在RAM中记录多达4帧，以便通过RTSP h.264 IP摄像机进行后续并...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>FFmpeg DXVA2硬件解码实践</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/461735/"> 你好 本文是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我的FFmpeg文章（</a>继续<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Visual Studio</a> ）的延续<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">。</a> 在这里，我们开始进行全高清RTSP流的硬件解码。 我会事先说，即使是Intel ATOM Z8350也可以轻松地完成此任务。 <br><br>  <b>目标：</b>硬件解码并在RAM中记录多达4帧，以便通过RTSP h.264 IP摄像机进行后续并行处理（四个处理器内核）。 我使用WinAPI函数显示已处理的帧。 结果，我们得到了用于并行模式下RTSP流的计算机处理的高速系统。 接下来，您可以连接<b>计算机视觉</b>算法来处理<b>实时</b>帧。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/wd/bc/j2/wdbcj2te4ze6ezmd1_ap8lhxtv4.png" alt="图片"></div><br><h4> 参赛作品 </h4><br> 为什么需要硬件解码？ 您想使用性能低廉且价格便宜的处理器解码实时视频，或者要尽可能多地卸载处理器，那么该是时候熟悉硬件解码了。 <br><br>  <b>DirectX视频加速</b> （DXVA）是一种API，用于使用硬件加速来加速GPU的视频处理。  DXVA 2.0允许您将更多操作重定向到GPU，包括视频捕获和视频处理操作。 <br><a name="habracut"></a><br> 在写完上一篇文章之后，我被问了很多问题：“为什么使用FFmpeg？” 我将从问题开始。 硬件解码的主要困难是将解码后的帧写入RAM。 对于全高清，这是1920 x 1080 x 3 = 6,220,800字节。 即使考虑到帧是以NV12格式存储的事实，这也是很多1920 x 1080 x 1.5 = 3110400字节。 对于任何处理器而言，每秒覆盖75 MB都是一项艰巨的任务。 为解决此问题，英特尔增加了SSE 4命令，使您无需处理器即可重写数据。 不幸的是，并不是所有的库都实现了这一功能。 我已经测试了以下库： <br><br><ol><li>  ffmpeg </li><li>  VLC </li><li>  Opencv的 </li></ol><br>  <b>VLC-</b>通过硬件解码（非常低的处理器负载）与IP摄像机配合使用，仅用10行代码即可构建原始的RTSP流播放器，但是在RAM中接收解码的帧会占用过多的处理器时间。 <br><br>  <b>OpenCV</b> -RTSP使用FFmpeg来处理流，因此决定在没有中介的情况下工作，即 使用FFmpeg库。 此外，默认情况下安装的FFmpeg是在OpenCV中内置的，无需硬件解码。 <br><br>  <b>FFmpeg-</b>在我看来，效果很好，运行稳定。 唯一的缺点是无法在Windows中使用X86版的WEB相机（X64似乎允许您工作）来实现。 <br><br><h2> 硬件视频解码很容易 </h2><br> 实际上，使用FFmpeg库进行硬件解码并不比软件复杂。 项目设置与软件实施相同，框图保持不变。 <br><br> 您可以显示FFmpeg支持的硬件解码方法的列表。 <br><br><pre><code class="cpp hljs"><span class="hljs-built_in"><span class="hljs-built_in">fprintf</span></span>(<span class="hljs-built_in"><span class="hljs-built_in">stderr</span></span>, <span class="hljs-string"><span class="hljs-string">" %s"</span></span>, av_hwdevice_get_type_name(type));</code> </pre> <br> 我们需要做的第一件事是告诉FFmpeg您要使用哪个硬件解码器解码视频。 就我而言，Windows10 + Intel Atom Z8350仅保留DXVA2： <br><br><pre> <code class="cpp hljs">type = av_hwdevice_find_type_by_name(<span class="hljs-string"><span class="hljs-string">"dxva2"</span></span>);</code> </pre> <br> 您可以选择CUDA，D3D11VA，QSV或VAAPI（仅Linux）作为硬件解码器。 因此，您应该具有此硬件解决方案，并且应该在其支持下构建FFmpeg。 <br><cut></cut><br> 打开视频流： <br><br><pre> <code class="cpp hljs">avformat_open_input(&amp;input_ctx, filename, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>;</code> </pre> <br> 我们获得有关视频流的信息： <br><br><pre> <code class="cpp hljs">av_find_best_stream(input_ctx, AVMEDIA_TYPE_VIDEO, <span class="hljs-number"><span class="hljs-number">-1</span></span>, <span class="hljs-number"><span class="hljs-number">-1</span></span>, &amp;decoder, <span class="hljs-number"><span class="hljs-number">0</span></span>);</code> </pre> <br> 分配内存： <br><br><pre> <code class="cpp hljs">frame = av_frame_alloc(); <span class="hljs-comment"><span class="hljs-comment">//       sw_frame = av_frame_alloc(); //       </span></span></code> </pre> <br> 此函数覆盖RAM中的解码文件： <br><br><pre> <code class="cpp hljs">av_hwframe_transfer_data(sw_frame, frame, <span class="hljs-number"><span class="hljs-number">0</span></span>);</code> </pre> <br><h3> 关于NV12格式的一些知识 </h3><br> 因此，我们在sw_frame结构中获得了一个框架。 接收到的帧以NV12格式存储。 此格式由Microsoft发明。 它允许您以12位存储像素信息。 其中8位是强度，4位描述了颜色（或者，立即为4个相邻的2x2像素描述了颜色）。 此外，sw_frame.data [0]-强度被存储，而sw_frame.data [1]-颜色被存储。 要将NV-12转换为RGB，可以使用以下功能： <br><cut></cut><br><div class="spoiler">  <b class="spoiler_title">从NV12到RGB的C ++转换</b> <div class="spoiler_text"><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">SaveFrame</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">uint8_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> * f1, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">uint8_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> * f2, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> iFrame)</span></span></span><span class="hljs-function"> </span></span>{ FILE *pFile; <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> szFilename[<span class="hljs-number"><span class="hljs-number">32</span></span>]; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> x, i, j; <span class="hljs-comment"><span class="hljs-comment">// char buff[1920 * 1080 * 3]; uint8_t *buff = new uint8_t(1920*3*2); int u=0, v=0, y=0; // Open file sprintf(szFilename, "frame%d.ppm", iFrame); pFile = fopen(szFilename, "wb"); if (pFile == NULL) return; //    fprintf(pFile, "P6\n%d %d\n255\n", 1920, 1080); for (j = 0; j &lt; 1080 / 2; j++) { for (i = 0; i &lt; 1920; i +=2) { // 1  rgb y = *(f1 + j * 1920 * 2 + i); v = *(f2 + j * 1920 + i) - 128; u = *(f2 + j * 1920 + i + 1) - 128; x = round(y + 1.370705 * v); if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; // if (j &gt; 34) printf("%i, ",(j * 1920 * 2 + i) * 3); buff[i * 3 + 2] = x; x = round(y - 0.698001 * v - 0.337633 * u); if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[i * 3 + 1] = x; x = round(y + 1.732446 * u); if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[i * 3] = x; // 2  rgb y = *(f1 + j * 1920 * 2 + i + 1); x = y + 1.370705 * v; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[i * 3 + 5] = x; x = y - 0.698001 * v - 0.337633 * u; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[i * 3 + 4] = x; x = y + 1.732446 * u; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[i * 3 + 3] = x; // 3  rgb y = *(f1 + j * 1920 * 2 + 1920 + i); x = y + 1.370705 * v; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[(1920 + i) * 3 + 2] = x; x = y - 0.698001 * v - 0.337633 * u; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[(1920 + i) * 3 + 1] = x; x = y + 1.732446 * u; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[(1920 + i) * 3 + 0] = x; // 4  rgb y = *(f1 + j * 1920 * 2 + 1920 + i + 1); x = y + 1.370705 * v; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[(1920 + i) * 3 + 5] = x; x = y - 0.698001 * v - 0.337633 * u; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[(1920 + i) * 3 + 4] = x; x = y + 1.732446 * u; if (x &lt; 0) x = 0; if (x &gt; 255) x = 255; buff[(1920 + i) * 3 + 3] = x; // printf("%i, ", i); } // for i fwrite(buff, 1, 1920 * 3 * 2, pFile); printf("\n %i\n", j); } // for j // printf("Save4\n"); // Write pixel data // fwrite(buff, 1, 1920*1080*3, pFile); // Close file printf("close\n"); fclose(pFile); printf("exit\n"); delete buff; // return; }</span></span></code> </pre><br></div></div><br> 尽管使用NV12可以使您加快诸如模糊，Retinex和获取灰度图像的过程（仅通过丢弃颜色）即可。 在我的任务中，我不会将NV12格式转换为RGB，因为这会花费额外的时间。 <br><br> 因此，我们学习了如何在硬件中解码视频文件并将其显示在窗口中。 我们遇到了NV12格式，以及如何将其转换为熟悉的RGB。 <br><br><h3>  DLL硬件解码 </h3><br>  FFmpeg在40毫秒后发出帧（每秒25帧）。 通常，处理全高清帧会花费更长的时间。 这需要多线程以最大化所有4个处理器内核的负载。 实际上，我只启动6个线程，不再删除它们，这大大简化了工作并提高了程序的可靠性。 工作方案如图。  1个 <br><br><img src="https://habrastorage.org/webt/zy/pd/27/zypd27dsdmasmsc6g2yeyy3u8iu.png" alt="图片"><br>  <i>图1使用FFmpeg构建多线程程序的方案</i> <br><br> 我将解码器写为<b>* .dll</b> （FFmpegD.DLL），以便包含在我的项目中。 这使您可以减少项目的代码，从而增加对代码的理解，并将其包括在任何编程语言中，直至汇编语言（已验证:)）。 使用它，我们将从IP摄像机编写RTSP流播放器。 <br><br> 要开始使用DLL，您需要将指针传递给int [13]数组，新帧到达事件的HANDLE，开始处理来自相机的新数据包的HANDLE以及相机地址的char数组。 <br><br> 表1给出了数组结构。 <br><br><img src="https://habrastorage.org/webt/ds/g7/mq/dsg7mqh4ioarsp5mi9uio98k-yi.png" alt="图片"><br><br> 呼叫之前，必须重设帧号1-4。 <br><br>  DLL将采取所有必要的步骤来初始化FFmpeg，并将记录指针和帧号。 之后，将事件设置为“新帧到达”。 只需要处理传入的帧并写入0而不是帧号（这意味着该帧已被处理并且不再使用）。 <br><br> 在下面，您将找到带有源代码的示例播放器。 该示例是ShowDib3 Charles Petzold。 <br><br>  → <a href="">随项目存档</a> <br>  → <a href="">FFmpegD.dll存档</a> <br><br>  <b>结果：</b>即使在Intel Atom Z8350上，FFmpeg硬件运动检测器也可通过连接的运动检测器实时解码h264 Full HD，处理器负载高达20％。 <br><br><iframe width="560" height="315" src="https://www.youtube.com/embed/2I1hL9g8LqY" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>  <i>英特尔ATOM Z8350上的运动检测器操作示例。</i>  <i>前30秒是背景的计算。</i>  <i>此后，运动检测器通过减去背景的方法工作。</i> <br><br>  <b>PS</b>您还可以解码视频文件（压缩的h.264）！ <br><br> 参考文献： <br><br><ol><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">有关FFmpeg的其他有用信息</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">有关使用FFmpeg提供的各种库的信息</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">有关格式和转换为RGB的信息</a> </li></ol></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN461735/">https://habr.com/ru/post/zh-CN461735/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN461725/index.html">DataGrip 2019.2：连接管理，数据搜索，导航过滤</a></li>
+<li><a href="../zh-CN461727/index.html">思科小型企业解决方案：好的网络并不一定要付出高昂的代价</a></li>
+<li><a href="../zh-CN461729/index.html">使用越狱来提取数据：风险和后果</a></li>
+<li><a href="../zh-CN461731/index.html">DPKI：通过区块链解决集中式PKI的缺点</a></li>
+<li><a href="../zh-CN461733/index.html">学习英语：9种美式习语</a></li>
+<li><a href="../zh-CN461737/index.html">我们使用JavaScript + VS代码收集现代TDD的环境</a></li>
+<li><a href="../zh-CN461739/index.html">后端联合4：奥克罗什卡。 突发事件</a></li>
+<li><a href="../zh-CN461741/index.html">R中类别数据的层次聚类</a></li>
+<li><a href="../zh-CN461743/index.html">安全周31：VLC漏洞和电话损坏</a></li>
+<li><a href="../zh-CN461745/index.html">DeviceLock DLP：俄罗斯黑市突破个人数据的价格（以及对Tinkoff Bank回答的回应）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

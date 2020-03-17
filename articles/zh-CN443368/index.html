@@ -1,0 +1,204 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👏🏽 💪🏿 ♌️ 我们正在准备在Postgres中进行全文搜索。 第二部分 🤬 👨🏾‍🏫 🥙</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在上一篇文章中，我们使用标准工具优化了PostgreSQL中的搜索。 在本文中，我们将继续使用RUM索引进行优化，并分析其与GIN相比的优缺点。 
+ 引言 
+
+
+ RUM是Postgres的扩展，Postgres是全文搜索的新索引。 它允许您返回通过索引时按相关性排序的结果。 我将不关注其安装-它在...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>我们正在准备在Postgres中进行全文搜索。 第二部分</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/443368/"><p> 在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">上一篇文章中，</a>我们使用标准工具优化了PostgreSQL中的搜索。 在本文中，我们将继续使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">RUM索引</a>进行优化<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">，</a>并分析其与GIN相比的优缺点。 </p><a name="habracut"></a><br><h2 id="vvedenie"> 引言 </h2><br><p>  RUM是Postgres的扩展，Postgres是全文搜索的新索引。 它允许您返回通过索引时按相关性排序的结果。 我将不关注其安装-它在资源库的<a href="">README</a>中进行了描述。 </p><br><h2 id="polzuemsya-indeksom"> 我们使用索引 </h2><br><p> 创建的索引类似于GIN索引，但是带有一些参数。 完整的参数列表可以在文档中找到。 </p><br><pre><code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_rum_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> rum ("text" rum_tsvector_ops);</code> </pre> <br><p> 搜索查询的RUM： </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, "text" &lt;=&gt; plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">要求GIN</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> </div></div><br><p> 与GIN的区别在于，不是通过ts_rank函数获得相关性，而是使用<code>&lt;=&gt;</code> ： <code>"text" &lt;=&gt; plainto_tsquery('')</code>运算符进行<code>"text" &lt;=&gt; plainto_tsquery('')</code> 。 这样的查询返回搜索向量和搜索查询之间的某个<em>距离</em> 。 它越小，查询与向量的匹配越好。 </p><br><h2 id="sravnenie-s-gin"> 与GIN的比较 </h2><br><p> 在这里，我们将在约500,000个文档的基础上进行测试比较，以发现搜索结果的差异。 </p><br><h3 id="skorost-vypolneniya-zaprosov"> 要求速度 </h3><br><p> 让我们看看在此基础上会产生什么样的GIN解释： </p><br><pre> <code class="plaintext hljs">Gather Merge (actual time=563.840..611.844 rows=119553 loops=1) Workers Planned: 2 Workers Launched: 2 -&gt; Sort (actual time=553.427..557.857 rows=39851 loops=3) Sort Key: (ts_rank(text, plainto_tsquery(''::text))) Sort Method: external sort Disk: 1248kB -&gt; Parallel Bitmap Heap Scan on documents_documentvector (actual time=13.402..538.879 rows=39851 loops=3) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=5616 -&gt; Bitmap Index Scan on idx_gin_document (actual time=12.144..12.144 rows=119553 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 4.573 ms Execution time: 617.534 ms</code> </pre> <br><p> 和朗姆酒？ </p><br><pre> <code class="plaintext hljs">Sort (actual time=1668.573..1676.168 rows=119553 loops=1) Sort Key: ((text &lt;=&gt; plainto_tsquery(''::text))) Sort Method: external merge Disk: 3520kB -&gt; Bitmap Heap Scan on documents_documentvector (actual time=16.706..1605.382 rows=119553 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=15599 -&gt; Bitmap Index Scan on idx_rum_document (actual time=14.548..14.548 rows=119553 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.650 ms Execution time: 1679.315 ms</code> </pre> <br><p> 这是什么 您会问，这种自负的RUM的运行速度是否比GIN慢三倍？ 索引内臭名昭著的排序在哪里？ </p><br><p> 冷静：让我们尝试为请求添加<code>LIMIT 1000</code> 。 </p><br><div class="spoiler">  <b class="spoiler_title">朗姆酒说明</b> <div class="spoiler_text"><pre> 限制（实际时间= 115.568..137.313行= 1000循环= 1）
+    -&gt;使用document_documentvector上的idx_rum_document进行索引扫描（实际时间= 115.567..137.239行= 1000循环= 1）
+         索引条件：（文本@@ plainto_tsquery（'query'::文本））
+         排序依据：（文本&lt;=&gt; plainto_tsquery（'query'::文本））
+ 计划时间：0.481毫秒
+ 执行时间：137.678毫秒 </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">杜松子酒的解释</b> <div class="spoiler_text"><pre> 限制（实际时间= 579.905..585.650行= 1000循环= 1）
+    -&gt;合并合并（实际时间= 579.904..585.604行= 1000循环= 1）
+         计划的工人人数：2
+         工人启动：2
+          -&gt;排序（实际时间= 574.061..574.171行= 992循环= 3）
+               排序键：（ts_rank（文本，plainto_tsquery（'query'::文本）））DESC
+               排序方法：外部合并磁盘：1224kB
+                -&gt;对documents_documentvector进行并行位图堆扫描（实际时间= 8.920..555.571行= 39851循环= 3）
+                     重新检查条件：（文本@@ plainto_tsquery（'query'::文本））
+                     堆块：精确= 5422
+                      -&gt;在idx_gin_document上进行位图索引扫描（实际时间= 8.945..8.945行= 119553循环= 1）
+                           索引条件：（文本@@ plainto_tsquery（'query'::文本））
+ 计划时间：0.223毫秒
+ 执行时间：585.948毫秒 </pre></div></div><br><p>  〜150毫秒和〜600毫秒！ 已经不赞成GIN了吧？ 排序已移至索引内部！ </p><br><p> 如果您要寻找<code>LIMIT 100</code> ？ </p><br><div class="spoiler">  <b class="spoiler_title">朗姆酒说明</b> <div class="spoiler_text"><pre> 限制（实际时间= 105.863..108.530行= 100个循环= 1）
+    -&gt;使用document_documentvector上的idx_rum_document进行索引扫描（实际时间= 105.862..108.517行= 100循环= 1）
+         索引条件：（文本@@ plainto_tsquery（'query'::文本））
+         排序依据：（文本&lt;=&gt; plainto_tsquery（'query'::文本））
+ 计划时间：0.199毫秒
+ 执行时间：108.958毫秒 </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">杜松子酒的解释</b> <div class="spoiler_text"><pre> 限制（实际时间= 582.924..588.351行= 100循环= 1）
+    -&gt;合并合并（实际时间= 582.923..588.344行= 100循环= 1）
+         计划的工人人数：2
+         工人启动：2
+          -&gt;排序（实际时间= 573.809..573.889行= 806循环= 3）
+               排序键：（ts_rank（文本，plainto_tsquery（'query'::文本）））DESC
+               排序方法：外部合并磁盘：1224kB
+                -&gt;对documents_documentvector进行并行位图堆扫描（实际时间= 18.038..552.827行= 39851循环= 3）
+                     重新检查条件：（文本@@ plainto_tsquery（'query'::文本））
+                     堆块：精确= 5275
+                      -&gt;在idx_gin_document上进行位图索引扫描（实际时间= 16.541..16.541行= 119553循环= 1）
+                           索引条件：（文本@@ plainto_tsquery（'query'::文本））
+ 计划时间：0.487毫秒
+ 执行时间：588.583 ms </pre></div></div><br><p> 差异更加明显。 </p><br><p> 问题是，GIN到底与您获得多少行无关紧要-它必须遍历请求成功的所有行，并对它们进行排名。  RUM仅针对我们真正需要的行执行此操作。 如果我们需要很多线路，则GIN胜出。 它的<code>ts_rank</code>比<code>&lt;=&gt;</code>运算符<code>ts_rank</code>有效地执行计算。 但是在小的查询中，RUM的优势是不可否认的。 </p><br><p> 通常，用户不需要一次从数据库上载所有5万个文档。 他在第一页，第二页，第三页等上仅需要10条帖子。 正是在这种情况下，该索引才被锐化，并且可以在很大程度上提高搜索性能。 </p><br><h3 id="terpimost-k-join-am"> 加入公差 </h3><br><p> 如果搜索要求您加入另一个或多个表怎么办？ 例如，要在结果中显示文档的类型，它的所有者？ 还是像我这样，按相关实体的名称过滤？ </p><br><p> 比较： </p><br><div class="spoiler">  <b class="spoiler_title">要求两次加入以获取GIN</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank, case_number <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">RIGHT JOIN</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector.document_id = documents_document.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> documents_case <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.case_id = documents_case.id <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">10</span></span>;</code> </pre> <br><p> 结果： </p><br><pre>限制（实际时间= 1637.902..1643.483行= 10个循环= 1）
+    -&gt;合并（实际时间= 1637.901..1643.479行= 10个循环= 1）
+         计划的工人人数：2
+         工人启动：2
+          -&gt;排序（实际时间= 1070.614..1070.687行= 652循环= 3）
+               排序键：（ts_rank（documents_documentvector.text，plainto_tsquery（'query':: text）））DESC
+               排序方法：外部合并磁盘：2968kB
+                -&gt;哈希左联接（实际时间= 323.386..1049.092行= 39851循环= 3）
+                     哈希值：（documents_document.case_id = documents_case.id）
+                      -&gt;哈希联接（实际时间= 239.312..324.797行= 39851循环= 3）
+                           哈希值：（documents_documentvector.document_id = documents_document.id）
+                            -&gt;对documents_documentvector进行并行位图堆扫描（实际时间= 11.022..37.073行= 39851循环= 3）
+                                 重新检查条件：（文本@@ plainto_tsquery（'query'::文本））
+                                 堆块：精确= 9362
+                                  -&gt;在idx_gin_document上进行位图索引扫描（实际时间= 12.094..12.094行= 119553循环= 1）
+                                       索引条件：（文本@@ plainto_tsquery（'query'::文本））
+                            -&gt;哈希（实际时间= 227.856..227.856行= 472089循环= 3）
+                                 存储桶：65536批次：16内存使用量：2264kB
+                                  -&gt;对documents_document进行Seq扫描（实际时间= 0.009..147.104行= 472089循环= 3）
+                      -&gt;哈希（实际时间= 83.338..83.338行= 273695循环= 3）
+                           储存桶：65536批次：8记忆体使用量：2602kB
+                            -&gt;对documents_case进行Seq扫描（实际时间= 0.009..39.082行= 273695循环= 3）
+计划时间：0.857毫秒
+执行时间：1644.028 ms
+</pre></div></div><br><p> 在三个以上的联接中，请求时间达到2-3秒，并且随着联接数的增加而增加。 </p><br><p> 但是RUM呢？ 让请求立即加入五个连接。 </p><br><div class="spoiler">  <b class="spoiler_title">五人加入RUM</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, "text" &lt;=&gt; plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank, case_number, classifier_procedure.title, classifier_division.title, classifier_category.title <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">RIGHT JOIN</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector.document_id = documents_document.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> documents_case <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.case_id = documents_case.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> classifier_procedure <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_case.procedure_id = classifier_procedure.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> classifier_division <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_case.division_id = classifier_division.id <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> classifier_category <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.category_id = classifier_category.id <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> documents_document.is_active <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TRUE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">10</span></span>;</code> </pre> <br><p> 结果： </p><br><pre> 限制（实际时间= 70.524..72.292行= 10个循环= 1）
+   -&gt;嵌套循环左联接（实际时间= 70.521..72.279行= 10个循环= 1）
+         -&gt;嵌套循环左联接（实际时间= 70.104..70.406行= 10个循环= 1）
+               -&gt;嵌套循环左联接（实际时间= 70.089..70.351行= 10个循环= 1）
+                     -&gt;嵌套循环左联接（实际时间= 70.073..70.302行= 10个循环= 1）
+                           -&gt;嵌套循环（实际时间= 70.052..70.201行= 10个循环= 1）
+                                 -&gt;使用document_documentvector上的document_vector_rum_index进行索引扫描（实际时间= 70.001..70.035行= 10个循环= 1）
+                                      索引条件：（文本@@ plainto_tsquery（'query'::文本））
+                                      排序依据：（文本&lt;=&gt; plainto_tsquery（'query'::文本））
+                                 -&gt;使用documents_document上的documents_document_pkey进行索引扫描（实际时间= 0.013..0.013行= 1循环= 10）
+                                      索引条件：（id = documents_documentvector.document_id）
+                                      筛选器：（is_active IS TRUE）
+                           -&gt;使用documents_case上的documents_case_pkey进行索引扫描（实际时间= 0.009..0.009行= 1循环= 10）
+                                索引条件：（documents_document.case_id = id）
+                     -&gt;使用classifier_procedure上的classifier_procedure_pkey进行索引扫描（实际时间= 0.003..0.003行= 1循环= 10）
+                          索引条件：（documents_case.procedure_id = id）
+               -&gt;使用classifier_division上的classifier_division_pkey进行索引扫描（实际时间= 0.004..0.004行= 1循环= 10）
+                    索引条件：（documents_case.division_id = id）
+         -&gt;使用classifier_category上的classifier_category_pkey进行索引扫描（实际时间= 0.003..0.003行= 1循环= 10）
+              索引条件：（documents_document.category_id = id）
+计划时间：2.861毫秒
+执行时间：72.865毫秒
+</pre></div></div><br><p> 如果您在搜索时离不开加入，那么RUM很适合您。 </p><br><h3 id="mesto-na-diske"> 磁碟空间 </h3><br><p> 在大约50万个文档和3.6 GB索引的测试基础上，它们占用的容量<em>非常</em>不同。 </p><br><pre>  idx_rum_document |  1950兆字节
+  idx_gin_document |  418兆字节
+</pre><br><p> 是的，驱动器很便宜。 但是不能取2 GB而不是400 MB。 索引的基础大小只有一半。 在这里，GIN无条件获胜。 </p><br><h2 id="vyvody"> 结论 </h2><br><p> 如果满足以下条件，则需要朗姆酒： </p><br><ul><li> 您有很多文档，但是您逐页给出搜索结果 </li><li> 您需要对搜索结果进行复杂的过滤 </li><li> 你不介意磁盘空间 </li></ul><br><p> 如果满足以下条件，您将对GIN感到完全满意： </p><br><ul><li> 你的基数很小 </li><li> 您的基础庞大，但是您需要立即产生结果，就是这样 </li><li> 您不需要使用join进行过滤 </li><li> 您是否对磁盘上的最小索引大小感兴趣？ </li></ul><br><p> 我希望本文能删除很多WTF ?!在Postgres中工作和设置搜索时会发生这种情况。 我很高兴听到那些知道如何更好地配置一切的人的建议！） </p><br><p> 在接下来的部分中，我计划在项目中进一步介绍RUM：有关在Django + PostgreSQL捆绑包中使用其他RUM选项的信息。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN443368/">https://habr.com/ru/post/zh-CN443368/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN443352/index.html">IT业务分析师做什么</a></li>
+<li><a href="../zh-CN443356/index.html">技术见解：LED灯丝灯是否很好？</a></li>
+<li><a href="../zh-CN443358/index.html">F5收购NGINX</a></li>
+<li><a href="../zh-CN443360/index.html">从内部看。 EPFL研究生院。 第三部分：从签收到保护</a></li>
+<li><a href="../zh-CN443364/index.html">一家媒体控股公司如何可以每年启动12家成功的创业公司</a></li>
+<li><a href="../zh-CN443370/index.html">将Google reCAPTCHA连接到Vue并验证服务器上的响应</a></li>
+<li><a href="../zh-CN443372/index.html">在CodeFest上的后端。 胆量订购了吗？</a></li>
+<li><a href="../zh-CN443376/index.html">设法找到了数十个Box.com企业存储，这些存储公开了来自Apple，康宝莱等公司的数据。</a></li>
+<li><a href="../zh-CN443378/index.html">我们以fasthttp为例编写高性能的HTTP客户端。 亚历山大·瓦利亚金（VertaMedia）</a></li>
+<li><a href="../zh-CN443380/index.html">UDB。 这是什么 第6部分。状态和控制模块</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏻‍🌾 💍 👨🏿‍🎤 爬Elbrus-侦察战。 技术部分2。中断，异常，系统计时器 🧜🏻 💂 🔒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我们通过将Embox移植到Elbrus来继续探索。 
+
+ 本文是有关Elbrus体系结构的技术文章的第二部分。 第一部分处理堆栈，寄存器等。 在阅读本部分之前，建议您先学习第一部分，因为它谈论了Elbrus体系结构的基本知识。 本节将重点介绍计时器，中断和异常。 再次，这不是官方文档。 为此，您应该...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>爬Elbrus-侦察战。 技术部分2。中断，异常，系统计时器</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/embox/blog/447744/"><img src="https://habrastorage.org/webt/ic/4z/5o/ic4z5olelesc04boln85goculk4.png" align="right" width="320"> 我们通过将<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Embox</a>移植到<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Elbrus</a>来继续探索。 <br><br> 本文是有关Elbrus体系结构的技术文章的第二部分。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">第一部分</a>处理堆栈，寄存器等。 在阅读本部分之前，建议您先学习第一部分，因为它谈论了Elbrus体系结构的基本知识。 本节将重点介绍计时器，中断和异常。 再次，这不是官方文档。 为此，您应该在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ICST</a>与Elbrus的开发人员联系。 <a name="habracut"></a><br> 在学习Elbrus的过程中，我们希望快速启动计时器，因为如您所知，抢先式多任务处理如果没有它就无法工作。 要做到这一点，似乎足以实现中断控制器和计时器本身，但是我们遇到了<s>意料之外的</s>预期困难，如果没有它们，我们将去哪里。 他们开始寻找调试功能，并发现开发人员通过引入几个允许您引发各种特殊情况的命令来解决此问题。 例如，您可以通过寄存器PSR（处理器状态寄存器）和UPSR（用户处理器状态寄存器）生成特殊类型的异常。 对于PSR，exc_last_wish位是从过程返回时的exc_last_wish异常标志；对于UPSR，exc_d_interrupt是VFDI操作生成的延迟中断标志（检查延迟中断标志）。 <br><br> 代码如下： <br><br><pre><code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> UPSR_DI (1 &lt;&lt; 3) </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/*   .h  */</span></span></span><span class="hljs-meta"> rrs %upsr, %r1 ors %r1, UPSR_DI, %r1 </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* upsr |= UPSR_DI; */</span></span></span><span class="hljs-meta"> rws %r1, %upsr vfdi </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/*      */</span></span></span></span></code> </pre> <br> 推出了。 但是什么也没发生，系统挂在某个地方，什么也没有输出到控制台。 实际上，当我们尝试从计时器启动中断时看到了这一点，但是随后有很多组件，在这里很明显，有一些事情中断了我们程序的顺序执行，并且控制权被转移到了异常表中（就Elbrus架构而言，不谈论该表是更正确的选择）中断和例外表）。 我们假设处理器仍然抛出了异常，但是它在控制权转移方面存在一些“垃圾”。 事实证明，他将控制权转移到我们放置Embox图像的位置，这意味着存在一个入口点-入口功能。 <br><br> 为了进行验证，我们执行了以下操作。 在条目（）中启动条目计数器。 最初，所有CPU从关闭的中断开始，进入条目（），此后，我们仅使一个内核处于活动状态，其余所有内核进入无限循环。 在计数器等于CPU数量之后，我们认为所有后续条目都是例外。 我提醒您，在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我们关于Elbrus的第一篇文章中</a>已经描述过 <br><br><pre> <code class="cpp hljs"> cpuid = __e2k_atomic32_add(<span class="hljs-number"><span class="hljs-number">1</span></span>, &amp;last_cpuid); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (cpuid &gt; <span class="hljs-number"><span class="hljs-number">1</span></span>) { <span class="hljs-comment"><span class="hljs-comment">/* XXX currently we support only single core */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">while</span></span>(<span class="hljs-number"><span class="hljs-number">1</span></span>); } <span class="hljs-comment"><span class="hljs-comment">/* copy of trap table */</span></span> <span class="hljs-built_in"><span class="hljs-built_in">memcpy</span></span>((<span class="hljs-keyword"><span class="hljs-keyword">void</span></span>*)<span class="hljs-number"><span class="hljs-number">0</span></span>, &amp;_t_entry, <span class="hljs-number"><span class="hljs-number">0x1800</span></span>); kernel_start();</code> </pre> <br> 这样做了 <br><br><pre> <code class="cpp hljs"> <span class="hljs-comment"><span class="hljs-comment">/* Since we enable exceptions only when all CPUs except the main one * reached the idle state (cpu_idle), we can rely that order and can * guarantee exceptions happen strictly after all CPUS entries. */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (entries_count &gt;= CPU_COUNT) { <span class="hljs-comment"><span class="hljs-comment">/* Entering here because of expection or interrupt */</span></span> e2k_trap_handler(regs); ... } <span class="hljs-comment"><span class="hljs-comment">/* It wasn't exception, so we decide this usual program execution, * that is, Embox started on CPU0 or CPU1 */</span></span> e2k_wait_all(); entries_count = __e2k_atomic32_add(<span class="hljs-number"><span class="hljs-number">1</span></span>, &amp;entries_count); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (entries_count &gt; <span class="hljs-number"><span class="hljs-number">1</span></span>) { <span class="hljs-comment"><span class="hljs-comment">/* XXX currently we support only single core */</span></span> cpu_idle(); } e2k_kernel_start(); }</code> </pre> <br> 最后，我们看到了进入中断的反应（仅在printf的帮助下，我们打印了一行）。 <br><br> 这里值得解释的是，最初在第一个版本中，我们希望复制异常表，但是首先，事实证明它在我们的地址中，其次，我们无法进行正确的复制。 我必须重写链接程序脚本，系统的入口点和中断处理程序，也就是说，稍后需要汇编程序部分。 <br><br> 这就是脚本链接器的修改部分的外观： <br><br><pre> <code class="cpp hljs">.text : { _start = .; _t_entry = .; <span class="hljs-comment"><span class="hljs-comment">/* Interrupt handler */</span></span> *(.ttable_entry0) . = _t_entry + <span class="hljs-number"><span class="hljs-number">0x800</span></span>; <span class="hljs-comment"><span class="hljs-comment">/* Syscall handler */</span></span> *(.ttable_entry1) . = _t_entry + <span class="hljs-number"><span class="hljs-number">0x1000</span></span>; <span class="hljs-comment"><span class="hljs-comment">/* longjmp handler */</span></span> *(.ttable_entry2) . = _t_entry + <span class="hljs-number"><span class="hljs-number">0x1800</span></span>; _t_entry_end = .; *(.e2k_entry) *(.cpu_idle) <span class="hljs-comment"><span class="hljs-comment">/* text */</span></span> }</code> </pre><br> 也就是说，我们删除了例外表的入口部分。 对于那些未使用的CPU，cpu_idle部分也位于此处。 <br><br> 这是我们的活动内核的输入函数，运行Embox的输入函数是： <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">e2k_kernel_start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">extern</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">kernel_start</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span>; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> psr; <span class="hljs-comment"><span class="hljs-comment">/*    CPU “” */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (idled_cpus_count &lt; CPU_COUNT - <span class="hljs-number"><span class="hljs-number">1</span></span>) ; ... <span class="hljs-comment"><span class="hljs-comment">/*     ,     */</span></span> e2k_upsr_write(e2k_upsr_read() &amp; ~UPSR_FE); kernel_start(); <span class="hljs-comment"><span class="hljs-comment">/*   Embox */</span></span> }</code> </pre> <br> 好吧，根据VFDI指令，抛出了一个异常。 现在，您需要获取他的电话号码，以确保这是正确的例外。 为此，Elbrus具有TIR中断信息寄存器（陷阱信息寄存器）。 它们包含有关最后几个命令（即跟踪的最后部分）的信息。 跟踪在程序执行期间收集，并在进入中断时“冻结”。  TIR包括低（64位）和高（64位）部分。 低位字包含异常标志，高位字包含指向导致异常的指令的指针和当前的TIR号。 因此，在我们的情况下，exc_d_interrupt是第4位。 <br><br> 注意对于TIR的深度（数量），我们仍然存在一些误解。 该文档提供： <br><blockquote>  “确定TIR存储器的深度，即陷阱信息寄存器的数量 <br>  TIR_NUM宏等于所需的处理器流水线级数 <br> 发布所有可能的特殊情况。  TIR_NUM = 19;” </blockquote> 在实践中，我们看到depth = 1，因此我们仅使用TIR0寄存器。 <br><br>  MCST的专家向我们解释说，一切都正确，只有“ TIR0”用于“准确的”中断，但是对于其他情况，可能还有其他问题。 但是由于虽然我们只在谈论定时器中断，所以这不会打扰我们。 <br><br> 好的，现在让我们看一下正确进入/退出异常处理程序所需的条件。 实际上，有必要在输入中保存并在输出中恢复以下5个寄存器。 三个控制传输准备寄存器是ctpr [1,2,3]，两个循环控制寄存器是ILCR（循环计数器的初始值寄存器）和LSR（循环状态寄存器）。 <br><br><pre> <code class="cpp hljs">.type ttable_entry0,@function ttable_entry0: setwd wsz = <span class="hljs-number"><span class="hljs-number">0x10</span></span>, nfx = <span class="hljs-number"><span class="hljs-number">1</span></span>; rrd %ctpr1, %dr1 rrd %ctpr2, %dr2 rrd %ctpr3, %dr3 rrd %ilcr, %dr4 rrd %lsr, %dr5 <span class="hljs-comment"><span class="hljs-comment">/* sizeof pt_regs */</span></span> getsp -(<span class="hljs-number"><span class="hljs-number">5</span></span> * <span class="hljs-number"><span class="hljs-number">8</span></span>), %dr0 <span class="hljs-built_in"><span class="hljs-built_in">std</span></span> %dr1, [%dr0 + PT_CTRP1] <span class="hljs-comment"><span class="hljs-comment">/* regs-&gt;ctpr1 = ctpr1 */</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span> %dr2, [%dr0 + PT_CTRP2] <span class="hljs-comment"><span class="hljs-comment">/* regs-&gt;ctpr2 = ctpr2 */</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span> %dr3, [%dr0 + PT_CTRP3] <span class="hljs-comment"><span class="hljs-comment">/* regs-&gt;ctpr3 = ctpr3 */</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span> %dr4, [%dr0 + PT_ILCR] <span class="hljs-comment"><span class="hljs-comment">/* regs-&gt;ilcr = ilcr */</span></span> <span class="hljs-built_in"><span class="hljs-built_in">std</span></span> %dr5, [%dr0 + PT_LSR] <span class="hljs-comment"><span class="hljs-comment">/* regs-&gt;lsr = lsr */</span></span> disp %ctpr1, e2k_entry ct %ctpr1</code> </pre> <br> 实际上，仅此而已，退出异常处理程序后，您需要还原这5个寄存器。 <br><br> 我们用一个宏来做到这一点： <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> RESTORE_COMMON_REGS(regs) \ ({ \ uint64_t ctpr1 = regs-&gt;ctpr1, ctpr2 = regs-&gt;ctpr2, \ ctpr3 = regs-&gt;ctpr3, lsr = regs-&gt;lsr, \ ilcr = regs-&gt;ilcr; \ </span><span class="hljs-comment"><span class="hljs-meta"><span class="hljs-comment">/* ctpr2 is restored first because of tight time constraints \ * on restoring ctpr2 and aaldv. */</span></span></span><span class="hljs-meta"> \ E2K_SET_DSREG(ctpr1, ctpr1); \ E2K_SET_DSREG(ctpr2, ctpr2); \ E2K_SET_DSREG(ctpr3, ctpr3); \ E2K_SET_DSREG(lsr, lsr); \ E2K_SET_DSREG(ilcr, ilcr); \ })</span></span></code> </pre> <br> 同样重要的是不要忘记在寄存器恢复后调用DONE操作（从硬件中断处理程序返回）。 为了正确处理中断的控制传输操作，此操作尤其必要。 我们用一个宏来做到这一点： <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> E2K_DONE \ do { \ asm volatile (</span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"{nop 3} {done}"</span></span></span><span class="hljs-meta"> ::: </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">"ctpr3"</span></span></span><span class="hljs-meta">); \ } while (0)</span></span></code> </pre> <br> 实际上，我们使用这两个宏在C代码中直接从中断返回。 <br><pre> <code class="cpp hljs"> <span class="hljs-comment"><span class="hljs-comment">/* Entering here because of expection or interrupt */</span></span> e2k_trap_handler(regs); RESTORE_COMMON_REGS(regs); E2K_DONE;</code> </pre> <br><h3> 外部中断 </h3><br> 让我们从如何启用外部中断开始。 在Elbrus中，APIC（或更确切地说，它的模拟）用作中断控制器； Embox已经有了该驱动程序。 因此，有可能为其选择一个系统计时器。 有两个定时器，一个非常类似于<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PIT</a> ，另一个是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">LAPIC定时器</a> ，也是非常标准的，因此谈论它们没有任何意义。 这个和那个看起来都很简单，那个和那个已经存在于Embox中，但是LAPIC计时器的驱动程序看起来更具透视性，除了PIT计时器的实现在我们看来似乎是非标准的。 因此，似乎更容易完成。 此外，官方文档还介绍了寄存器APIC和LAPIC，它们与原始记录略有不同。 如您在原件中所见，带上它们毫无意义。 <br><br> 除了在APIC中允许中断外，还必须通过PSR / UPSR寄存器启用中断处理。 两个寄存器都有用于启用外部中断和不可屏蔽中断的标志。  <i>但是</i>在这里，非常重要的一点是要注意PSR寄存器是该函数的<i>本地</i>函数（在第<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">一个技术部分中</a>对此进行了讨论）。 这意味着，如果将其设置在函数中，则当您调用所有后续函数时，它将被继承，但是当您从函数返回时，它将返回其原始状态。 因此出现了问题，但是如何处理中断呢？ <br><br> 我们使用以下解决方案。 通过PSR寄存器，您可以通过已经全面的UPSR（我们需要）进行管理。 因此，在Embox核心登录功能之前，我们直接通过UPSR启用控制（重要！）： <br><br><pre> <code class="cpp hljs"> <span class="hljs-comment"><span class="hljs-comment">/* PSR is local register and makes sense only within a function, * so we set it here before kernel start. */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">asm</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">volatile</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-string"><span class="hljs-function"><span class="hljs-params"><span class="hljs-string">"rrs %%psr, %0"</span></span></span></span><span class="hljs-function"><span class="hljs-params"> : </span></span><span class="hljs-string"><span class="hljs-function"><span class="hljs-params"><span class="hljs-string">"=r"</span></span></span></span><span class="hljs-function"><span class="hljs-params">(psr) :)</span></span></span></span>; psr |= (PSR_IE | PSR_NMIE | PSR_UIE); <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">asm</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">volatile</span></span></span><span class="hljs-function"> </span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-string"><span class="hljs-function"><span class="hljs-params"><span class="hljs-string">"rws %0, %%psr"</span></span></span></span><span class="hljs-function"><span class="hljs-params"> : : </span></span><span class="hljs-string"><span class="hljs-function"><span class="hljs-params"><span class="hljs-string">"ri"</span></span></span></span><span class="hljs-function"><span class="hljs-params">(psr))</span></span></span></span>; kernel_start();</code> </pre> <br> 重构后，我偶然将这些行放入了一个单独的函数中，并且该寄存器位于该函数的本地。 很明显，一切都坏了:) <br><br> 因此，似乎处理器中的所有功能都已打开，请转到中断控制器。 <br><br> 如上所述，有关异常号的信息位于TIR寄存器中。 此外，该寄存器的第32位报告发生了外部中断。 <br><br> 在打开计时器后，接下来几天遭受了折磨，因为无法获得中断。 原因很有趣。  Elbrus中有64位指针，APIC中的寄存器地址进入uint32_t，这就是我们使用它们的原因。 但是事实证明，例如，如果您需要将0xF0000000强制转换为指针，那么您将获得的不是0xF0000000，而是0xFFFFFFFFF0000000。 也就是说，编译器将扩​​展您的unsigned int符号。 <br><br> 当然，这里必须使用uintptr_t，因为事实证明，在C99标准中，这种类型的转换被定义为实现定义。 <br><br> 在我们最终看到TIR中升高的第32位之后，我们开始寻找如何获取中断号。 事实证明这很简单，尽管根本不像x86上那样，但这是LAPIC实现之间的差异之一。 对于Elbrus，要获取中断号，您需要进入特殊的LAPIC寄存器： <br><br><pre> <code class="cpp hljs"> <span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">define</span></span></span><span class="hljs-meta"> APIC_VECT (0xFEE00000 + 0xFF0)</span></span></code> </pre> <br> 其中0xFEE00000是LAPIC寄存器的基址。 <br><br> 就这样，事实证明，它同时占用了系统计时器和LAPIC计时器。 <br><br><h3> 结论 </h3><br> 本文的前两个技术部分提供的有关Elbrus体系结构的信息足以在任何OS中实现硬件中断和抢占式多任务处理。 实际上，给定的屏幕截图证明了这一点。 <br><br><img src="https://habrastorage.org/webt/qm/qz/3p/qmqz3pbvuvohscm_qon1edf5jno.png"><br><br> 这不是有关Elbrus体系结构的最后技术部分。 现在我们正在掌握Elbrus中的内存管理（MMU），我们希望能尽快谈论它。 我们不仅需要实现虚拟地址空间，还需要使用外设进行正常工作，因为通过这种机制，您可以禁用或启用对地址空间特定区域的缓存。 <br><br> 可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Embox</a>存储库中找到本文中编写的所有内容。 当然，如果有硬件平台，也可以构建和运行。 的确，为此需要编译器，并且只能在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">MCST</a>上获得它。 可以在那里索取官方文件。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN447744/">https://habr.com/ru/post/zh-CN447744/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN447732/index.html">狗的品种标识符：从Keras程序到Android App的全周期开发。 在市场上</a></li>
+<li><a href="../zh-CN447734/index.html">为什么前端应该理解UI的原理</a></li>
+<li><a href="../zh-CN447736/index.html">无人机视频-社交网络的新趋势</a></li>
+<li><a href="../zh-CN447738/index.html">朱利安·阿桑奇（Julian Assange）被英国警察逮捕</a></li>
+<li><a href="../zh-CN447742/index.html">什么是DevOps方法，谁需要它</a></li>
+<li><a href="../zh-CN447750/index.html">数据中心的新处理器-我们分析最近几个月的公告</a></li>
+<li><a href="../zh-CN447754/index.html">适用于macOS的菜单栏应用</a></li>
+<li><a href="../zh-CN447784/index.html">航天日音乐</a></li>
+<li><a href="../zh-CN447786/index.html">背景：Fedor机器人，你是什么？</a></li>
+<li><a href="../zh-CN447788/index.html">我们创建了一个新闻聚合器，重点关注加密货币-intwt.com</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

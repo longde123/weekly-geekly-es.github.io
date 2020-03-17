@@ -1,0 +1,150 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>♋️ 🤷 ✌️ 调试Kubernetes中的网络延迟 🏨 ⛰️ 👧🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="几年前， 已经在GitHub官方博客上讨论了 Kubernetes。 从那时起，它已成为部署服务的标准技术。 Kubernetes现在管理内部和公共服务的很大一部分。 随着集群的增长和对性能的要求越来越严格，我们开始注意到Kubernetes上的某些服务偶尔会显示延迟，这些延迟无法用应用程序本身的负...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>调试Kubernetes中的网络延迟</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/itsumma/blog/477390/"><img src="https://habrastorage.org/getpro/habr/post_images/c82/5b1/413/c825b1413d9c59cf78c51e6e2c8f8049.png"><br><br> 几年前， <a href="https://github.blog/2017-08-16-kubernetes-at-github/">已经</a>在GitHub官方博客上<a href="https://github.blog/2017-08-16-kubernetes-at-github/">讨论了</a> Kubernetes。 从那时起，它已成为部署服务的标准技术。  Kubernetes现在管理内部和公共服务的很大一部分。 随着集群的增长和对性能的要求越来越严格，我们开始注意到Kubernetes上的某些服务偶尔会显示延迟，这些延迟无法用应用程序本身的负载来解释。 <br><br> 实际上，在应用中，会出现长达100 ms或更长的随机网络延迟，这会导致超时或重试。 预计服务将能够以比100毫秒更快的速度响应请求。 但是，如果连接本身需要花费大量时间，则这是不可能的。 另外，我们观察到了非常快的MySQL查询，该查询原本需要花费毫秒，而MySQL的确以毫秒为单位进行管理，但是从请求应用程序的角度来看，响应花费了100毫秒或更长时间。 <br><a name="habracut"></a><br> 立即清楚地知道，即使呼叫来自外部Kubernetes，也仅在连接到Kubernetes主机时才会出现问题。 重现此问题的最简单方法是在<a href="https://github.com/tsenart/vegeta">Vegeta</a>测试中进行，该测试可从任何内部主机运行，在特定端口上测试Kubernetes服务，并偶尔记录一个大延迟。 在本文中，我们将探讨如何设法找到导致此问题的原因。 <br><br><h1> 消除故障链中不必要的复杂性 </h1><br> 重现了相同的示例后，我们希望缩小问题的范围并消除额外的复杂性。 最初，Vegeta和Kubernetes上的pod之间的流中有太多元素。 要确定更深层的网络问题，您需要排除其中的一些问题。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/488/8c1/d29/4888c1d29a8fc1b4a1194c4c3a14c9ff.png"><br><br> 客户端（Vegeta）与群集中的任何节点创建TCP连接。  Kubernetes充当使用<a href="https://en.wikipedia.org/wiki/IP_in_IP">IPIP</a>的覆盖网络（在现有数据中心网络之上），也就是说，将覆盖网络的IP数据包封装在数据中心的IP数据包之内。 连接到第一个节点时，将使用状态监视执行<a href="https://en.wikipedia.org/wiki/Network_address_translation">网络地址转换</a> （NAT）网络地址转换，以将Kubernetes主机的IP地址和端口转换为覆盖网络（特别是具有应用程序的Pod）上的IP地址和端口。 对于接收到的数据包，执行相反的顺序。 这是一个复杂的系统，具有许多状态和许多元素，这些元素会随着服务的部署和移动而不断更新和更改。 <br><br>  Vegeta测试中的<code>tcpdump</code>实用程序在TCP握手期间（在SYN和SYN-ACK之间）提供了一个延迟。 为了消除这种不必要的复杂性，您可以对SYN软件包使用<code>hping3</code>进行简单的“ ping”操作。 检查响应数据包中是否存在延迟，然后重置连接。 我们可以通过仅包含超过100毫秒的数据包来过滤数据，并获得比Vegeta中的完整网络级别7测试更简单的选项来重现问题。 以下是在服务的主机“端口”（30927）上使用TCP SYN / SYN-ACK的Kubernetes主机的“ ping”，间隔为10毫秒，由最慢的响应过滤： <br><br> <code>theojulienne@shell ~ $ sudo hping3 172.16.47.27 -S -p 30927 -i u10000 | egrep --line-buffered 'rtt=[0-9]{3}\.' <br> <br> len=46 ip=172.16.47.27 ttl=59 DF id=0 sport=30927 flags=SA seq=1485 win=29200 rtt=127.1 ms <br> <br> len=46 ip=172.16.47.27 ttl=59 DF id=0 sport=30927 flags=SA seq=1486 win=29200 rtt=117.0 ms <br> <br> len=46 ip=172.16.47.27 ttl=59 DF id=0 sport=30927 flags=SA seq=1487 win=29200 rtt=106.2 ms <br> <br> len=46 ip=172.16.47.27 ttl=59 DF id=0 sport=30927 flags=SA seq=1488 win=29200 rtt=104.1 ms <br> <br> len=46 ip=172.16.47.27 ttl=59 DF id=0 sport=30927 flags=SA seq=5024 win=29200 rtt=109.2 ms <br> <br> len=46 ip=172.16.47.27 ttl=59 DF id=0 sport=30927 flags=SA seq=5231 win=29200 rtt=109.2 ms</code> <br> <br> 马上可以做第一眼观察。 序列号和时间表明这些不是一次性拥塞。 延迟通常会累积并最终得到处理。 <br><br> 接下来，我们想找出哪些组件可能与拥塞现象有关。 也许这些是NAT中数百个iptables规则中的一些？ 还是网络上IPIP隧道出现问题？ 一种验证方式是通过排除系统来验证系统的每个步骤。 如果删除NAT和防火墙逻辑，仅保留IPIP的一部分，将会发生什么： <br><br><img src="https://habrastorage.org/getpro/habr/post_images/5b3/e2a/cff/5b3e2acff2ef9f1f8c7c527356741d92.png"><br><br> 幸运的是，如果机器在同一网络上，Linux使得直接访问IP覆盖层变得容易： <br><br> <code>theojulienne@kube-node-client ~ $ sudo hping3 10.125.20.64 -S -i u10000 | egrep --line-buffered 'rtt=[0-9]{3}\.' <br> <br> len=40 ip=10.125.20.64 ttl=64 DF id=0 sport=0 flags=RA seq=7346 win=0 rtt=127.3 ms <br> <br> len=40 ip=10.125.20.64 ttl=64 DF id=0 sport=0 flags=RA seq=7347 win=0 rtt=117.3 ms <br> <br> len=40 ip=10.125.20.64 ttl=64 DF id=0 sport=0 flags=RA seq=7348 win=0 rtt=107.2 ms</code> <br> <br> 从结果来看，问题仍然存在！ 这不包括iptables和NAT。 那么问题出在TCP中吗？ 让我们看看常规的ICMP ping如何进行： <br><br> <code>theojulienne@kube-node-client ~ $ sudo hping3 10.125.20.64 --icmp -i u10000 | egrep --line-buffered 'rtt=[0-9]{3}\.' <br> <br> len=28 ip=10.125.20.64 ttl=64 id=42594 icmp_seq=104 rtt=110.0 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=49448 icmp_seq=4022 rtt=141.3 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=49449 icmp_seq=4023 rtt=131.3 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=49450 icmp_seq=4024 rtt=121.2 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=49451 icmp_seq=4025 rtt=111.2 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=49452 icmp_seq=4026 rtt=101.1 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=50023 icmp_seq=4343 rtt=126.8 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=50024 icmp_seq=4344 rtt=116.8 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=50025 icmp_seq=4345 rtt=106.8 ms <br> <br> len=28 ip=10.125.20.64 ttl=64 id=59727 icmp_seq=9836 rtt=106.1 ms</code> <br> <br> 结果表明问题尚未消失。 也许这是IPIP隧道？ 让我们简化测试： <br><br><img src="https://habrastorage.org/getpro/habr/post_images/267/ff6/137/267ff613754b99f8cc1bb1d89119206e.png"><br><br> 在这两个主机之间是否发送了所有数据包？ <br><br> <code>theojulienne@kube-node-client ~ $ sudo hping3 172.16.47.27 --icmp -i u10000 | egrep --line-buffered 'rtt=[0-9]{3}\.' <br> <br> len=46 ip=172.16.47.27 ttl=61 id=41127 icmp_seq=12564 rtt=140.9 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=41128 icmp_seq=12565 rtt=130.9 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=41129 icmp_seq=12566 rtt=120.8 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=41130 icmp_seq=12567 rtt=110.8 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=41131 icmp_seq=12568 rtt=100.7 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=9062 icmp_seq=31443 rtt=134.2 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=9063 icmp_seq=31444 rtt=124.2 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=9064 icmp_seq=31445 rtt=114.2 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 id=9065 icmp_seq=31446 rtt=104.2 ms</code> <br> <br> 我们将情况简化为两个Kubernetes主机相互发送任何数据包，甚至是ICMP ping。 如果目标主机“不好”（有些情况比其他情况差），他们仍然会看到延迟。 <br><br> 现在是最后一个问题：为什么延迟仅发生在kube节点服务器上？ 当kube-node是发送者还是接收者时，会发生这种情况吗？ 幸运的是，通过从Kubernetes外部的主机发送一个数据包，但使用相同的“已知错误”接收者，也很容易弄清楚这一点。 如您所见，问题并未消失： <br><br> <code>theojulienne@shell ~ $ sudo hping3 172.16.47.27 -p 9876 -S -i u10000 | egrep --line-buffered 'rtt=[0-9]{3}\.' <br> <br> len=46 ip=172.16.47.27 ttl=61 DF id=0 sport=9876 flags=RA seq=312 win=0 rtt=108.5 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 DF id=0 sport=9876 flags=RA seq=5903 win=0 rtt=119.4 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 DF id=0 sport=9876 flags=RA seq=6227 win=0 rtt=139.9 ms <br> <br> len=46 ip=172.16.47.27 ttl=61 DF id=0 sport=9876 flags=RA seq=7929 win=0 rtt=131.2 ms</code> <br> <br> 然后，我们从先前的源kube-node向外部主机（不包括原始主机，因为ping包括RX和TX组件）执行相同的请求： <br><br> <code>theojulienne@kube-node-client ~ $ sudo hping3 172.16.33.44 -p 9876 -S -i u10000 | egrep --line-buffered 'rtt=[0-9]{3}\.' <br> ^C <br> --- 172.16.33.44 hping statistic --- <br> 22352 packets transmitted, 22350 packets received, 1% packet loss <br> round-trip min/avg/max = 0.2/7.6/1010.6 ms</code> <br> <br> 在检查了延迟的数据包捕获之后，我们获得了一些其他信息。 特别是，发送者（以下）看到此超时，但接收者（上方）没有看到此超时-请参见“增量”列（以秒为单位）： <br><br> <a href=""><img src="https://habrastorage.org/webt/4m/-t/dj/4m-tdjzws9lrhnva3xcxijel7eg.png"></a> <br><br> 另外，如果您查看接收方TCP和ICMP数据包顺序的差异（按序列号），则ICMP数据包始终以发送时的相同顺序到达，但时序不同。 同时，TCP数据包有时会交替出现，其中一些会被卡住。 特别是，如果我们检查SYN数据包的端口，则在发送方，它们按顺序排列，但在接收方，则不排列。 <br><br> 现代服务器（如我们的数据中心）的<a href="https://en.wikipedia.org/wiki/Network_address_translation">网卡</a>在处理包含TCP或ICMP的数据包方面存在细微的差异。 当数据包到达时，网络适配器“通过连接对其进行哈希处理”，也就是说，它尝试依次断开连接并将每个队列发送到单独的处理器核心。 对于TCP，此哈希同时包含源IP地址和目标IP地址以及端口。 换句话说，每个连接的散列（可能）都不同。 对于ICMP，由于没有端口，因此仅对IP地址进行哈希处理。 <br><br> 另一个新发现：在此期间，我们看到两台主机之间所有通信的ICMP延迟，但TCP没有。 这告诉我们原因可能是由于RX队列的散列：几乎可以确定，拥塞发生在RX数据包的处理中，而不是在发送响应中。 <br><br> 这从可能原因列表中排除发送数据包。 现在我们知道在某些kube节点服务器上，数据包处理的问题是在接收方。 <br><br><h1> 了解Linux内核中的软件包处理 </h1><br> 为了了解为什么问题在某些kube节点服务器上的接收者发生，让我们看看Linux内核如何处理软件包。 <br><br> 返回到最简单的传统实现，网卡接收数据包并将<a href="https://en.wikipedia.org/wiki/Interrupt">中断</a>发送到Linux内核，这是需要处理的数据包。 内核停止另一个操作，将上下文切换到中断处理程序，处理程序包，然后返回到当前任务。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/1a2/3c3/4ee/1a23c34eea2236294913fd09a25aa1e4.png"><br><br> 这种上下文切换很慢：1990年代在10 MB的网络卡上可能没有注意到它，但是在最大吞吐量为每秒1500万个数据包的现代10G卡上，小型八核服务器的每个核心每秒可以中断数百万次。 <br><br> 为了不经常处理中断处理，很多年前，Linux添加了<a href="https://en.wikipedia.org/wiki/New_API">NAPI</a> ：一种网络API，所有现代驱动程序都使用该API来提高性能。 在低速下，内核仍旧以旧方式接受来自网卡的中断。 一旦到达足够数量的超过阈值的数据包，内核便禁用中断，而是开始轮询网络适配器并分批接收数据包。 处理在softirq中执行，即在系统调用后<a href="https://www.kernel.org/doc/htmldocs/kernel-hacking/basics-softirqs.html">发生软件中断</a>和内核（与用户空间不同）已运行时硬件中断的<a href="https://www.kernel.org/doc/htmldocs/kernel-hacking/basics-softirqs.html">情况下进行</a> 。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/22a/50d/ee1/22a50dee1fffdbc20614db2b1db28fc4.png"><br><br> 这要快得多，但是会导致另一个问题。 如果数据包太多，则将花费所有时间来处理来自网卡的数据包，并且用户空间进程没有时间实际清空这些队列（从TCP连接等读取数据）。 最后，队列填满，我们开始丢弃数据包。 为了找到平衡，内核为softirq上下文中处理的最大数据包数设置了预算。 一旦超出此预算，就会<code>ksoftirqd</code>一个单独的<code>ksoftirqd</code>线程（您将在每个内核的<code>ps</code>看到其中一个），该线程将在正常的系统调用/中断路径之外处理这些softirq。 使用尝试公平分配资源的标准流程调度程序来计划此线程。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/d0f/1e6/f0c/d0f1e6f0c54d45c24d62cb2bcf90c674.png"><br><br> 在检查了内核如何处理数据包之后，您可以看到存在一定的拥塞可能性。 如果softirq呼叫的接收频率较低，则数据包将需要等待一段时间才能在网卡的RX队列中进行处理。 可能是由于某些任务阻塞了处理器内核，或者其他原因导致内核无法启动softirq。 <br><br><h1> 我们将处理范围缩小到内核或方法 </h1><br>  Softirq延迟只是一个假设。 但这是有道理的，而且我们知道我们看到的情况非常相似。 因此，下一步就是确认这一理论。 如果已确认，则找出造成延误的原因。 <br><br> 回到我们的慢速包： <br><br> <code>len=46 ip=172.16.53.32 ttl=61 id=29573 icmp_seq=1953 rtt=99.3 ms <br> <br> len=46 ip=172.16.53.32 ttl=61 id=29574 icmp_seq=1954 rtt=89.3 ms <br> <br> len=46 ip=172.16.53.32 ttl=61 id=29575 icmp_seq=1955 rtt=79.2 ms <br> <br> len=46 ip=172.16.53.32 ttl=61 id=29576 icmp_seq=1956 rtt=69.1 ms <br> <br> len=46 ip=172.16.53.32 ttl=61 id=29577 icmp_seq=1957 rtt=59.1 ms <br> <br> len=46 ip=172.16.53.32 ttl=61 id=29790 icmp_seq=2070 rtt=75.7 ms <br> <br> len=46 ip=172.16.53.32 ttl=61 id=29791 icmp_seq=2071 rtt=65.6 ms <br> <br> len=46 ip=172.16.53.32 ttl=61 id=29792 icmp_seq=2072 rtt=55.5 ms</code> <br> <br> 如前所述，这些ICMP数据包被散列到单个NIC RX队列中，并由单个CPU内核进行处理。 如果我们想了解Linux的工作原理，了解这些软件包的处理位置（在哪个CPU内核上）和如何处理（softirq，ksoftirqd）很有用，以跟踪进程。 <br><br> 现在该使用允许实时监视Linux内核的工具了。 在这里，我们使用了<a href="https://github.com/iovisor/bcc">bcc</a> 。 这套工具允许您编写小型C程序，这些程序可拦截内核中的任意函数并将事件缓冲到用户空间的Python程序中，该程序可以对其进行处理并返回结果。 内核中用于任意功能的钩子很复杂，但是该实用程序旨在提供最大的安全性，并且旨在精确跟踪在测试或开发环境中不容易重现的此类生产问题。 <br><br> 这里的计划很简单：我们知道内核会处理这些ICMP ping，因此我们在<a href="">icmp_echo</a>内核<a href="">函数</a>上添加了一个钩子，该<a href="">函数</a>接收传入的ICMP数据包“ echo request”并启动ICMP响应“ echo response”的发送。 我们可以通过增加icmp_seq编号来识别软件包，该编号在上面显示了hping3。 <br><br>  <a href="https://gist.github.com/theojulienne/9d78a0cb68dbe56f19a2ae6316bc6846">bcc脚本</a>代码看起来很复杂，但并不像看起来那样可怕。  <code>icmp_echo</code>函数传递<code>struct sk_buff *skb</code> ：这是带有“ echo request”请求的数据包。 我们可以跟踪它，拉出<code>echo.sequence</code>序列（从<code></code> <code>icmp_seq</code>映射到<code>icmp_seq</code> ），并将其发送到用户空间。 捕获当前进程名称/标识符也很方便。 以下是我们在内核处理软件包期间直接看到的结果： <br><br><pre>  TGID PID过程名称ICMP_SEQ
+ 0 0交换器/ 11,770
+ 0 0交换器/ 11,771
+ 0 0交换器/ 11772
+ 0 0交换器/ 11773
+ 0 0交换器/ 11,774
+ 20041 20086普罗米修斯775
+ 0 0交换器/ 11,776
+ 0 0交换器/ 11,777
+ 0 0交换器/ 11778
+ 4512 4542辐条报告779 </pre><br> 这里应该注意的是，在<code>softirq</code>的上下文中，进行系统调用的进程显示为“进程”，尽管实际上，此内核在内核的上下文中安全地处理数据包。 <br><br> 使用此工具，我们可以建立特定进程与特定软件包的连接，这些软件包在<code>hping3</code>中显示出延迟。 我们针对此捕获针对特定的<code>icmp_seq</code>值进行了一个简单的<code>grep</code> 。 与上面的icmp_seq值相对应的数据包用我们在上面观察到的RTT进行了标记（括号中是由于RTT值小于50毫秒而被过滤的数据包的预期RTT值）： <br><br><pre>  TGID PID过程名称ICMP_SEQ ** RTT
+ --
+ 10137 10436 cadvisor 1951
+ 10137 10436主管1952
+ 76 76 ksoftirqd / 11953年** 99ms
+ 76 76 ksoftirqd / 1954年** 89ms
+ 76 76 ksoftirqd / 1955年** 79ms
+ 76 76 ksoftirqd / 1956年** 69ms
+ 76 76 ksoftirqd / 1957年** 59ms
+ 76 76 ksoftirqd / 1958年**（49ms）
+ 76 76 ksoftirqd / 1959年**（39ms）
+ 76 76 ksoftirqd / 1960年**（29ms）
+ 76 76 ksoftirqd / 11 1961 **（19ms）
+ 76 76 ksoftirqd / 11 1962 **（9ms）
+ --
+ 10137 10436 cadvisor 2068
+ 10137 10436 cadvisor 2069
+ 76 76 ksoftirqd / 11 2070 ** 75ms
+ 76 76 ksoftirqd / 11 2071 ** 65ms
+ 76 76 ksoftirqd / 11 2072 ** 55ms
+ 76 76 ksoftirqd / 11 2073 **（45ms）
+ 76 76 ksoftirqd / 11 2074 **（35ms）
+ 76 76 ksoftirqd / 11 2075 **（25ms）
+ 76 76 ksoftirqd / 11 2076 **（15ms）
+ 76 76 ksoftirqd / 11 2077 **（5毫秒） </pre><br> 结果告诉我们一些事情。 首先， <code>ksoftirqd/11</code>上下文处理所有这些包。 这意味着对于这对特定的机器，ICMP数据包在接收端的11个核心上进行了哈希处理。 我们还看到，在每次流量阻塞时，都有在<code>cadvisor</code>系统调用的上下文中处理的数据包。 然后， <code>ksoftirqd</code>承担任务并完成累积的队列：恰好是<code>cadvisor</code>之后累积的数据包数量。 <br><br>  <code>cadvisor</code>总是在此之前立即工作的事实表明他参与了这个问题。 具有讽刺意味的是， <a href="https://github.com/google/cadvisor">cadvisor</a>的目的是“分析正在运行的容器的资源利用率和性能特征”，而不是引起此性能问题。 <br><br> 与容器处理的其他方面一样，这些都是非常先进的工具，在某些不可预见的情况下，可能会遇到性能问题。 <br><br><h1>  cadvisor会做什么来减慢数据包队列？ </h1><br> 现在，我们对故障的发生方式，导致故障的进程以及在哪个CPU上有了很好的了解。 我们看到由于硬锁定，Linux内核没有时间按时调度<code>ksoftirqd</code> 。 而且我们看到软件包是在<code>cadvisor</code>上下文中<code>cadvisor</code> 。 逻辑上是假设<code>cadvisor</code>启动了缓慢的syscall，然后处理了此时累积的所有数据包： <br><br><img src="https://habrastorage.org/getpro/habr/post_images/6fd/6fb/970/6fd6fb970f2d27943039910db9b41743.png"><br><br> 这是一个理论，但是如何检验呢？ 我们可以做的是跟踪整个过程中CPU内核的运行情况，找到超出预算的数据包数量并调用ksoftirqd，然后再早一点看-在那之前在CPU内核上真正起作用的是什么。 就像每隔几毫秒对CPU进行一次X射线检查一样。 它看起来像这样： <br><br><img src="https://habrastorage.org/getpro/habr/post_images/44a/954/6e8/44a9546e8de19e43cb125eb8a03a8f47.png"><br><br> 方便地，所有这些都可以使用现有工具来完成。 例如，性能<a href="https://perf.wiki.kernel.org/index.php/Tutorial">记录</a>以指定的频率检查指定的CPU内核，并可以生成正在运行的系统的调用计划，包括用户空间和Linux内核。 您可以使用Brendan Gregg的<a href="https://github.com/brendangregg/FlameGraph">FlameGraph</a>程序的一个小分支获取此记录并对其进行处理，该程序保留了堆栈跟踪顺序。 我们可以每1毫秒保存一次单行堆栈跟踪，然后在<code>ksoftirqd</code>进入跟踪之前选择并保存样本100毫秒： <br><br> <code># record 999 times a second, or every 1ms with some offset so not to align exactly with timers <br> sudo perf record -C 11 -g -F 999 <br> # take that recording and make a simpler stack trace. <br> sudo perf script 2&gt;/dev/null | ./FlameGraph/stackcollapse-perf-ordered.pl | grep ksoftir -B 100</code> <br> <br> 结果如下： <br><br> <code>( ,   ) <br> <br> cadvisor;[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];entry_SYSCALL_64_after_swapgs;do_syscall_64;sys_read;vfs_read;seq_read;memcg_stat_show;mem_cgroup_nr_lru_pages;mem_cgroup_node_nr_lru_pages cadvisor;[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];entry_SYSCALL_64_after_swapgs;do_syscall_64;sys_read;vfs_read;seq_read;memcg_stat_show;mem_cgroup_nr_lru_pages;mem_cgroup_node_nr_lru_pages cadvisor;[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];entry_SYSCALL_64_after_swapgs;do_syscall_64;sys_read;vfs_read;seq_read;memcg_stat_show;mem_cgroup_iter cadvisor;[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];entry_SYSCALL_64_after_swapgs;do_syscall_64;sys_read;vfs_read;seq_read;memcg_stat_show;mem_cgroup_nr_lru_pages;mem_cgroup_node_nr_lru_pages cadvisor;[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];[cadvisor];entry_SYSCALL_64_after_swapgs;do_syscall_64;sys_read;vfs_read;seq_read;memcg_stat_show;mem_cgroup_nr_lru_pages;mem_cgroup_node_nr_lru_pages ksoftirqd/11;ret_from_fork;kthread;kthread;smpboot_thread_fn;smpboot_thread_fn;run_ksoftirqd;__do_softirq;net_rx_action;ixgbe_poll;ixgbe_clean_rx_irq;napi_gro_receive;netif_receive_skb_internal;inet_gro_receive;bond_handle_frame;__netif_receive_skb_core;ip_rcv_finish;ip_rcv;ip_forward_finish;ip_forward;ip_finish_output;nf_iterate;ip_output;ip_finish_output2;__dev_queue_xmit;dev_hard_start_xmit;ipip_tunnel_xmit;ip_tunnel_xmit;iptunnel_xmit;ip_local_out;dst_output;__ip_local_out;nf_hook_slow;nf_iterate;nf_conntrack_in;generic_packet;ipt_do_table;set_match_v4;ip_set_test;hash_net4_kadt;ixgbe_xmit_frame_ring;swiotlb_dma_mapping_error;hash_net4_test ksoftirqd/11;ret_from_fork;kthread;kthread;smpboot_thread_fn;smpboot_thread_fn;run_ksoftirqd;__do_softirq;net_rx_action;gro_cell_poll;napi_gro_receive;netif_receive_skb_internal;inet_gro_receive;__netif_receive_skb_core;ip_rcv_finish;ip_rcv;ip_forward_finish;ip_forward;ip_finish_output;nf_iterate;ip_output;ip_finish_output2;__dev_queue_xmit;dev_hard_start_xmit;dev_queue_xmit_nit;packet_rcv;tpacket_rcv;sch_direct_xmit;validate_xmit_skb_list;validate_xmit_skb;netif_skb_features;ixgbe_xmit_frame_ring;swiotlb_dma_mapping_error;__dev_queue_xmit;dev_hard_start_xmit;__bpf_prog_run;__bpf_prog_run</code> <br> <br> 这里有很多东西，但是主要的是我们找到了我们在ICMP跟踪器中前面看到的“ ksoftirqd之前的cadvisor”模板。 这是什么意思？ <br><br> 每行都是特定时间点上的CPU轨迹。 一行中的每个调用都以分号分隔。 在各行的中间，我们看到syscall称为： <code>read(): .... ;do_syscall_64;sys_read; ...</code>  <code>read(): .... ;do_syscall_64;sys_read; ...</code> 因此，cadvisor在与<code>mem_cgroup_*</code>函数（调用堆栈的顶部/行尾）相关的<code>read()</code>系统调用上花费了大量时间。 <br><br> 在呼叫跟踪中，查看要读取的内容并不方便，因此请运行<code>strace</code>并查看cadvisor的工作，并查找超过100毫秒的系统调用： <br><br> <code>theojulienne@kube-node-bad ~ $ sudo strace -p 10137 -T -ff 2&gt;&amp;1 | egrep '&lt;0\.[1-9]' <br> [pid 10436] &lt;... futex resumed&gt; ) = 0 &lt;0.156784&gt; <br> [pid 10432] &lt;... futex resumed&gt; ) = 0 &lt;0.258285&gt; <br> [pid 10137] &lt;... futex resumed&gt; ) = 0 &lt;0.678382&gt; <br> [pid 10384] &lt;... futex resumed&gt; ) = 0 &lt;0.762328&gt; <br> [pid 10436] &lt;... read resumed&gt; "cache 154234880\nrss 507904\nrss_h"..., 4096) = 658 &lt;0.179438&gt; <br> [pid 10384] &lt;... futex resumed&gt; ) = 0 &lt;0.104614&gt; <br> [pid 10436] &lt;... futex resumed&gt; ) = 0 &lt;0.175936&gt; <br> [pid 10436] &lt;... read resumed&gt; "cache 0\nrss 0\nrss_huge 0\nmapped_"..., 4096) = 577 &lt;0.228091&gt; <br> [pid 10427] &lt;... read resumed&gt; "cache 0\nrss 0\nrss_huge 0\nmapped_"..., 4096) = 577 &lt;0.207334&gt; <br> [pid 10411] &lt;... epoll_ctl resumed&gt; ) = 0 &lt;0.118113&gt; <br> [pid 10382] &lt;... pselect6 resumed&gt; ) = 0 (Timeout) &lt;0.117717&gt; <br> [pid 10436] &lt;... read resumed&gt; "cache 154234880\nrss 507904\nrss_h"..., 4096) = 660 &lt;0.159891&gt; <br> [pid 10417] &lt;... futex resumed&gt; ) = 0 &lt;0.917495&gt; <br> [pid 10436] &lt;... futex resumed&gt; ) = 0 &lt;0.208172&gt; <br> [pid 10417] &lt;... futex resumed&gt; ) = 0 &lt;0.190763&gt; <br> [pid 10417] &lt;... read resumed&gt; "cache 0\nrss 0\nrss_huge 0\nmapped_"..., 4096) = 576 &lt;0.154442&gt;</code> <br> <br> 如您所料，这里我们看到了慢速<code>read()</code>调用。 从读取操作的内容和<code>mem_cgroup</code>上下文中可以看出，这些<code>read()</code>调用引用了<code>memory.stat</code>文件，该文件显示了内存使用情况和cgroup限制（Docker资源隔离技术）。  cadvisor工具轮询此文件以获取容器的资源使用信息。 让我们检查一下此核心或cadvisor是否做了意外的事情： <br><br> <code>theojulienne@kube-node-bad ~ $ time cat /sys/fs/cgroup/memory/memory.stat &gt;/dev/null <br> <br> real 0m0.153s <br> user 0m0.000s <br> sys 0m0.152s <br> theojulienne@kube-node-bad ~ $</code> <br> <br> 现在我们可以重现该错误，并了解Linux内核正面临病理。 <br><br><h1> 是什么让阅读如此缓慢？ </h1><br> 此时，查找来自其他用户的有关类似问题的消息要容易得多。 事实证明，在cadvisor跟踪器中，此错误被报告为<a href="https://github.com/google/cadvisor/issues/1774">CPU使用率过高</a>的<a href="https://github.com/google/cadvisor/issues/1774">问题</a> ，只是没有人注意到延迟也随机反映在网络堆栈中。 确实，已经注意到cadvisor消耗的处理器时间比预期的要多，但是并没有给予太多重视，因为我们的服务器具有大量的处理器资源，因此我们没有仔细研究此问题。 <br><br> 问题是控制组（cgroups）考虑了名称空间（容器）内部的内存使用情况。 当该cgroup中的所有进程终止时，Docker释放了一个内存控制组。 但是，“内存”不仅仅是过程内存。 尽管不再使用进程内存，但事实证明，内核还分配了缓存的内容，例如牙科和索引节点（目录和文件元数据），这些内容缓存在内存cgroup中。 从问题的描述： <br><br><blockquote>  cgroups僵尸：控制组，其中没有进程，它们被删除，但仍为其分配了内存（在我的情况下，是从dentry缓存中分配的，但也可以从页面缓存或tmpfs分配它们）。 </blockquote><br> 释放cgroup时，内核检查高速缓存中的所有页面的速度可能非常慢，因此选择了延迟过程：等待直到再次请求这些页面，甚至在确实需要内存时，最后清除cgroup。 到目前为止，在收集统计信息时仍会考虑cgroup。 <br><br> 在性能方面，他们为性能而牺牲了内存：由于保留了一些缓存的内存，因此加快了初始清理的速度。 这很正常。 当内核使用缓存内存的最后一部分时，cgroup最终将被清除，因此不能将其称为“泄漏”。 不幸的是，此内核版本（4.9）中<code>memory.stat</code>搜索机制的特定实现，再加上我们服务器上的大量内存，导致以下事实：恢复最新的缓存数据和清除cgroup僵尸需要更多的时间。 <br><br> 事实证明，我们某些节点上的cgroup僵尸数量如此之多，以至于读取和延迟都超过了一秒钟。 <br><br> 解决cadvisor问题的方法是立即清除整个系统中的dentries / inode缓存，这将立即消除主机上的读取延迟以及网络延迟，因为删除缓存包括cgroup僵尸缓存的页面，并且它们也被释放。 这不是解决方案，但可以确定问题的原因。 <br><br> 事实证明，较新版本的内核（4.19+）改进了<code>memory.stat</code>调用的性能，因此切换到该内核解决了该问题。 同时，我们拥有用于检测Kubernetes集群中的问题节点，优雅地耗尽它们并重新启动的工具。 我们梳理了所有群集，找到了延迟足够高的节点，然后重新启动了它们。 这给了我们时间来更新其余服务器上的操作系统。 <br><br><h1> 总结一下 </h1><br> 由于此错误使NIC RX队列的处理停止了数百毫秒，因此，它同时在短连接和中间连接（例如MySQL查询和响应数据包）之间造成了很大的延迟。 <br><br>       ,   Kubernetes,            .    Kubernetes    . </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN477390/">https://habr.com/ru/post/zh-CN477390/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN477378/index.html">混合敏捷-实施业务应用程序时的瀑布式方法（又称敏捷）</a></li>
+<li><a href="../zh-CN477382/index.html">电子竞技-获利：梅赛德斯，扩音器，电子竞技的投注和品牌推广</a></li>
+<li><a href="../zh-CN477384/index.html">会议“信息安全。 当前和未来的威胁”</a></li>
+<li><a href="../zh-CN477386/index.html">安全周48：巨大的数据泄漏和Whatsapp漏洞</a></li>
+<li><a href="../zh-CN477388/index.html">NILFS2-用于/ home的防弹文件系统</a></li>
+<li><a href="../zh-CN477392/index.html">打开麦克风：后端。 我们邀请演讲者</a></li>
+<li><a href="../zh-CN477396/index.html">如何报名课程并...结束</a></li>
+<li><a href="../zh-CN477400/index.html">关于产品经理的职业：如何实现理想？</a></li>
+<li><a href="../zh-CN477402/index.html">将Keras深度学习模型部署为Python Web应用程序</a></li>
+<li><a href="../zh-CN477404/index.html">在C ++中频繁创建和删除对象的问题</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,124 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧀 🎦 🔣 Netflix Microservices如何处理发布-订阅数据 🙌🏽 😈 🔤</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="本文的翻译是专门为“高负荷建筑师”课程的学生准备的。 
+ 
+
+
+
+ 引言 
+ 在Netflix微服务架构中，将数据集从一个端点传输到多个端点可能非常困难。 这些数据集可以包含从服务配置到批处理结果的所有内容。 为了优化访问，通常需要一个常驻数据库，并且必须在更新数据后立即发送更改。 
+
+ 反映数据集...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Netflix Microservices如何处理发布-订阅数据</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/479572/">  <i>本文的翻译是专门为<a href="https://otus.pw/RCke/">“高负荷建筑师”</a>课程的学生准备的。</i> <i><br></i> <br><br><img src="https://habrastorage.org/webt/ro/7u/1i/ro7u1is2mtzuzuuuzpdm07pgzc8.png"><br><hr><br><h3> 引言 </h3><br> 在Netflix微服务架构中，将数据集从一个端点传输到多个端点可能非常困难。 这些数据集可以包含从服务配置到批处理结果的所有内容。 为了优化访问，通常需要一个常驻数据库，并且必须在更新数据后立即发送更改。 <br><br> 反映数据集分布式分布需求的一个示例如下所示：在任何给定时间，Netflix都会执行大量的A / B测试。 这些测试涵盖了几个服务和命令，并且测试操作员应该能够即时重新配置。 它还需要具有检测无法获得最新测试配置的节点的能力，以及在出现问题时回滚到较早版本的能力。 <a name="habracut"></a><br><br> 另一个需要分发的数据集示例是机器学习模型的输出序列：其工作结果可以由多个团队使用，但是ML团队不一定对在紧急情况下支持不间断访问服务感兴趣。 每个团队都需要创建备份以便能够简洁地回滚，而不是这种情况，而是要特别注意确保多个团队可以使用单个团队的结果。 <br><br> 没有基础架构级别的支持，每个团队最终都会尝试实施自己的解决方案，但是事实证明，不同的团队会取得不同的成功。 数据集本身具有不同的大小，从几字节到几GB。 重要的是要具有使用特殊工具监视过程性能和检测故障的能力，以便操作员无需创建自己的解决方案即可快速进行更改。 <br><br><img src="https://habrastorage.org/webt/96/wa/uw/96wauwyjpxs3xx0kljnxvxcmk2i.png"><br>  <i>数据传播</i> <br><br> 在Netflix，我们使用内部发布/订阅数据系统Gutenberg。  Gutenberg允许您使用版本控制来分发数据集-收件人订阅数据并在发布时接收其最新版本。 数据集的每个版本均保持不变，并包含数据的完整表示，即不依赖于先前版本。  Gutenberg允许您查看旧数据版本，以备不时之需，例如调试，快速解决数据问题或重新训练机器学习模型。 在本文中，我们将讨论古腾堡的高级体系结构。 <br><br><h4> 资料模型 </h4><br><img src="https://habrastorage.org/webt/7g/7z/b6/7g7zb66okgkinf1xxzvlyxk-60w.png"><br>  <i>1个主题-&gt;许多版本</i> <br><br> 古腾堡的顶级设计是主题。 发布者在主题内发布数据，接收者从主题中提取数据。 主题中的出版物被添加为单独的版本。 它们的特征在于特定的存储策略，该策略根据使用情况确定版本数量。 例如，您可以配置主题以存储10个版本或最近10天的版本。 <br><br> 每个版本都包含元数据（键和值）和一个数据指针。 数据指针可以视为指示已发布数据实际存储位置的特殊元数据。 如今，Gutenberg支持直接数据指针（如果有效载荷写在数据指针本身的值中）和S3数据指针（如果有效载荷存储在S3中）。 当数据较小（小于1 MB）时，通常使用直接数据指针；在数据量较大的情况下，S3用作备份存储。 <br><br><img src="https://habrastorage.org/webt/z7/we/mp/z7wemphye670skkx23aemtfkdyi.png"><br>  <i>1个主题-&gt;许多已发布的集</i> <br><br> 古腾堡（Gutenberg）提供了将出版物发送给特定的一组收件人用户的功能-例如，可以按特定的区域，应用程序或群集对一组出版物进行分组。 这可用于控制数据更改的质量或限制数据集，以便应用程序的子集可以订阅它。 发布者确定数据的特定版本的发布区域，并且可以将区域添加到先前发布的数据。 请注意，这意味着数据的最新版本的概念取决于特定区域-这两个应用程序可能会根据发布者定义的发布区域来接收数据的最新不同版本。 古腾堡（Gutenberg）服务将收件人应用程序映射到发布区域，然后再决定发送最新版本的内容。 <br><br><h3> 用例 </h3><br> 古腾堡（Gutenberg）最常见的用例是将不同大小的数据从一个发布者分发到多个接收者。 数据通常存储在收件人的内存中，并用作“共享缓存”，在执行收件人的代码期间，该数据始终保持可用状态，并在必要时自动替换。 这些用例中的许多都可以归类为“配置”，例如<a href="https://medium.com/netflix-techblog/distributing-content-to-open-connect-3e3e391d4dc9">Open Connect Appliance</a>缓存配置，支持的设备类型ID，支持的付款方式元数据以及A / B测试配置。  Gutenberg在发布和接收此数据之间提供了一种抽象，允许发布者自由地遍历其应用程序而不会影响下游接收者。 在某些情况下，发布是使用古腾堡（Gutenberg）管理的用户界面完成的，团队根本不需要触摸自己的发布应用程序。 <br><br> 古腾堡（Gutenberg）系统的另一个用途是版本化数据的存储库。 这对于机器学习应用程序很有用，在该应用程序中，团队根据历史数据构建和训练模型，查看它们如何随时间变化，然后更改某些参数并再次运行该应用程序。 在批处理计算中，通常会使用Gutenberg将这些计算的结果存储和分发为不同版本的数据集。 在线用例订阅主题以提供来自最新版本集的实时数据，而自治系统可以使用来自相同主题的历史数据，例如，教机器学习模型。 <br><br> 重要的是要注意，Gutenberg并非被设计为事件系统，它仅用于版本控制和数据分发。 特别是，频繁的出版物并不意味着要求订户接收每个版本。 当他请求更新时，即使当前他的当前版本远远落后于当前版本，他也将收到最新版本。 传统的发布订阅或事件系统更适合顺序发送的小消息。 也就是说，接收者可以通过使用事件的整个（压缩）流来创建整个数据集的概念。 但是，古腾堡旨在发布和使用数据集的完整，不变的表示形式。 <br><br><h3> 开发与架构 </h3><br>  Gutenberg由gRPC服务和REST API组成，以及使用gRPC API的Java客户端库。 <br><br><img src="https://habrastorage.org/webt/lw/bz/m_/lwbzm_dd871-cgpebuwlmorejd4.png"><br>  <i>高层架构</i> <br><br><h3> 顾客 </h3><br>  Gutenberg客户端库处理诸如管理预订，加载/卸载S3， <a href="https://github.com/Netflix/atlas">Atlas</a>度量以及可以使用<a href="https://github.com/Netflix/archaius">Archaius</a>属性配置的参数之类的<a href="https://github.com/Netflix/archaius">任务</a> 。 她通过gRPC与Gutenberg服务进行交互，并使用<a href="https://github.com/Netflix/eureka">Eureka</a>发现服务。 <br><br><h3> 过帐 </h3><br> 发布者通常使用高级API来发布字符串，文件和字节数组。 根据数据的大小，它们可以作为指向数据的直接指针发布，也可以上传到S3，然后作为数据指针S3发布。 客户端可以代表发布者将有效负载上传到S3，或仅发布S3中已经存在的有效负载元数据。 <br><br> 直接数据指针会自动全局复制。 默认情况下，S3中发布的数据由发布者在多个区域中上传，尽管也可以自定义。 <br><br><h3> 订阅管理 </h3><br> 客户端库提供收件人订阅管理。 这允许用户为某些主题创建订阅，库从中提取数据（例如，从S3），以便将其传输到用户设置的接收者。 订阅根据调查模型进行工作-他们每30秒从服务请求一个新的更新，并发送他们最后收到的版本。 如果数据不固定，则订购的客户将不会使用比其当前版本更旧的数据（请参见下面的“容错”）。 重复的请求逻辑是有线且可配置的。 例如，用户可以将Gutenberg配置为在下载过程中断时使用较旧版本的数据，或者在启动时处理最新版本的数据，通常是为了处理与反馈不兼容的数据更改。 古腾堡（Gutenberg）还提供了一个预配置的订阅，该订阅存储了最新数据，并在更改到来时自动更新了数据。 这满足了大多数订阅用例，在这些用例中，订阅者仅在任何给定时间关心当前值，这使用户可以为例如以前从未发布过的主题指定默认值（例如，如果主题用于配置），或者是否存在取决于主题的错误（以避免在存在有效默认值时阻止服务启动）。 <br><br><h3> 收件人API </h3><br> 古腾堡（Gutenberg）还提供了高级客户端API，这些客户端API在底层具有低级gRPC API，并提供了附加功能和查询执行的透明性。 一个示例是下载特定主题和版本的数据，该数据已被连接到<a href="https://github.com/Netflix/hollow">Netflix Hollow的</a>组件广泛使用。 另一个示例是在某个时间点接收主题的最新版本，这是调试或教授机器学习模型的常见用例。 <br><br><h3> 客户的可持续性和“透明度” </h3><br>  Gutenberg的设计重点是允许收件人服务成功启动，而不是保证它们以最新数据启动。 因此，客户端库是使用备份逻辑构建的，用于在无法与Gutenberg服务交互时处理状态。 如果HTTP请求失败，则客户端将从S3加载已发布主题的备份元数据缓存，并对其进行处理。 该缓存包含所有信息，用于决定是否应用更新以及在何处检索数据（从发布元数据本身还是从S3）。 这使客户无需使用服务即可检索数据（根据备份缓存的当前状态，数据可能已过时）。 <br><br> 提供客户端库的优点之一是能够获取度量标准的能力，该度量标准可用于报告一般的基础结构问题和特定应用程序中的错误。 今天，古腾堡团队使用这些指标来监视我们的SLI出版物发布情况，并在出现典型问题时发出警报。 一些客户还使用这些度量来报告特定于应用程序的错误，例如，个别发布失败或特定主题被拒绝。 <br><br><h3> 伺服器 </h3><br> 古腾堡是提供gRPC和REST端点的Governor / Tomcat应用程序。 它使用全局复制的Cassandra群集在每个区域中存储和分发发布元数据。 处理收件人请求的实例与处理发布请求的实例分别缩放。 发布请求的数量大约是发布请求的1000倍。 此外，这使您可以消除出版物事实对收据的依赖性，因此出版物的激增不会影响收据，反之亦然。 <br><br> 接收方请求群集中的每个实例都会处理自己的最新发布的内存中缓存，每隔几秒钟便将其从Cassandra中拉出。 这是处理大量来自已签名客户端的接收请求而无需将流量传输到Cassandra集群所必需的。 此外，具有较小ttl请求池的缓存可防止查询高峰，这可能会使Cassandra减慢太多，从而影响整个区域。 在某些情况下，突然发生的错误与大型集群的重新分配相吻合，导致Gutenberg服务中断。 此外，我们使用原始应用程序中发现的自适应<a href="https://github.com/Netflix/concurrency-limits">并发限制器</a>来抑制行为不正确的应用程序而不会影响其他应用程序。 <br><br> 如果数据在S3中的多个区域中发布，则服务器会根据客户端所在的位置来决定将哪个段发送回客户端以进行下载。 它还允许服务在“最近”区域中为客户提供细分，或者如果当前区域由于某种原因而断开连接，则迫使客户移动到另一个区域。 <br><br> 在将订阅数据返回给接收者之前，Gutenberg首先检查数据的一致性。 如果检查失败，并且订阅者已经接收到一些数据，则该服务不会返回任何内容，这实际上意味着更新不可用。 如果订户客户端尚未收到任何数据（通常意味着它刚刚启动），则该服务将请求主题的历史记录，并返回通过一致性检查的最后一个值。 这是由于以下事实：我们在Cassandra级别观察到复制过程中的偶发性延迟，即到订户请求新数据时，与最新发布版本关联的元数据仅被部分复制。 这可能导致客户端接收不完整的数据，这将导致数据请求错误或业务逻辑错误。 在服务器上执行此类一致性检查可保护收件人，避免因选择数据仓库服务而可能出现的一致性警报。 <br><br> 监视主题发布和使用这些主题的站点的能力是审核和收集使用信息的重要功能。 为了收集此数据，该服务拦截来自发布者和接收者的请求（包括来自订户和其他人的更新数据的请求），并使用<a href="https://medium.com/netflix-techblog/keystone-real-time-stream-processing-platform-a3ee651812a">Keystone</a>数据<a href="https://medium.com/netflix-techblog/keystone-real-time-stream-processing-platform-a3ee651812a">管道</a>将它们索引到Elasticsearch中。 因此，我们有机会获得用于监视已使用且不再存在的主题的数据。 我们从内部用户界面发布到Kibana仪表板的深入链接，以便主题所有者可以独立管理其订户。 <br><br> 除了处理发布者和收件人请求的群集之外，Gutenberg服务还会启动另一个处理定期请求的群集。 他特别解决了两个问题： <br><br><ol><li> 每隔几分钟，将收集所有最新出版物和元数据并将其发送到S3。 如上所述，这将启动客户端使用的备份缓存的启动。 </li><li> 垃圾收集器会删除不符合其保留策略的主题版本。 它还会删除与其关联的数据（例如，S3对象），并有助于确保定义良好的数据生命周期。 </li></ol><br><h3> 容错能力 </h3><br><h4> 捕捉 </h4><br> 在应用程序开发环境中会发生不成功的部署，并且回滚到早期版本是解决此类问题的常用策略。 数据驱动的体系结构使情况变得复杂，因为行为是由随时间变化的数据决定的。 <br><br> 古腾堡（Gutenberg）分发的数据会影响并在许多情况下控制系统的行为。 这意味着如果出现问题，您需要一种方法来回滚到数据的可靠版本。 为了缓解这种情况，Gutenberg可以将主​​题“链接”到特定版本。 这些引脚会覆盖数据的最新版本，并强制客户端升级到该版本，这使您可以快速解决严重问题，而不必试图弄清楚如何发布最新的工作版本。 您甚至可以将绑定应用于发布区域，以便只有该区域的收件人才能使用数据。 引脚也会覆盖活动绑定期间发布的数据，但是删除引脚后，客户端将收到最新版本，该版本可能是最新的固定版本，也可能是在旧版本固定时发布的新版本。 <br><br><h3> 顺序部署 </h3><br> 部署新代码时，通常建议创建带有一部分流量的新程序集，逐步部署它们，或者以其他方式降低部署风险，从而减慢部署速度。  ,    ,    . <br><br>   ,   Gutenberg, —         <a href="https://medium.com/netflix-techblog/global-continuous-delivery-with-spinnaker-2a6896c23ba7">Spinnaker</a> .       ,         .      ,            .     , ,       ,      ,      ,    . ,           AWS-  . <br><br><h4>  </h4><br> Gutenberg   Netflix     .    Gutenberg       ,              6 .      –           ,        1-2   ,        12 . <br><br>    24-    ,      ,     .   ,         200,          7.    -    ,      ,      Hollow.     ,       ,      ,     – 60,     – 4. <br><br><h4>   </h4><br>   ,      Gutenberg: <br><br><ul><li> <b>  </b> :    Gutenberg   Java-,        Node.JS  Python-.       ,   REST API Gutenberg   .     ,       Node.JS  Python. </li><li> <b>   </b> :     Gutenberg               .        Gutenberg. </li><li> <b>  </b> :            ,     . ,                  . </li><li> <b> </b> : ,   Gutenberg,    Gutenberg     .            ,        . </li><li> <b> </b> :      ,     ,            .           ,   Elasticsearch. </li><li> <b>  </b> :   Netflix –       .           ,    Gutenberg  ,           . </li></ul><br>  <i>仅此而已。</i> <i>    <a href="https://otus.pw/RCke/"></a> .</i> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN479572/">https://habr.com/ru/post/zh-CN479572/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN479562/index.html">创建一个简单的多平台机器人的结构</a></li>
+<li><a href="../zh-CN479564/index.html">ClickHouse + Graphite：如何大幅减少磁盘空间消耗</a></li>
+<li><a href="../zh-CN479566/index.html">矩阵潜在或反向工程抑制系统+同步时间证明</a></li>
+<li><a href="../zh-CN479568/index.html">我在一家公司担任程序员，但我想以不同的方式来满足我的50年</a></li>
+<li><a href="../zh-CN479570/index.html">Python入口点</a></li>
+<li><a href="../zh-CN479574/index.html">ITIL服务管理的4个方面</a></li>
+<li><a href="../zh-CN479578/index.html">打印外包：如何验证承包商未收取账单金额</a></li>
+<li><a href="../zh-CN479580/index.html">金色佳能网格：前端的恐怖故事</a></li>
+<li><a href="../zh-CN479584/index.html">通用入侵检测与防御系统</a></li>
+<li><a href="../zh-CN479586/index.html">Efros Config Inspector甚至使那些不使用它的人受益</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

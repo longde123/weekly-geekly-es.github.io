@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏽‍🚒 🏉 🖖🏾 垃圾收集器程序的优化 👩🏽‍🔧 🚦 📻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="不久前，一篇关于高负载.NET服务中的垃圾回收的 HabréOptimization上的精彩文章出现了。 本文非常有趣，因为具有理论的作者较早地完成了不可能的事情：他们使用GC的知识优化了应用程序。 而且，如果以前我们不知道该GC如何工作，现在通过Konrad Cocos在他的著作Pro .NET ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>垃圾收集器程序的优化</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/clrium/blog/453082/"><p> 不久前，一篇关于<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">高负载.NET服务中的垃圾回收的</a> HabréOptimization上的精彩文章出现了。 本文非常有趣，因为具有理论的作者较早地完成了不可能的事情：他们使用GC的知识优化了应用程序。 而且，如果以前我们不知道该GC如何工作，现在通过Konrad Cocos在他的著作<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Pro .NET Memory Management中</a>的努力，可以将其呈现给我们。 我为自己得出了什么结论？ 让我们列出问题区域并考虑如何解决它们。 </p><br><p> 在最近的CLRium＃5研讨会：垃圾收集器上，我们整天都在谈论GC。 但是，我决定发布一份带有文本解码的报告。 这是关于有关应用程序优化的结论的讨论。 </p><br><iframe width="560" height="315" src="https://www.youtube.com/embed/EduXgLWAhm8" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><a name="habracut"></a><br><h1 id="snizhayte-krosspokolencheskuyu-svyaznost"> 减少跨代连接 </h1><br><h3 id="problema"> 问题 </h3><br><p> 为了优化垃圾收集速度，GC会尽可能收集年轻的一代。 但是要做到这一点，他还需要有关卡片表中来自较早几代的链接的信息（在这种情况下，它们充当额外的根）。 </p><br><p> 同时，从长辈到年轻一代的一个链接会迫使您用纸牌桌覆盖该区域： </p><br><ul><li>  4个字节重叠4 kb或最大  320个对象-用于x86体系结构 </li><li>  8个字节重叠8 kb或最大  320个对象-用于x64体系结构 </li></ul><br><p> 即  GC检查卡表中的值达到非零值，因此我们被迫检查最多320个对象，以确定我们这一代是否存在传出链接。 </p><br><p> 因此，年轻一代中的稀疏链接将使GC更加耗时 </p><br><h3 id="reshenie"> 解决方案 </h3><br><ul><li> 在附近的年轻一代中找到具有联系的对象； </li><li> 如果假定为零生成对象，请使用拉动。 即 创建一个对象池（不会有新对象：不会有零代对象）。 此外，通过使用两个连续的GC“预热”池，以确保其内容在第二代中失败，从而避免了链接到较年轻的一代并在卡表中设置零。 </li><li> 避免与年轻一代建立联系； </li></ul><br><h1 id="ne-dopuskayte-silnoy-svyaznosti"> 避免强连接 </h1><br><h3 id="problema-1"> 问题 </h3><br><p> 根据SOH中对象压缩阶段的算法，如下所示： </p><br><ul><li> 要压缩堆，您需要遍历树并检查所有链接，并为新值更正它们。 </li><li> 此外，卡片表中的链接会影响整个对象组 </li></ul><br><p> 因此，对象的一般强连通性可能导致GC期间下沉。 </p><br><h3 id="reshenie-1"> 解决方案 </h3><br><ul><li> 一代人地将附近的物体牢固连接 </li><li> 通常避免不必要的链接（例如，不要复制this-&gt;句柄链接，而使用已经存在的this-&gt; Service-&gt;句柄） </li><li> 避免使用隐藏连接的代码。 例如，关闭 </li></ul><br><h1 id="monitorte-ispolzovanie-segmentov"> 监控细分受众群的使用情况 </h1><br><h3 id="problema-2"> 问题 </h3><br><p> 在密集工作中，可能会出现以下情况：分配新对象导致延迟：在堆下分配新段，并在清理垃圾时进一步取消使用这些段 </p><br><h3 id="reshenie-2"> 解决方案 </h3><br><ul><li> 使用PerfMon / Sysinternal实用程序控制新段的选择点以及它们的解除和释放 </li><li> 如果我们谈论的是LOH（这是密集的缓冲区流量），请使用ArrayPool </li><li>如果要谈论SOH，请确保在附近突出显示相同寿命的对象，并提供Sweep而不是Collect </li><li>  SOH：使用对象池 </li></ul><br><h1 id="ne-vydelyayte-pamyat-v-nagruzhennyh-uchastkah-koda"> 不要在已加载的代码段中分配内存 </h1><br><h3 id="problema-3"> 问题 </h3><br><p> 代码的已加载部分分配内存： </p><br><ul><li> 结果，GC选择的分配窗口不是1Kb，而是8Kb。 </li><li> 如果窗口空间不足，则会导致GC并扩大封闭区域 </li><li> 密集的新对象流将使其他线程中的短寿命对象迅速进入垃圾回收条件更差的较早一代 </li><li> 这将增加垃圾收集时间 </li><li> 即使在并发模式下，也将导致更长的Stop the World停止世界 </li></ul><br><h3 id="reshenie-3"> 解决方案 </h3><br><ul><li> 完全禁止在代码的关键部分使用闭包 </li><li> 完全禁止对代码的关键部分进行装箱（如有必要，可以通过拉动使用仿真） </li><li> 在需要创建用于存储数据的临时对象的地方，请使用结构。 引用结构更好。 当字段数大于2时，由ref发送 </li></ul><br><h1 id="izbegayte-izlishnih-vydeleniy-pamyati-v-loh"> 避免在LOH中分配不必要的内存 </h1><br><h3 id="problema-4"> 问题 </h3><br><p> 将阵列放置在LOH中会导致GC程序碎片化或加重 </p><br><h3 id="reshenie-4"> 解决方案 </h3><br><ul><li> 使用将数组划分为子数组和封装处理此类数组的逻辑的类（即，代替存储大型数组的List &lt;T&gt;，将其MyList与array [] []分开，将数组划分得更短） <br><ul><li> 阵列将进入SOH </li><li> 经过几次垃圾收集后，它们将躺在永生的物体旁边，并不再影响垃圾收集 </li></ul></li><li> 控制长度超过1000个元素的双精度数组的使用。 </li></ul><br><h1 id="gde-opravdano-i-vozmozhno-ispolzovat-thread-stack"> 在可能的情况下，使用线程堆栈 </h1><br><h3 id="problema-5"> 问题 </h3><br><p> 方法调用（包括内部调用）中存在许多超短对象或对象。 他们创建对象流量 </p><br><h3 id="reshenie-5"> 解决方案 </h3><br><ul><li> 尽可能在堆栈上使用内存分配： <br><ul><li> 它不会加载一堆 </li><li> 不加载GC </li><li> 释放内存-即时 </li></ul></li><li>使用<code>Span T x = stackalloc T[];</code> 尽可能替换<code>new T[]</code> </li><li> 尽可能使用<code>Span/Memory</code> </li><li> 将算法转换为<code>ref stack</code>类型（StackList：struct， <a href="">ValueStringBuilder</a> ） </li></ul><br><h1 id="osvobozhdayte-obekty-kak-mozhno-ranshe"> 尽早释放对象 </h1><br><h3 id="problema-6"> 问题 </h3><br><p> 被认为是短暂的，对象属于gen1，有时属于gen2。 <br> 这导致较重的GC使用寿命更长 </p><br><h3 id="reshenie-6"> 解决方案 </h3><br><ul><li> 您必须尽早释放对象引用 </li><li> 如果冗长的算法包含可用于任何对象的代码，则该代码将按代码隔开。 但是可以将其分组到一个位置，因此有必要将其分组，从而可以更早地收集它们。 <br><ul><li> 例如，在第10行上，将集合取出，在第120行上，将其过滤掉。 </li></ul></li></ul><br><h1 id="vyzyvat-gccollect-ne-nuzhno"> 无需调用GC.Collect（） </h1><br><h3 id="problema-7"> 问题 </h3><br><p> 通常，如果您调用GC.Collect（），它将解决此问题。 </p><br><h3 id="reshenie-7"> 解决方案 </h3><br><ul><li> 学习GC操作算法，查看ETW下的应用程序和其他诊断工具（JetBrains dotMemory，...）更为正确。 </li><li> 优化问题最严重的区域 </li></ul><br><h1 id="izbegayte-pinning"> 避免固定 </h1><br><h3 id="problema-8"> 问题 </h3><br><p> 固定会带来许多问题： </p><br><ul><li> 使垃圾收集复杂化 </li><li> 创建可用内存空间（节点空闲列表项，砖块表，存储桶） </li><li> 在卡片表中形成链接时，可能会在年轻一代中留下一些物体 </li></ul><br><h3 id="reshenie-8"> 解决方案 </h3><br><p> 如果没有其他出路，请使用fixed（）{}。 这种提交方法并不构成真正的提交：只有当GC在花括号内工作时才会发生。 </p><br><h1 id="izbegayte-finalizacii"> 避免定案 </h1><br><h3 id="problema-9"> 问题 </h3><br><p> 确定性调用不是确定性的： </p><br><ul><li> 未经邀请的Dispose（）会最终确定对象的所有传出链接 </li><li> 相关对象的延迟时间比计划的时间长 </li><li> 老龄化，移居到老一辈 </li><li> 如果它们同时包含到较年轻的链接，则它们将从卡表生成链接 </li><li> 使老一辈的组装复杂化，将它们分割成碎片，从而导致压缩而不是扫描 </li></ul><br><h3 id="reshenie-9"> 解决方案 </h3><br><p> 轻轻调用Dispose（） </p><br><h1 id="izbegayte-bolshogo-kolichestva-potokov"> 避免线程过多 </h1><br><h3 id="problema-10"> 问题 </h3><br><p> 随着线程数量的增加，分配上下文随着 它们分配给每个线程： </p><br><ul><li> 结果，GC.Collect变得更快。 </li><li> 由于临时段空间不足，Collect将跟随Collective Sweep </li></ul><br><h3 id="reshenie-10"> 解决方案 </h3><br><ul><li> 通过核心数控制线程数 </li></ul><br><h1 id="izbegayte-traffika-obektov-raznogo-razmera"> 避免流量不同大小的物体 </h1><br><h3 id="problema-11"> 问题 </h3><br><p> 当流量不同大小和生命周期的对象时，会发生碎片： </p><br><ul><li> 增加碎片率 </li><li> 在所有引用对象中以地址更改阶段触发集合触发 </li></ul><br><h3 id="reshenie-11"> 解决方案 </h3><br><p> 如果假定对象流量： </p><br><ul><li> 检查是否存在额外的字段，近似大小 </li><li> 检查是否缺少字符串操作：如果可能，请替换为ReadOnlySpan / ReadOnlyMemory </li><li> 尽快释放链接 </li><li> 利用拉力 </li><li> 使用双GC温暖的缓存和池以压缩对象。 因此，可以避免卡牌桌出现问题。 </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN453082/">https://habr.com/ru/post/zh-CN453082/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN453072/index.html">我如何通过Google Cloud Professional数据工程师认证考试</a></li>
+<li><a href="../zh-CN453074/index.html">Wolfram Engine现在向开发人员开放（翻译）</a></li>
+<li><a href="../zh-CN453076/index.html">自己的事：一本通过这场比赛的策略的书</a></li>
+<li><a href="../zh-CN453078/index.html">评论 他们在自由职业者的生活中所扮演的角色不仅</a></li>
+<li><a href="../zh-CN453080/index.html">爱丽丝的智能家居。 Yandex为所有开发人员开放平台</a></li>
+<li><a href="../zh-CN453084/index.html">背景：美苏冲突-时间轴和原因</a></li>
+<li><a href="../zh-CN453088/index.html">“开放组织”：如何不迷失在混乱中并集结数百万</a></li>
+<li><a href="../zh-CN453090/index.html">MERLION成为Zextras的正式发行商，Zextras是Zimbra邮件服务器扩展的全球领先开发商</a></li>
+<li><a href="../zh-CN453092/index.html">将Flutter桌面应用程序放在一起</a></li>
+<li><a href="../zh-CN453094/index.html">MD5哈希中的数字频率分析</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

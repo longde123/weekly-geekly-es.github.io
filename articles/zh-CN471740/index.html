@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙁 🏇🏼 🎚️ 基于ZeroMQ和Tarantool的智能缓存服务 🧑🏻 🧗🏻 ⬇️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="ICD首席开发人员Ruslan Aromatov 
+
+
+
+ 哈Ha！ 我在莫斯科信贷银行（Moscow Credit Bank）担任后端开发人员，在我的工作中，我积累了一些经验，希望与社区分享。 今天，我将告诉您我们如何使用MKB Online移动应用程序为客户的前端服务器编写我们自己的缓存服务。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>基于ZeroMQ和Tarantool的智能缓存服务</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mkb/blog/471740/">  <b>ICD首席开发人员Ruslan Aromatov</b> <br><br><img src="https://habrastorage.org/webt/ld/1c/ck/ld1cckil16z47pv5vgyjgi7kwa8.png"><br><br> 哈Ha！ 我在莫斯科信贷银行（Moscow Credit Bank）担任后端开发人员，在我的工作中，我积累了一些经验，希望与社区分享。 今天，我将告诉您我们如何使用MKB Online移动应用程序为客户的前端服务器编写我们自己的缓存服务。 本文可能对那些参与服务设计并且熟悉微服务体系结构，Tarantool内存数据库和ZeroMQ库的人有用。 在本文中，几乎没有代码示例和基本解释，而只是描述了服务的逻辑以及它们与已经进行了两年以上的特定示例的交互。 <br><a name="habracut"></a><br><h4> 一切如何开始 </h4><br> 大约6年前，该计划很简单。 作为外包公司的遗产，我们获得了两个用于iOS和android的移动银行客户端，以及为它们提供服务的前端服务器。 服务器本身是用Java编写的，以不同的方式（主要是肥皂）到达后端，并通过https传输xml与客户端进行通信。 <br><br> 客户应用程序可以通过某种方式进行身份验证，显示产品列表，...他们似乎可以进行一些转移和付款，但实际上他们做得并不好，而且并非总是如此。 因此，前端服务器既不会遇到大量用户，也不会承受任何严重的负载（但是，这并不能阻止它每两天掉线一次）。 <br><br> 显然，我们（当时我们的团队由四人组成）作为负责移动银行的人不适合这种情况，因此一开始我们订购了当前的应用程序，但是前端服务器确实非常糟糕，因此必须快速重写整个过程，同时用json替换xml并移至<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">WildFly</a>应用程序服务器。 重构已经花费了几年时间，它并没有单独使用，因为所做的一切主要是为了确保系统稳定运行。 <br><br> 逐渐地，所开发的应用程序和服务器开始更稳定地工作，并且它们的功能不断扩展，并获得了回报-用户越来越多。 <br><br> 同时，诸如容错，冗余，复制和-令人难以置信的-高负载之类的问题开始出现。 <br><br> 解决该问题的快速方法是添加第二台WildFly服务器，并且应用程序学会了在它们之间进行切换。 通过与WildFly集成的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Infinispan</a>模块解决了与客户端会话同时工作的问题。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/li/xt/wx/lixtwxkd09us1bfivvdxjv-dxrk.png" alt="和以前一样"></div><br> 生活似乎越来越好... <br><br><h4> 你不能那样生活 </h4><br> 但是，实际上，这种处理会话的选择并非没有缺点。 我会提到那些不适合我们的内容。 <br><br><ol><li> 会话丢失。 最重要的减号。 例如，一个应用程序向服务器1发送两个请求：第一个请求是身份验证，第二个是对帐户列表的请求。 身份验证成功后，将在服务器1上创建会话。 此时，由于通信不畅，第二个客户端请求突然中断，应用程序切换到服务器2，重新发送第二个请求。 但是在某些工作量下，Infinispan可能没有时间在节点之间同步数据。 结果，服务器2无法验证客户端会话，无法向客户端发送愤怒的响应，客户端感到悲伤并结束其会话。 用户必须再次登录。 伤心 </li><li> 重新启动服务器也会导致会话丢失。 例如，更新后（这种情况经常发生）。 服务器2启动时，只有将数据与服务器1同步后才能工作。 似乎服务器已启动，但实际上不应该接受请求。 这很不方便。 </li><li> 这是一个内置的WildFly模块，可防止我们从此应用程序服务器转向微服务。 </li></ol><br> 从这里开始，我们想要的清单就是由它自己形成的。 <br><br><ol><li> 我们希望存储客户端会话，以便启动后的任何服务器（无论有多少）都可以访问它们。 </li><li> 我们希望在请求之间存储任何客户数据（例如，付款参数等）。 </li><li> 我们通常希望将任意数据保存在任意键上。 </li><li> 而且我们还希望在认证通过之前接收客户端数据。 例如，用户通过了身份验证，并且他的所有产品都在那里新鲜而温暖。 </li><li> 而且我们要根据负载进行缩放。 </li><li> 并在docker中运行，并在单个堆栈上写入日志，并计算指标等等。 </li><li> 哦，是的，所以一切都能快速进行。 </li></ol><br><h4> 选择的面粉 </h4><br> 以前，我们没有实现微服务体系结构，因此首先我们坐下来阅读，观看和尝试不同的选择。 显然，我们需要一个快速的存储库，并需要在其上进行某种附加处理业务逻辑，并且是该存储库的访问接口。 另外，最好加快服务之间的快速传输。 <br><br> 他们选择了很长时间，争论了很多，然后进行了尝试。 我现在不会描述所有候选人的利弊，这不适用于本文的主题，我只是说存储将是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">tarantool</a> ，我们将使用Java编写我们的服务，而<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ZeroMQ将</a>用作传输工具。 我什至不会争辩说选择是非常模棱两可的，但这很大程度上受到以下事实的影响：我们不喜欢不同的大型框架（笨重和缓慢），盒装解决方案（由于通用性和缺乏定制性），但同时我们喜欢尽可能地控制系统的所有部分。 为了控制服务的工作，我们选择了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Prometheus</a>度量标准收集服务器，该服务器具有方便的代理，几乎可以将其内置到任何代码中。 所有这些的日志将进入ELK堆栈。 <br><br> 好吧，在我看来，已经有太多的理论了。 <br><br><h4> 开始和结束 </h4><br> 设计结果大约是这样的方案。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/he/kw/oh/hekwohpipjcqh4ufeoykog6f8cc.png" alt="我们要如何"></div><br>  <b>贮藏</b> <br><br> 它应该尽可能地愚蠢，仅用于存储数据及其当前状态，但始终可以正常工作而无需重新启动。 设计用于服务不同版本的前端服务器。 我们将所有数据保留在内存中，以防通过.snap和.xlog文件重启时进行恢复。 <br><br> 客户会话表（空间）： <br><br><ul><li> 会话ID </li><li> 客户编号； </li><li> 版本（服务） </li><li> 更新时间（时间戳）； </li><li> 寿命（ttl）； </li><li> 序列化的会话数据。 </li></ul><br> 这里的一切都很简单：对客户端进行身份验证，前端服务器创建一个会话并将其保存在存储器中，以记住时间。 对于每个数据请求，时间都会更新，因此会话保持活动状态。 如果根据要求数据已过时（或者根本没有数据），那么我们将返回一个特殊的返回码，然后客户端将结束其会话。 <br><br> 简单缓存表（用于任何会话数据）： <br><br><ul><li> 钥匙 </li><li> 会话ID </li><li> 存储数据的类型（任意数）； </li><li> 更新时间（时间戳）； </li><li> 寿命（ttl）； </li><li> 序列化数据。 </li></ul><br> 登录前需要预热的客户端数据表： <br><ul><li> 客户编号； </li><li> 会话ID </li><li> 版本（服务） </li><li> 存储数据的类型（任意数）； </li><li> 更新时间（时间戳）； </li><li> 条件 </li><li> 序列化数据。 </li></ul><br> 这里的一个重要领域是条件。 实际上，它们只有两个-空闲和更新。 它们由上层服务放置，该上层服务到达后端以获取客户端数据，因此该服务的另一个实例不会执行相同的工作（已经无用）并且不会加载后端。 <br><br> 设备表： <br><br><ul><li> 客户编号； </li><li> 装置编号 </li><li> 更新时间（时间戳）； </li></ul><br> 设备表是必需的，以便即使在客户端在系统中进行身份验证之前，也要找出其ID并开始接收其产品（预热缓存）。 逻辑是这样的：第一个入口对我们总是很冷，因为在身份验证之前，我们不知道来自不熟悉的设备的客户端类型（移动客户端总是在任何请求中发送设备ID）。 来自该设备的所有后续条目将伴随有与其关联的客户端的预热缓存。 <br><br> 服务器程序将处理数据与java服务隔离开来。 是的，我必须学习lua，但是并不需要很多时间。 除了数据管理本身之外，lua程序还负责返回当前状态，索引选择，清除后台进程（光纤）中的过时记录以及内置Web服务器的操作，通过该服务器可以直接对数据进行服务访问。 这就是-用双手书写所有内容的魅力-无限控制的可能性。 但减法是一样的-您需要自己编写所有内容。 <br><br>  Tarantool本身在docker容器中工作，所有必需的lua文件都在映像组装阶段放置在那里。 整个程序集通过gradle脚本编写。 <br><br> 主从复制。 在另一台主机上，运行与主存储副本完全相同的容器。 如果主服务器发生紧急崩溃，则需要它-然后java服务切换到从服务器，然后它成为主服务器。 以防万一，有第三个奴隶。 但是，就我们而言，即使是完全的数据丢失也是令人遗憾的，但不是致命的。 在最坏的情况下，用户将必须登录并检索再次进入缓存的所有数据。 <br><br>  <b>Java服务</b> <br><br> 设计为典型的无状态微服务。 它没有配置，创建docker容器时，所有必需的参数（其中有6个）都通过环境变量传递。 它使用自己的协议通过ZeroMQ传输（org.zeromq.jzmq-我们自己构建的本机libzmq.so.5.1.1的java接口）与前端服务器一起工作。 它通过Java连接器（org.tarantool.connector）与狼蛛一起工作。 <br><br> 服务初始化非常简单： <br><br><ul><li> 我们启动一个记录器（log4j2）； </li><li> 从环境变量中（我们在docker中），我们读取工作所需的参数； </li><li> 我们启动指标服务器（码头）； </li><li> 连接到狼蛛（异步）； </li><li> 我们开始所需数量的线程处理程序（工人）； </li><li> 我们启动一个代理（zmq）-无限的消息处理周期。 </li></ul><br> 在所有上述内容中，只有消息处理引擎很有趣。 下面是微服务的示意图。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/my/fd/ef/myfdef3ggy0oerhyfvec3iozvwc.png" alt="消息代理逻辑"></div><br> 让我们从经纪人的起点开始。 我们的代理是一组ROUTER类型的zmq套接字，它接受来自各个客户端的连接，并负责调度来自它们的消息。 <br><br> 在我们的例子中，我们在外部接口上有一个侦听套接字，该套接字使用tcp协议接收来自客户端的消息，而另一个则使用inproc协议接收来自工作线程的消息（它比tcp快得多）。 <br><br><pre><code class="java hljs"><span class="hljs-comment"><span class="hljs-comment">/** //   (   ,   ) ZContext zctx = new ZContext(); //    ZMQ.Socket clientServicePoint = zctx.createSocket(ZMQ.ROUTER); //    ZMQ.Socket workerServicePoint= zctx.createSocket(ZMQ.ROUTER); //     clientServicePoint.bind("tcp://*:" + Config.ZMQ_LISTEN_PORT); //     workerServicePoint.bind("inproc://worker-proc");</span></span></code> </pre> <br> 初始化套接字后，我们开始一个无限的事件循环。 <br><br><pre> <code class="java hljs"><span class="hljs-comment"><span class="hljs-comment">/** *      */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">run</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> status;  <span class="hljs-keyword"><span class="hljs-keyword">try</span></span> {   ZMQ.Poller poller = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ZMQ.Poller(<span class="hljs-number"><span class="hljs-number">2</span></span>);    poller.register(workerServicePoint, ZMQ.Poller.POLLIN);    poller.register(clientServicePoint, ZMQ.Poller.POLLIN);    <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> rc;    <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">true</span></span>) {      <span class="hljs-comment"><span class="hljs-comment">//        rc = poller.poll(POLL_INTERVAL);      if (rc == -1) {        status = -1;        logger.errorInternal("Broker run error rc = -1");        break; //  -     }    //     ()    if (poller.pollin(0)) {       processBackendMessage(ZMsg.recvMsg(workerServicePoint));    }    //        if (poller.pollin(1)) {       processFrontendMessage(ZMsg.recvMsg(clientServicePoint));    }    processQueueForBackend(); }  } catch (Exception e) {    status = -1;  } finally {    clientServicePoint.close();    workerServicePoint.close();  }  return status; }</span></span></code> </pre><br> 工作的逻辑非常简单：我们从不同的地方接收消息，并对其进行处理。 如果遇到严重的问题，我们将退出循环，从而导致进程崩溃，并由docker守护程序自动重启。 <br><br> 主要思想是代理程序不处理任何业务逻辑，他仅分析消息头并将任务分配给服务启动时较早启动的工作线程。 这样，具有固定长度优先级的单个消息队列就可以帮助他。 <br><br> 让我们使用上面的方案和代码示例来分析算法。 <br><br> 启动之后，将初始化比代理晚启动的线程工作器，并将就绪消息发送给代理。 经纪人接受它们，对其进行分析，然后将每个工作人员添加到列表中。 <br><br> 客户端套接字上发生了一个事件-我们收到了message1。 代理调用传入的消息处理程序，其任务是： <br><br><ul><li> 分析消息头； </li><li> 将消息放入具有给定优先级（基于标头分析）和生存期的holder对象中； </li><li> 将持有人置于消息队列中； </li><li> 如果队列未满，则处理程序的任务结束； </li><li> 如果队列已满，我们将调用该方法向客户端发送错误消息。 </li></ul><br> 在循环的同一迭代中，我们调用消息队列处理程序： <br><br><ul><li> 我们从队列中请求最新消息（队列根据添加消息的优先级和顺序自行决定） </li><li> 检查消息生存期（如果已过期，则调用该方法将错误消息发送给客户端）； </li><li> 如果要处理的消息是相关的，请尝试让第一个免费工人准备工作； </li><li> 如果没有，则将消息放回队列中（更准确地说，就是不要从那里删除它，它会一直挂在那里，直到其生命周期到期）； </li><li> 如果我们有准备上班的工人，则将其标记为忙碌并向他发送消息以供处理； </li><li> 从队列中删除消息。 </li></ul><br> 我们对所有后续消息执行相同的操作。 线程工作程序本身的设计方式与代理相同-它具有相同的无尽消息处理周期。 但是在其中我们不再需要即时处理，它旨在执行冗长的任务。 <br><br> 工人完成任务后（例如，去客户产品的后端或在会议中的狼蛛中），他向经纪人发送一条消息，经纪人将该消息发回给客户。 消息从客户端到达客户端的那一刻起，便会记住应将答案发送给客户端的地址，该对象以稍有不同的格式作为消息发送给工作人员，然后返回。 <br><br> 我经常提到的消息格式是我们自己制作的。 开箱即用，ZeroMQ为我们提供了ZMsg类-消息本身，以及ZFrame-此消息的组成部分，本质上只是一个字节数组，我可以随意使用。 我们的消息由两部分组成（两个ZFrame），第一部分是二进制标头，第二部分是数据（例如，请求主体，以字节数组表示的json字符串形式）。 消息头是通用的，并且从客户端到服务器以及从服务器到客户端都行进。 <br><br> 实际上，我们没有“请求”或“响应”的概念，只有消息。 标头包含：协议版本，系统类型（要寻址的系统），消息类型，传输级别错误代码（如果不为0，则表示消息传输引擎中发生了某些事情），请求ID（来自客户端的传递标识符-跟踪所需的信息），客户端会话ID（可选）以及数据级别错误的迹象（例如，如果无法解析后端响应，则设置此标志，以便客户端的解析器不会反序列化响应，但会接收错误数据以另一种方式）。 <br><br> 由于所有微服务之间都只有一个协议和这样的标头，因此我们可以非常简单地操纵服务的组件。 例如，您可以将代理进行单独的处理，并使其成为整个微服务系统级别的单个消息代理。 或者，例如，不以进程内部的线程形式运行工作程序，而是将其作为单独的独立进程运行。 并且尽管其中的代码不会更改。 总的来说，有创造力的空间。 <br><br><h4> 关于性能和资源的一点 </h4><br> 代理本身速度很快，服务的总带宽受到后端速度和工作人员数量的限制。 方便地，所有必要的内存量在服务启动时立即分配，所有线程立即启动。 队列大小也是固定的。 在运行时，仅处理消息。 <br><br> 例如：除了主线程，我们当前的缓存战斗服务还会启动另外100个工作线程，并且队列大小限制为三千条消息。 在正常操作中，每个实例每秒最多处理200条消息，并消耗大约250 MB的内存和大约2-3％的CPU。 有时在峰值负载时会跳到7-8％。 所有这些都适用于某种双核虚拟至强。 <br><br> 该服务的正常工作意味着同时雇用3-5个工人（100个工人），并且队列中的消息数为0（即，他们立即进行处理）。 如果后端开始变慢，则忙碌的工作人员的数量会随着响应时间的增加而增加。 如果发生事故并且后端上升，那么所有工作人员都会首先结束，此后消息队列开始阻塞。 当它完全堵塞时，我们开始拒绝处理客户。 同时，我们不会开始消耗内存或CPU资源，而是稳定地提供指标并清楚地响应客户的情况。 <br><br> 第一个屏幕截图显示了该服务的常规操作。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ji/ek/ap/jiekapcj1vylguqgijeheydw7nu.png" alt="服务的正常工作"></div><br> 在第二个事件中，发生了事故-后端由于某种原因在30秒内没有响应。 可以看出，起初所有工作人员都用光了，此后消息队列开始阻塞。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/4v/he/h8/4vheh8hrqsinriaelyow6bgp9wu.png" alt="意外事故"></div><br><h4> 性能测试 </h4><br> 在我的工作计算机（CentOS 7，Core i5、16Gb RAM）上的综合测试显示如下。 <br><br> 使用存储库（写入狼蛛，立即读取100字节大小的记录-模拟会话的工作）-12000 rps。 <br><br> 同一件事，只是速度不是在服务之间测量的（狼蛛点），而是在客户端和服务之间测量的。 当然，我必须写一个客户来对自己进行压力测试。 一台机器内，可以获得7000 rps。 在本地网络上（并且我们有许多不清楚物理连接方式的不同虚拟机），结果各不相同，但一个实例的最大速度可达5000 rps。 上帝知道什么样的表现，但是十倍以上的表现涵盖了我们的高峰负荷。 仅当服务的一个实例正在运行时，我们才有多个实例，并且您可以随时运行所需的任意多个实例。 当服务阻止存储速度时，可以水平缩放狼蛛（例如，基于客户端ID的碎片）。 <br><br><h4> 服务情报 </h4><br> 细心的读者可能已经问过这个问题-标题中提到的这项服务的“智能”是什么？ 我已经顺便提到了这一点，但现在我会告诉您更多。 <br><br> 该服务的主要任务之一是减少将产品发布给用户的时间（帐户，卡，存款，贷款，服务包等的列表），同时减少由于狼蛛中缓存而导致的后端负载（减少大型Oracle中的请求数量）。 <br><br> 他做得很好。 预热客户端缓存的逻辑如下： <br><br><ul><li> 用户启动移动应用程序； </li><li> 包含设备ID的AppStart请求被发送到前端服务器； </li><li> 前端服务器将具有该ID的消息发送到缓存服务； </li><li> 服务在设备表中查找该设备的客户端ID； </li><li> 如果不存在，则什么也不会发生（响应甚至不会发送，服务器不会等待它）； </li><li> 如果找到了客户ID，则工作人员创建一组消息，以接收由经纪人立即处理并以正常模式分发给工作人员的用户产品列表； </li><li> 每个工作人员向用户发送对某种类型数据的请求，将“正在更新”状态放入数据库中（此状态可防止后端重复相同的请求（如果它们来自服务的其他实例）。 </li><li> 接收到数据后，将它们记录在狼蛛中； </li><li> 用户登录系统，应用程序发送接收其产品的请求，服务器将这些请求以消息的形式发送给缓存服务； </li><li> 如果已经接收到用户数据，我们只需从缓存中发送即可； </li><li> 如果数据正在接收中（“正在更新”状态），则在工作程序内部开始一个数据等待周期（它等于后端的请求超时）； </li><li> 一旦接收到数据（即表中该记录（元组）的状态为“ idle”），服务就会将其提供给客户端； </li><li> 如果在一定时间间隔内未收到数据，则将错误返回给客户端。 </li></ul><br> 因此，实际上，我们能够将前端服务器接收产品的平均时间从200毫秒减少到20毫秒，即减少了大约10倍，而对后端的请求数则减少了大约4倍。 <br><br><h4> 问题所在 </h4><br> 缓存服务已经投入使用了两年左右，目前可以满足我们的需求。 <br><br> 当然，仍然存在未解决的问题，有时会出现问题。 战斗中的Java服务尚未下降。 狼蛛在SIGSEGV上跌落了几次，但它是一些旧版本，并且在更新后不再发生。 在压力测试期间，复制掉落，主服务器上发生管道破裂，此后从服务器掉下，尽管主服务器继续工作。 通过重新启动从站来决定。 <br><br> 一旦数据中心发生某种事故，事实证明操作系统（CentOS 7）不再看到硬盘驱动器。 文件系统进入只读模式。 最令人惊讶的是，由于我们将所有数据保留在内存中，因此服务继续工作。 狼蛛无法写入.xlog文件，没有人记录任何内容，但某种程度上一切正常。 但是重新启动的尝试失败了-没有人可以启动。 <br><br> 有一个尚未解决的大问题，我想听听社会人士对此问题的意见。 当主狼蛛崩溃时，java服务可以切换到从属服务器，从属服务器继续作为主服务器工作。 但是，这仅在主机崩溃且无法工作时才会发生。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/e6/pu/wh/e6puwh26kmnngnrxkvyelgvvite.png" alt="未解决的问题"></div><br> 假设我们有3个服务实例，它们处理主狼蛛上的数据。 服务本身不会崩溃，数据库复制仍在进行，一切都很好。 但是突然之间，在向导起作用的节点1和节点4之间，我们的网络崩溃了。 经过多次失败的尝试后，Service-1决定切换到备份数据库并开始在那里发送请求。 <br><br> 在此之后，狼蛛从属服务器立即开始接受数据修改请求，结果是主服务器的复制崩溃了，我们得到的数据不一致。 同时，service-2和3与主服务器完美配合，service-1与以前的slave通信良好。 显然，在这种情况下，我们开始失去客户会话和任何其他数据，尽管从技术角度来看一切正常。 我们尚未解决这样的潜在问题。 幸运的是，这已经两年没有发生了，但是这种情况是真实的。 现在，每个服务都知道它要去的商店的数量，并且我们有一个针对该指标的警报，该警报在从主服务器切换到从服务器时将起作用。 而且，您必须用手修理一切。 您如何解决此类问题？ <br><br><h4> 计划 </h4><br> 我们计划解决上述问题，限制同时忙于一种请求类型的工作人员的数量，安全（在不丢失当前请求的情况下）停止服务以及进一步完善工作的工人数量。 <br><br><h4> 结论 </h4><br> 也许就是全部，尽管我只是比较肤浅地讨论了该主题，但是工作的一般逻辑应该很清楚。 因此，如有可能，我准备在评论中回应。 我简要介绍了银行前端服务器的一个小型辅助子系统如何为移动客户提供服务。 <br><br> 如果您对社区感兴趣，那么我可以向您介绍一些我们的解决方案，这些解决方案有助于提高银行客户服务的质量。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN471740/">https://habr.com/ru/post/zh-CN471740/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN471724/index.html">敏捷和大脑需求：压力管理</a></li>
+<li><a href="../zh-CN471726/index.html">测量脉冲响应和非线性失真的现代方法</a></li>
+<li><a href="../zh-CN471728/index.html">Avalonia我的优缺点</a></li>
+<li><a href="../zh-CN471736/index.html">非接触式以太网传感器</a></li>
+<li><a href="../zh-CN471738/index.html">简短的故事，有时会在膝盖上带来便利</a></li>
+<li><a href="../zh-CN471742/index.html">Sberbank AI旅程。 我们如何教神经网络参加考试</a></li>
+<li><a href="../zh-CN471744/index.html">Tarantool数据网格：体系结构和功能</a></li>
+<li><a href="../zh-CN471746/index.html">配置HTTP标头以确保安全的完整指南</a></li>
+<li><a href="../zh-CN471748/index.html">药房优化：我们对数学的处理</a></li>
+<li><a href="../zh-CN471750/index.html">特权访问管理是信息安全中的优先任务（例如，Fudo PAM）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

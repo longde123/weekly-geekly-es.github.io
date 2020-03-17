@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤷🏻 🕵🏿 🧕🏾 ConfigureAwait，应该归咎于谁和怎么办？ 😉 👂🏼 📄</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在我的实践中，我经常在不同的环境中找到类似于以下代码的代码： 
+
+
+[1] var x = FooWithResultAsync(/*...*/).Result; // [2] FooAsync(/*...*/).Wait(); // [3] FooAsync(/*...*/).GetAwaiter...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>ConfigureAwait，应该归咎于谁和怎么办？</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/clrium/blog/463587/"><p> 在我的实践中，我经常在<em>不同的</em>环境中找到类似于以下代码的代码： </p><br><pre><code class="plaintext hljs">[1] var x = FooWithResultAsync(/*...*/).Result; // [2] FooAsync(/*...*/).Wait(); // [3] FooAsync(/*...*/).GetAwaiter().GetResult(); // [4] FooAsync(/*...*/) .ConfigureAwait(false) .GetAwaiter() .GetResult(); // [5] await FooAsync(/*...*/).ConfigureAwait(false) //  [6] await FooAsync(/*...*/)</code> </pre> <br><p> 从与此类专栏作者的交流中可以明显看出，它们全部分为三类： </p><br><ul><li> 第一类是对调用<code>Result/Wait/GetResult</code>可能出现的问题一无所知的人。 示例（1-3）和有时（6）是该组程序员的典型代表。 </li><li> 第二组包括意识到可能的问题，但他们不知道其发生原因的程序员。 一方面，这一组的开发人员尝试避免使用（1-3和6）这样的行，但是另一方面，则避免使用（4-5）这样的代码； </li><li> 根据我的经验，第三组是那些知道代码（1-6）如何工作的程序员，因此可以做出明智的选择。 </li></ul><br><p> 正如我前面提到的那样，如上面的示例中所述，在使用代码时，风险是否可能以及风险有多大，取决于<em>环境</em> 。 </p><br><p><img src="https://habrastorage.org/webt/j6/dr/vl/j6drvl4thcu_8wzj5t7qe8o0oew.jpeg"></p><a name="habracut"></a><br><h2 id="riski-i-ih-prichiny"> 风险及其原因 </h2><br><p> 示例（1-6）分为两组。 第一组是阻止调用线程的代码。 该组包括（1-4）。 <br> 阻塞线程通常是一个坏主意。 怎么了 为简单起见，我们假设所有线程都是从某个线程池中分配的。 如果程序具有锁，则可能导致从池中选择所有线程。 在最佳情况下，这将减慢程序速度并导致资源使用效率低下。 在最坏的情况下，当需要额外的线程来完成某些任务，但是池无法分配它时，这可能导致死锁。 <br> 因此，当开发人员编写类似于（1-4）的代码时，他应该考虑上述情况的可能性。 </p><br><p> 但是，当我们在存在与标准不同的同步上下文的环境中工作时，情况会变得更加糟糕。 如果存在<em>特殊的</em>同步上下文，则阻塞调用线程会增加多次发生死锁的可能性。 因此，示例（1-3）中的代码（如果在WinForms UI线程中执行）几乎可以保证产生死锁。 我写“实际上”是因为 如果不是这样，则可以选择，但稍后会有更多选择。 与（4）中一样，添加<code>ConfigureAwait(false)</code>不会提供100％的防止死锁保护。 下面是一个确认这一点的示例： </p><br><pre> <code class="plaintext hljs">[7] //   /  . async Task FooAsync() { // Delay   .     . await Task.Delay(5000); //       RestPartOfMethodCode(); } //  ""  ,   ,  WinForms . private void button1_Click(object sender, EventArgs e) { FooAsync() .ConfigureAwait(false) .GetAwaiter() .GetResult(); button1.Text = "new text"; }</code> </pre> <br><p> 文章<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“并行计算-一切都与SynchronizationContext有关”</a>提供了有关各种同步上下文的信息。 </p><br><p> 为了了解死锁的原因，您需要分析将对异步方法的调用转换成的状态机的代码，然后再分析MS类的代码。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">异步等待和生成的StateMachine</a>文章提供了这种状态机的示例。 <br> 我将不给出示例（7）自动机生成的完整源代码，仅显示对于进一步分析很重要的行： </p><br><pre> <code class="plaintext hljs">//  MoveNext. //... //  taskAwaiter    . taskAwaiter = Task.Delay(5000).GetAwaiter(); if(tasAwaiter.IsCompleted != true) { _awaiter = taskAwaiter; _nextState = ...; _builder.AwaitUnsafeOnCompleted&lt;TaskAwaiter, ThisStateMachine&gt;(ref taskAwaiter, ref this); return; }</code> </pre> <br><p>  <code>if</code>异步调用（ <code>Delay</code> ）尚未完成，则执行<code>if</code>分支，因此可以释放当前线程。 <br> 请注意，在<code>AwaitUnsafeOnCompleted</code> ，从<strong>内部</strong> （相对于<code>FooAsync</code> ）异步调用（ <code>Delay</code> ）接收<code>FooAsync</code> 。 </p><br><p> 如果您进入隐藏在<code>AwaitUnsafeOnCompleted</code>调用后面的MS源丛林，那么最后，我们将来到<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">SynchronizationContextAwaitTaskContinuation</a>类及其基类<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">AwaitTaskContinuation</a> ，该问题的答案位于该类中。 </p><br><p> 这些和相关类的代码非常混乱，因此，为了便于理解，我允许自己编写一个非常简化的“模拟”，以说明示例（7）变成什么，但没有状态机，并且使用TPL： </p><br><pre> <code class="plaintext hljs">[8] Task FooAsync() { //  methodCompleted    ,  , //    ,     " ". //    ,   methodCompleted.WaitOne()  , //   SetResult  AsyncTaskMethodBuilder, //       . var methodCompleted = new AutoResetEvent(false); SynchronizationContext current = SynchronizationContext.Current; return Task.Delay(5000).ContinueWith( t=&gt; { if(current == null) { RestPartOfMethodCode(methodCompleted); } else { current.Post(state=&gt;RestPartOfMethodCode(methodCompleted), null); methodCompleted.WaitOne(); } }, TaskScheduler.Current); } // // void RestPartOfMethodCode(AutoResetEvent methodCompleted) // { //      FooAsync. // methodCompleted.Set(); // }</code> </pre> <br><p> 在示例（8）中，重要的是要注意以下事实：如果存在同步上下文，则内部异步调用完成之后出现的异步方法的所有代码都是<strong>通过该上下文执行的</strong> （调用<code>current.Post(...)</code> ）。 这个事实<strong>是造成</strong>僵局<strong>的原因</strong> 。 例如，如果我们在谈论WinForms应用程序，则其中的同步上下文与UI流相关联。 如果UI线程被阻塞，则在示例（7）中，这是通过对<code>.GetResult()</code>的调用发生的，则异步方法的其余代码无法执行，这意味着异步方法无法完成，并且无法释放UI线程，即僵局。 </p><br><p> 在示例（7）中，通过<code>ConfigureAwait(false)</code>配置了对<code>FooAsync</code>的调用，但这没有帮助。 事实是，您需要完全配置将传递给<code>AwaitUnsafeOnCompleted</code>的等待对象，在我们的示例中，这是<code>Delay</code>调用中的等待对象。 换句话说，在这种情况下，在客户端代码中调用<code>ConfigureAwait(false)</code>没有任何意义。 如果<code>FooAsync</code>方法的开发人员对其进行了如下更改，则可以解决此问题： </p><br><pre> <code class="plaintext hljs">[9] async Task FooAsync() { await Task.Delay(5000).ConfigureAwait(false); //       RestPartOfMethodCode(); } private void button1_Click(object sender, EventArgs e) { FooAsync().GetAwaiter().GetResult(); button1.Text = "new text"; }</code> </pre> <br><p> 上面，我们检查了第一组代码（带有阻塞的代码）产生的风险（示例1-4）。 现在关于第二组（示例5和6）-一个没有锁的代码。 在这种情况下，问题是，什么时候可以正确调用<code>ConfigureAwait(false)</code> ？ 在解析示例（7）时，我们已经发现我们需要配置等待对象，在该对象的基础上构建执行的继续。 即 仅当<strong>内部</strong>异步调用时才需要配置（如果您做出此决定）。 </p><br><h2 id="kto-vinovat"> 谁该怪？ </h2><br><p> 与往常一样，正确的答案是“一切”。 让我们从MS的程序员开始。 一方面，Microsoft开发人员决定，在存在同步上下文的情况下，应该通过它来执行工作。 这是合乎逻辑的，否则为什么仍然需要它。 而且，正如我所相信的那样，他们期望“客户端”代码的开发人员<strong>不会</strong>阻塞主线程，尤其是在将同步上下文绑定到主线程的情况下。 另一方面，他们提供了一个非常简单的工具来“ <code>.Result/.GetResult</code> ”-通过阻塞<code>.Result/.GetResult</code>或阻塞流，通过<code>.Result/.GetResult</code>等待调用结束来获取结果太简单和方便。 即  MS开发人员已经有可能“错误”（或危险）使用其库不会造成任何困难。 </p><br><p> 但是，“客户端”代码的开发人员也应受责备。 其原因在于，开发人员通常不会尝试去理解他们的工具并忽略警告。 这是错误的直接途径。 </p><br><h2 id="chto-delat"> 怎么办 </h2><br><p> 下面我给出我的建议。 </p><br><h3 id="dlya-razrabotchikov-klientskogo-koda"> 对于客户代码开发人员 </h3><br><ol><li> 尽力避免阻塞。 换句话说，请勿在没有特殊需要的情况下混合使用同步代码和异步代码。 </li><li> 如果必须进行锁定，请确定在哪个环境中执行代码： <br><ul><li> 是否存在同步上下文？ 如果是这样，哪一个？ 他在作品中创造了什么特征？ </li><li> 如果没有同步上下文，那么：负载将是多少？ 您的块导致池中的线程“泄漏”的可能性有多大？ 默认情况下，在开始时创建的线程数是否足够，还是应该分配更多的线程？ </li></ul></li><li> 如果代码是异步的，是否需要通过<code>ConfigureAwait</code>配置异步调用？ </li></ol><br><p> 根据收到的所有信息做出决定。 您可能需要重新考虑您的实现方法。 也许<code>ConfigureAwait</code>将为您提供帮助，或者也许您不需要它。 </p><br><h3 id="dlya-razrabotchikov-bibliotek"> 对于图书馆开发人员 </h3><br><ol><li> 如果您认为可以从“同步”调用代码，那么请确保实现同步API。 它必须是真正同步的，即 您必须使用第三方库的同步API。 </li><li>  <code>ConfigureAwait(true / false)</code> </li></ol><br><p> 从我的角度来看，这里需要一种比通常建议的更为微妙的方法。 许多文章说，在库代码中，必须通过<code>ConfigureAwait(false)</code>配置所有异步调用。 我不同意这一点。 从作者的角度来看，也许微软的同事在选择与同步上下文有关的“默认”行为时做出了错误的决定。 但是，尽管如此，他们（MS）还是给“客户端”代码的开发人员留下了改变这种行为的机会。 当库代码完全由<code>ConfigureAwait(false)</code>覆盖时，该策略将更改默认行为，更重要的是，此方法使开发人员无法选择“客户端”代码。 </p><br><p> 我的选择是，在实现异步API时，向每个API方法添加两个其他输入参数： <code>CancellationToken token</code>和<code>bool continueOnCapturedContext</code> 。 并实现如下代码： </p><br><pre> <code class="plaintext hljs">public async Task&lt;string&gt; FooAsync( /*  */, CancellationToken token, bool continueOnCapturedContext) { // ... await Task.Delay(30, token).ConfigureAwait(continueOnCapturedContext); // ... return result; }</code> </pre> <br><p> 如您所知，第一个参数<code>token</code>用作协调取消的可能性（库开发人员有时会忽略此功能）。 第二个， <code>continueOnCapturedContext</code>允许您配置与内部异步调用的同步上下文的交互。 </p><br><p> 同时，如果异步API方法本身是另一个异步方法的一部分，则“客户端”代码将能够确定它应如何与同步上下文进行交互： </p><br><pre> <code class="plaintext hljs">//     : async Task ClientFoo() { // ""  ClientFoo   ,     //   FooAsync   . await FooAsync( /*  */, ancellationToken.None, false); //     . await FooAsync( /*  */, ancellationToken.None, false).ConfigureAwait(false); //... } // ,  . private void button1_Click(object sender, EventArgs e) { FooAsync( /*  */, _source.Token, false).GetAwaiter().GetResult(); button1.Text = "new text"; }</code> </pre> <br><h2 id="v-kachestve-zaklyucheniya"> 总结 </h2><br><p> 前面的主要结论是以下三个思想： </p><br><ol><li> 锁通常是万恶之源。 在最好的情况下，只有存在锁才可能导致性能下降和资源使用效率低下，最坏的情况是导致死锁。 在使用锁之前，请考虑是否有必要？ 在您的情况下，也许还有另一种可以接受的同步方式。 </li><li> 了解您正在使用的工具； </li><li> 如果设计库，请尝试确保正确使用它们容易，几乎直观，并且错误的库充满了复杂性。 </li></ol><br><p> 我试图尽可能简单地解释与异步/等待相关的风险，以及它们发生的原因。 并且，提出了我解决这些问题的愿景。 我希望我能成功，并且该材料将对读者有用。 为了更好地理解一切工作原理，您当然必须参考原始资料。 这可以通过<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GitHub上</a>的MS存储库来完成，或者更方便地通过<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">MS</a>网站本身来完成。 </p><br><p>  <em>PS</em>我将非常感谢建设性的批评。 </p><br><p> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><img src="https://habrastorage.org/getpro/habr/branding/e54/4c4/1ba/e544c41ba712b412e5347191ba90d0c8.png"></a> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN463587/">https://habr.com/ru/post/zh-CN463587/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN463577/index.html">可塑性和强度：金属间化合物的硬化而不强调位错</a></li>
+<li><a href="../zh-CN463579/index.html">Windows：找出谁登录</a></li>
+<li><a href="../zh-CN463581/index.html">培训Cisco 200-125 CCNA v3.0。 第23天。先进的路由技术</a></li>
+<li><a href="../zh-CN463583/index.html">神奇的插件，卷。 1.理论</a></li>
+<li><a href="../zh-CN463585/index.html">培训Cisco 200-125 CCNA v3.0。 第24天。IPv6</a></li>
+<li><a href="../zh-CN463591/index.html">BlueKeep-2-Windows的所有新版本现在都容易受到攻击</a></li>
+<li><a href="../zh-CN463595/index.html">我们控制网络摄像头的焦点或少量C＃和STM32</a></li>
+<li><a href="../zh-CN463597/index.html">在React中使用Context API创建响应式应用程序设计</a></li>
+<li><a href="../zh-CN463599/index.html">“这是一场噩梦”：宇航员就好莱坞在拍摄太空电影时犯的错误分享看法</a></li>
+<li><a href="../zh-CN463601/index.html">Java / logback中的单独方法记录</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😟 💑 🚧 从PostgreSQL到Erlang的逻辑复制 🚁 👩🏿‍🎨 🎊</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="当主要处理逻辑集中在应用程序（在我们的示例中为Erlang）中，而该应用程序的数据（设置，用户配置文件等）集中在数据库（PostgreSQL）中时，这是系统开发中的一个相当典型的方案。 Erlang应用程序在ETS中缓存设置，以通过拒绝持久性请求来加快处理速度并减少数据库的负载。 同时，通过单独的（...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>从PostgreSQL到Erlang的逻辑复制</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/482398/"><p> 当主要处理逻辑集中在应用程序（在我们的示例中为Erlang）中，而该应用程序的数据（设置，用户配置文件等）集中在数据库（PostgreSQL）中时，这是系统开发中的一个相当典型的方案。  Erlang应用程序在ETS中缓存设置，以通过拒绝持久性请求来加快处理速度并减少数据库的负载。 同时，通过单独的（可能是外部）服务来更改此数据。 </p><br><p> 在这种情况下，要保持高速缓存的数据是最新的挑战。 解决此问题有不同的方法。 其中之一是PostgreSQL逻辑复制。 关于它，将在下面讨论。 </p><a name="habracut"></a><br><h1> 流逻辑复制协议 </h1><br><p>  <a href="https://www.postgresql.org/docs/10/logical-replication.html">逻辑复制</a>通过读取WAL日志，过滤所需的表并将这些更改发送给订户，从而使用PostgreSQL流复制协议来接收PostgreSQL表中的数据更改。 此机制类似于用于物理复制以创建备用数据库的机制。 </p><br><p> 逻辑复制具有以下优点： </p><br><ul><li> 实时接收更改而没有延迟； </li><li> 通过表和操作过滤更改（INSERT / DELETE / UPDATE）； </li><li> 订户接收到的数据的完整性和完整性。 订户以与数据库中发生的更改相同的顺序接收更改； </li><li> 在订户暂时停止的情况下不会丢失数据。  PostgreSQL记住复制停止的地方。 </li></ul><br><h1> 数据库准备 </h1><br><p> 要使用逻辑复制，您需要一个插件，以更方便的格式解码来自服务器的WAL记录。 <br> 在PostgreSQL 10之前，您可以使用/扩展名<a href="https://2ndquadrant.com/en/resources/pglogical">pglogical_output插件</a> 。 <br> 从PostgreSQL 10 <a href="https://www.postgresql.org/docs/10/static/protocol-logicalrep-message-formats.html">pgoutput插件开始</a> 。 <br> 本文将介绍pgoutput插件。 </p><br><p> 在PostgreSQL方面，您必须完成以下步骤： </p><br><ul><li><p> 设置参数以支持逻辑复制 <br>  <a href="https://www.postgresql.org/docs/10/static/logical-replication-config.html">postgresql.conf</a> </p><br><pre><code class="plaintext hljs">wal_level = 'logical' max_replication_slots = 5 max_wal_senders = 5</code> </pre> <br></li><li><p> 创建一个用于复制的角色。 该角色必须具有<code>REPLICATION</code>或<code>SUPERUSER</code> 。 </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">USER</span></span> epgl_test <span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REPLICATION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PASSWORD</span></span> <span class="hljs-string"><span class="hljs-string">'epgl_test'</span></span>;</code> </pre> <br></li><li><p> 允许通过<code>database = replication</code>访问pg_hba.conf中的该角色 </p><br><pre> <code class="plaintext hljs">host replication epgl_test 127.0.0.1/32 trust</code> </pre> <br></li><li><p> 创建<a href="https://www.postgresql.org/docs/10/sql-createpublication.html">出版物</a> 。 创建发布时，我们指出计划在Erlang应用程序中接收的表 </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> PUBLICATION epgl_test <span class="hljs-keyword"><span class="hljs-keyword">FOR</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> public.test_table1, public.test_table3; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> PUBLICATION epgl_test <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> public.test_table2; <span class="hljs-comment"><span class="hljs-comment">--      </span></span></code> </pre> <br></li></ul><br><h1> 二郎部分 </h1><br><p> 不久前，流行的Erlang库中添加<a href="https://www.postgresql.org/docs/10/protocol-replication.html">了对流复制协议的</a>支持<a href="https://www.postgresql.org/docs/10/protocol-replication.html">，</a>以用于PostgreSQL <a href="">EPGSQL</a> 。 基于此库，我们将构建用于接收Erlang中的更改的逻辑。 <br> 由于协议的<code>XlogData</code>消息中直接包含的数据格式取决于复制插槽所使用的插件，因此<code>EPGSQL</code>库<code>EPGSQL</code>解码数据，而是会调用Callback方法或将消息异步发送给进程。 </p><br><h2> 数据库连接 </h2><br><p> 必须创建到数据库的特殊复制连接，为此，您需要传递<code>replication</code>标志。 <br> 在复制数据库连接内，只能执行复制命令（例如DROP_REPLICATION_SLOT，CREATE_REPLICATION_SLOT）。 <br> 您不能通过此连接运行常规请求。 </p><br><h2> 创建复制插槽 </h2><br><p> 复制插槽用于跟踪传输的WAL日志的当前位置。 <br> 创建复制插槽时，将指定用于解码的插件。 </p><br><p>  PostgreSQL 10引入了创建临时复制插槽的功能，该复制插槽在复制连接关闭时会自动删除。 </p><br><p> 如果应用程序每次启动时都读取表的初始状态，则建议使用临时复制插槽，在这种情况下，您不必担心删除创建的复制插槽（DROP_REPLICATION_SLOT）。 删除旧的/未使用的复制插槽非常重要，因为在所有复制插槽的订户收到更改之前，PostgreSQL不会删除WAL日志。 如果仍然有一个非活动的复制插槽，则WAL日志将开始积累，并且文件系统迟早会溢出。 </p><br><h2> 获取表的初始状态 </h2><br><p> 创建复制插槽时（请参阅上一步），将自动创建快照，该快照显示创建插槽时数据库的状态。 此快照可用于加载表的初始状态，该状态是在复制开始时进行的。 </p><br><p> 只有在执行<code>CREATE_REPLICATION_SLOT</code>命令的复制连接关闭之前，快照才可用。 </p><br><p> 要加载初始数据，必须创建与数据库的新常规/非复制连接，因为无法对复制连接执行SELECT。 在此连接中，设置快照<code>SET TRANSACTION SNAPSHOT SnapshotName</code>并提取必要的数据。 </p><br><h2> 开始复制 </h2><br><p> 我们开始为创建的复制插槽进行复制。 开始复制时，我们为插件传递其他参数，对于pgoutput，这是创建的发布的名称。 </p><br><p> 所有步骤在一起 </p><br><pre> <code class="erlang hljs"><span class="hljs-function"><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">start_replication</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> -&gt;</span></span> <span class="hljs-comment"><span class="hljs-comment">%%    {ok, ReplConn} = epgsql:connect(Host, User, Password, [{database, DBName}, {port, Port}, {replication, "database"}]), %%    {ok, _, [{_, _, SnapshotName}|_]} = epgsql:squery(ReplConn, "CREATE_REPLICATION_SLOT epgl_repl_slot TEMPORARY LOGICAL pgoutput"). %%     {ok, NormalConn} = epgsql:connect(Host, User, Password, [{database, DBName}, {port, Port}]), {ok, _, _} = epgsql:squery(NormalConn, "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ"), {ok, _, _} = epgsql:squery(NormalConn, ["SET TRANSACTION SNAPSHOT '", SnapshotName, "'"]), %% select/load data epgsql:equery(NormalConn,... epgsql:close(NormalConn), %%   ReplSlot = "epgl_repl_slot", Callback = ?MODULE, CbInitState = #{}, WALPosition = "0/0", PluginOpts = "proto_version '1', publication_names '\"epgl_test\"'", ok = epgsql:start_replication(ReplConn, ReplSlot, Callback, CbInitState, WALPosition, PluginOpts). handle_x_log_data(StartLSN, EndLSN, Data, CbState) -&gt; io:format("~p~n", [{StartLSN, EndLSN, Data}]), {ok, EndLSN, EndLSN, CbState}.</span></span></code> </pre> <br><p> 与<code>EPGSQL</code>库进行交互有两种选择： </p><br><ul><li><p> 同步的。 模块的名称作为回调传递。 接收到的数据的库将调用<code>CallbackModule:handle_x_log_data</code>函数<code>CallbackModule:handle_x_log_data</code> 。 该函数应返回LastFlushedLSN，LastAppliedLSN，该值在PostgreSQL响应中发送，以跟踪复制插槽的当前位置。 在我们的项目中，我们仅使用此选项； </p><br></li><li><p> 异步的。 回调是进程的pid，它将接收以下格式的消息： <code>{epgsql, self(), {x_log_data, StartLSN, EndLSN, WALRecord}}</code> 。 处理后，该进程应通过<code>epgsql:standby_status_update(Conn, FlushedLSN, AppliedLSN)</code>调用报告已处理的LSN <code>epgsql:standby_status_update(Conn, FlushedLSN, AppliedLSN)</code> ； </p><br></li></ul><br><h1> 而不是结论 </h1><br><p> 另外，为了使用所描述的方法，有必要实现将消息从复制插槽<a href="https://www.postgresql.org/docs/10/static/protocol-logicalrep-message-formats.html">插件格式</a>解码为Erlang更熟悉的结构。 或将库与<a href="https://github.com/SifoxDevTeam/epgl">GitHub</a>一起使用，该库可实现两个插件的解码并简化复制命令的执行。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN482398/">https://habr.com/ru/post/zh-CN482398/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN482382/index.html">翻译的四个原则，或者一个人不会以什么方式屈服于机器翻译？</a></li>
+<li><a href="../zh-CN482384/index.html">我的未实现项目。 200个MikroTik路由器网络</a></li>
+<li><a href="../zh-CN482386/index.html">Visual Studio for Mac：通过键盘绑定控制IDE</a></li>
+<li><a href="../zh-CN482390/index.html">Ember.js教程中的教程。 超级租赁应用程序。 第1.2部分</a></li>
+<li><a href="../zh-CN482396/index.html">如何选择教授IT专业的商业课程</a></li>
+<li><a href="../zh-CN482400/index.html">有趣的统计事实的选择＃2</a></li>
+<li><a href="../zh-CN482404/index.html">助记符：探索增加大脑记忆的方法</a></li>
+<li><a href="../zh-CN482406/index.html">顶级DLC现代科幻小说丛书</a></li>
+<li><a href="../zh-CN482410/index.html">对巨大的分形相似的思考</a></li>
+<li><a href="../zh-CN482416/index.html">我们用神经网络Porfirevich和巨魔爱丽丝替换了Google助手</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

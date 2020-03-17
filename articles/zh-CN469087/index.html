@@ -1,0 +1,129 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😔 👩🏿‍💼 🌚 PostgreSQL-2中的MVCC。 叉子，文件，页面 🎿 😡 🌩️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="上一次我们讨论数据一致性时，从用户的角度看了事务隔离级别之间的差异，并弄清了为什么了解这一点很重要。 现在，我们开始探索PostgreSQL如何实现快照隔离和多版本并发。 
+
+ 在本文中，我们将研究数据在文件和页面中的物理布局方式。 这使我们无需讨论隔离，但是这种离题对于理解接下来的内容是必要的。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL-2中的MVCC。 叉子，文件，页面</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/469087/">  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">上一次</a>我们讨论数据一致性时，从用户的角度看了事务隔离级别之间的差异，并弄清了为什么了解这一点很重要。 现在，我们开始探索PostgreSQL如何实现快照隔离和多版本并发。 <br><br> 在本文中，我们将研究数据在文件和页面中的物理布局方式。 这使我们无需讨论隔离，但是这种离题对于理解接下来的内容是必要的。 我们将需要弄清楚数据存储的底层组织方式。 <br><br><h1> 关系 </h1><br> 如果您查看表和索引的内部，结果发现它们是以类似的方式组织的。 两者都是数据库对象，其中包含一些由行组成的数据。 <br><br> 毫无疑问，表是由行组成的，但是对于索引来说，这不太明显。 但是，想象一下B树：它由包含索引值和对其他节点或表行的引用的节点组成。 可以将这些节点视为索引行，实际上，它们是索引行。 <br><br> 实际上，还有一些其他对象以类似的方式组织：序列（本质上是单行表）和物化视图（本质上是记住查询的表）。 还有常规视图，它们本身不存储数据，但在所有其他意义上都类似于表。 <br><br>  PostgreSQL中的所有这些对象都称为通用词<em>关系</em> 。 这个词非常不恰当，因为它是关系理论中的术语。 您可以在关系和表（视图）之间绘制相似之处，但是当然不能在关系和索引之间绘制相似之处。 但这恰好发生了：PostgreSQL的学术渊源得以体现。 在我看来，首先调用的是表格和视图，其余的随着时间而膨胀。 <br><a name="habracut"></a><br> 为简单起见，我们将进一步讨论表和索引，但是其他<em>关系</em>的组织方式完全相同。 <br><br><h1> 叉子和文件 </h1><br> 通常每个关系对应几个<em>叉子</em> 。 叉子可以有几种类型，并且每种类型都包含某种类型的数据。 <br><br> 如果有叉子，则首先由only <em>file</em>表示。 文件名是数字标识符，可以在其后附加与分叉名称相对应的结尾。 <br><br> 该文件逐渐增长，当其大小达到1 GB时，将创建一个相同分支的新文件（此类文件有时称为<em>segment</em> ）。 段的序号附加在文件名的末尾。 <br><br> 从历史上看，文件大小的1 GB限制是为了支持不同的文件系统，其中一些文件系统无法处理较大大小的文件。 您可以在构建PostgreSQL（ <code>./configure --with-segsize</code> ）时更改此限制。 <br><br> 因此，磁盘上的几个文件可以对应一个关系。 例如，对于一张小桌子，将有三个。 <br><br> 属于一个表空间和一个数据库的对象的所有文件都将存储在一个目录中。 您需要牢记这一点，因为文件系统通常无法正常处理目录中的大量文件。 <br><br> 请注意，文件又被分为几<em>页</em> （或<em>块</em> ），通常为8 KB。 我们将进一步讨论页面的内部结构。 <br><br><img src="https://habrastorage.org/webt/10/ze/w6/10zew6_pruaxe8amjtx7_6x70tk.png"><br><br> 现在让我们看一下fork类型。 <br><br>  <strong>主要的分支</strong>是数据本身：表和索引行。 主派生可用于任何关系（不包含数据的视图除外）。 <br><br> 主fork的文件名由唯一的数字标识符组成。 例如，这是我们上次创建的表的路径： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_relation_filepath(<span class="hljs-string"><span class="hljs-string">'accounts'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> pg_relation_filepath ---------------------- base/41493/41496 (1 row)</code> </pre><br> 这些标识符从何而来？  “基本”目录对应于“ pg_default”表空间。 对应于数据库的下一个子目录是目标文件所在的位置： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-type"><span class="hljs-type">oid</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_database <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> datname = <span class="hljs-string"><span class="hljs-string">'test'</span></span>;</code> </pre><pre> <code class="plaintext hljs"> oid ------- 41493 (1 row)</code> </pre><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> relfilenode <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> relname = <span class="hljs-string"><span class="hljs-string">'accounts'</span></span>;</code> </pre><pre> <code class="plaintext hljs"> relfilenode ------------- 41496 (1 row)</code> </pre><br> 该路径是相对的，它是从数据目录（PGDATA）开始指定的。 而且，实际上PostgreSQL中的所有路径都是从PGDATA开始指定的。 因此，您可以安全地将PGDATA移动到其他位置-没有限制它（除了可能需要设置LD_LIBRARY_PATH中的库的路径）。 <br><br> 此外，查看文件系统： <br><br><pre> <code class="plaintext hljs">postgres$ ls -l --time-style=+ /var/lib/postgresql/11/main/base/41493/41496</code> </pre><pre> <code class="plaintext hljs">-rw------- 1 postgres postgres 8192 /var/lib/postgresql/11/main/base/41493/41496</code> </pre><br>  <strong>初始化派生</strong>仅适用于未记录的表（使用指定的UNLOGGED创建）及其索引。 像这样的对象与常规对象没有什么不同，除了它们的操作未记录在预写日志（WAL）中。 因此，使用它们的速度更快，但是如果出现故障，则不可能以一致的状态恢复数据。 因此，在恢复过程中，PostgreSQL只是删除了这些对象的所有分支，并写了初始化分支来代替主分支。 这将导致一个空对象。 我们将在另一个系列中详细讨论日志记录。 <br><br> 由于记录了“帐户”表，因此它没有初始化派生。 但是要进行实验，我们可以关闭登录： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> accounts <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> <span class="hljs-keyword"><span class="hljs-keyword">UNLOGGED</span></span>; =&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_relation_filepath(<span class="hljs-string"><span class="hljs-string">'accounts'</span></span>);</code> </pre><pre> <code class="plaintext hljs"> pg_relation_filepath ---------------------- base/41493/41507 (1 row)</code> </pre><br> 该示例阐明了即时打开和关闭日志记录的可能性与将数据重写到具有不同名称的文件有关。 <br><br> 初始化派生叉与主派生叉具有相同的名称，但后缀为“ _init”： <br><br><pre> <code class="plaintext hljs">postgres$ ls -l --time-style=+ /var/lib/postgresql/11/main/base/41493/41507_init</code> </pre><pre> <code class="plaintext hljs">-rw------- 1 postgres postgres 0 /var/lib/postgresql/11/main/base/41493/41507_init</code> </pre><br>  <strong>可用空间图</strong>是一个分支，用于跟踪页面内可用空间的可用性。 该空间在不断变化：添加新版本的行时该空间减小，而在清理期间则增大。 在插入新行版本期间使用了可用空间图，以便快速找到合适的页面，要添加的数据将适合该页面。 <br><br> 可用空间图的名称带有“ _fsm”后缀。 但是此文件不会立即显示，而仅在需要时显示。 实现此目的的最简单方法是对表进行清理（我们将解释为什么会出现这种情况）： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">VACUUM</span></span> accounts;</code> </pre><br><pre> <code class="plaintext hljs">postgres$ ls -l --time-style=+ /var/lib/postgresql/11/main/base/41493/41507_fsm</code> </pre><pre> <code class="plaintext hljs">-rw------- 1 postgres postgres 24576 /var/lib/postgresql/11/main/base/41493/41507_fsm</code> </pre><br>  <strong>可见性地图</strong>是一个分叉，其中仅包含最新行版本的页面用一位标记。 粗略地讲，这意味着当事务尝试从此类页面读取行时，可以在不检查其可见性的情况下显示该行。 在接下来的文章中，我们将详细讨论这种情况。 <br><br><pre> <code class="plaintext hljs">postgres$ ls -l --time-style=+ /var/lib/postgresql/11/main/base/41493/41507_vm</code> </pre><pre> <code class="plaintext hljs">-rw------- 1 postgres postgres 8192 /var/lib/postgresql/11/main/base/41493/41507_vm</code> </pre><br><h1> 页数 </h1><br> 如前所述，文件在逻辑上分为页面。 <br><br> 页面的大小通常为8 KB。 可以在一定限制（16 KB或32 KB）内更改大小，但只能在构建过程中更改（ <code>./configure --with-blocksize</code> ）。 生成并运行的实例只能使用相同大小的页面。 <br><br> 无论文件属于哪个分支，服务器都以非常相似的方式使用它们。 页面首先被读取到缓冲区高速缓存中，进程可以在其中读取和更改它们。 然后，根据需要将它们逐出磁盘。 <br><br> 每个页面都有内部分区，并且通常包含以下分区： <br><br><pre>        0 + ----------------------------------- +
+           | 标头|
+       24 + ----------------------------------- +
+           | 指向行版本的指针数组|
+   较低+ ----------------------------------- +
+           | 自由空间|
+   上层+ ----------------------------------- +
+           | 行版本|
+ 特殊+ ----------------------------------- +
+           | 特殊空间|
+页面大小+ ----------------------------------- +
+</pre><br> 您可以使用“ research”扩展名pageinspect轻松了解这些分区的大小： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">EXTENSION</span></span> pageinspect; =&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> lower, upper, special, pagesize <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> page_header(get_raw_page(<span class="hljs-string"><span class="hljs-string">'accounts'</span></span>,<span class="hljs-number"><span class="hljs-number">0</span></span>));</code> </pre><pre> <code class="plaintext hljs"> lower | upper | special | pagesize -------+-------+---------+---------- 40 | 8016 | 8192 | 8192 (1 row)</code> </pre><br> 在这里，我们看表的第一页（零） <strong>页眉</strong> 。 除了其他区域的大小以外，页眉还具有关于页面的不同信息，我们对此不感兴趣。 <br><br> 页面底部有<strong>特殊空间</strong> ，在这种情况下为空白。 它仅用于索引，甚至不用于所有索引。  “在底部”反映了图片中的内容； 说“在高位”可能更准确。 <br><br> 在特殊空间之后，将找到<strong>行版本</strong> ，即，我们存储在表中的数据以及一些内部信息。 <br><br> 目录的顶部是页面顶部，紧随标题之后：该页面中<strong>包含指向</strong>行版本<strong>的指针</strong>的<strong>数组</strong> 。 <br><br> 行版本和指针之间可以留有可用空间（此可用空间在可用空间映射中保持跟踪）。 请注意，页面内没有内存碎片-所有可用空间都由一个连续区域表示。 <br><br><h2> 指针 </h2><br> 为什么需要指向行版本的指针？ 问题是索引行必须以某种方式引用表中的行版本。 显然，引用必须包含文件编号，文件中的页面编号以及行版本的某些指示。 我们可以使用从页面开始的偏移量作为指标，但这很不方便。 我们将无法在页面内移动行版本，因为它将破坏可用的引用。 这将导致页面内部空间的碎片化和其他麻烦的后果。 因此，索引引用指针编号，而指针引用页面中行版本的当前位置。 这是间接寻址。 <br><br> 每个指针正好占据四个字节，并包含： <br><br><ul><li> 对行版本的引用 </li><li> 此行版本的大小 </li><li> 几个字节来确定行版本的状态 </li></ul><br><h2> 资料格式 </h2><br> 磁盘上的数据格式与RAM中的数据表示形式完全相同。 该页面将按原样读入缓冲区高速缓存，而无需进行任何转换。 因此，来自一个平台的数据文件与其他平台不兼容。 <br><br> 例如，在X86体系结构中，字节顺序是从最低有效字节到最高有效字节（小端），z /体系结构使用相反的顺序（大端），在ARM中可以交换顺序。 <br><br> 许多体系结构提供了在机器字边界上的数据对齐。 例如，在32位x86系统上，整数（占4个字节的“整数”类型）将在4字节字的边界上对齐，与双精度数（“双精度”类型）相同，占用8个字节）。 在64位系统上，双精度数字将在8字节字的边界上对齐。 这是另一个不兼容的原因。 <br><br> 由于对齐，表行的大小取决于字段顺序。 通常，这种影响不是很明显，但有时可能会导致大小的显着增长。 例如，如果对类型为“ char（1）”和“ integer”的字段进行交织，则通常浪费它们之间的3个字节。 有关更多详细信息，可以查看Nikolay Shaplov的演示“ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Tuple internals</a> ”。 <br><br><h1> 行版本和TOAST </h1><br> 下次，我们将讨论行版本内部结构的详细信息。 在这一点上，对我们来说重要的是要知道每个版本必须完全适合一页：PostgreSQL无法将行“扩展”到下一页。 而是使用超大属性存储技术（TOAST）。 名称本身暗示可以将一行切成多士。 <br><br> 开个玩笑，TOAST暗示了几种策略。 在将长属性值分解成小块吐司块之后，我们可以将它们传递到单独的内部表中。 另一种选择是压缩值，以使行版本适合常规页面。 我们可以同时做这两个事情：首先压缩，然后分解并传输。 <br><br> 对于每个主表，如果需要，可以创建一个单独的TOAST表，一个用于所有属性的表（及其上的索引）。 潜在的长属性的可用性决定了这一需求。 例如，如果一个表的列类型为“数字”或“文本”，则即使不使用长值，也会立即创建TOAST表。 <br><br> 由于TOAST表本质上是一个常规表，因此它具有相同的派生集。 这会使对应于表的文件数量增加一倍。 <br><br> 初始策略由列数据类型定义。 您可以使用psql中的<code>\d+</code>命令查看它们，但是由于它另外输出了许多其他信息，因此我们将查询系统目录： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> attname, atttypid::<span class="hljs-type"><span class="hljs-type">regtype</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">CASE</span></span> attstorage <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> <span class="hljs-string"><span class="hljs-string">'p'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> <span class="hljs-string"><span class="hljs-string">'plain'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> <span class="hljs-string"><span class="hljs-string">'e'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> <span class="hljs-string"><span class="hljs-string">'external'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> <span class="hljs-string"><span class="hljs-string">'m'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> <span class="hljs-string"><span class="hljs-string">'main'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> <span class="hljs-string"><span class="hljs-string">'x'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> <span class="hljs-string"><span class="hljs-string">'extended'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">storage</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_attribute <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> attrelid = <span class="hljs-string"><span class="hljs-string">'accounts'</span></span>::<span class="hljs-type"><span class="hljs-type">regclass</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> attnum &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>;</code> </pre><pre> <code class="plaintext hljs"> attname | atttypid | storage ---------+----------+---------- id | integer | plain number | text | extended client | text | extended amount | numeric | main (4 rows)</code> </pre><br> 这些策略的名称表示： <br><br><ul><li> 普通-未使用TOAST（用于已知为short的数据类型，例如“整数”）。 </li><li> 扩展-压缩和存储都可以在单独的TOAST表中进行 </li><li> 外部-长值不压缩就存储在TOAST表中。 </li><li>  main-首先压缩long值，如果压缩无济于事，则只进入TOAST表。 </li></ul><br> 通常，算法如下。  PostgreSQL的目标是至少有四行适合一页。 因此，如果行大小超过页面的四分之一，则考虑标头（对于常规的8K页为2040字节），必须将TOAST应用于部分值。 我们遵循以下描述的顺序，并在该行不再超过阈值时立即停止： <br><br><ol><li> 首先，我们从“最长”属性到“最短”属性，通过“外部”和“扩展”策略来遍历属性。  “扩展”属性被压缩（如果有效），并且如果值本身超过页面的四分之一，它将立即进入TOAST表。  “外部”属性的处理方式相同，但未压缩。 </li><li> 如果在第一次通过后，行版本仍不适合该页面，则将带有“外部”和“扩展”策略的其余属性传输到TOAST表。 </li><li> 如果这也没有帮助，我们尝试使用“主要”策略压缩属性，但将其保留在表页面中。 </li><li> 而且只有在此之后，该行还不够短时，“ main”属性才能进入TOAST表。 </li></ol><br> 有时，更改某些列的策略可能很有用。 例如，如果事先知道无法压缩列中的数据，则可以为其设置“外部”策略，这样可以避免不必要的压缩尝试，从而节省时间。 这样做如下： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> accounts <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COLUMN</span></span> number <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> <span class="hljs-keyword"><span class="hljs-keyword">STORAGE external</span></span>;</code> </pre><br> 重新运行查询，我们得到： <br><br><pre> <code class="plaintext hljs"> attname | atttypid | storage ---------+----------+---------- id | integer | plain number | text | external client | text | extended amount | numeric | main</code> </pre><br>  TOAST表和索引位于单独的pg_toast模式中，因此通常不可见。 对于临时表，类似于通常的“ pg_temp_N”，使用“ pg_toast_temp_N”模式。 <br><br> 当然，如果您喜欢，没人会阻碍您对程序内部机制的监视。 假设在“帐户”表中有三个潜在的长属性，因此，必须有一个TOAST表。 这是： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> relnamespace::<span class="hljs-type"><span class="hljs-type">regnamespace</span></span>, relname <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-type"><span class="hljs-type">oid</span></span> = ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> reltoastrelid <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> relname = <span class="hljs-string"><span class="hljs-string">'accounts'</span></span> );</code> </pre><pre> <code class="plaintext hljs"> relnamespace | relname --------------+---------------- pg_toast | pg_toast_33953 (1 row)</code> </pre><br><pre> <code class="pgsql hljs">=&gt; \d+ pg_toast.pg_toast_33953</code> </pre><pre> <code class="plaintext hljs">TOAST table "pg_toast.pg_toast_33953" Column | Type | Storage ------------+---------+--------- chunk_id | oid | plain chunk_seq | integer | plain chunk_data | bytea | plain</code> </pre><br> 将“普通”策略应用于行被切片的吐司是合理的：没有第二级的TOAST。 <br><br>  PostgreSQL可以更好地隐藏索引，但是找到它也不难： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> indexrelid::<span class="hljs-type"><span class="hljs-type">regclass</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_index <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> indrelid = ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-type"><span class="hljs-type">oid</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_class <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> relname = <span class="hljs-string"><span class="hljs-string">'pg_toast_33953'</span></span> );</code> </pre><pre> <code class="plaintext hljs"> indexrelid ------------------------------- pg_toast.pg_toast_33953_index (1 row)</code> </pre><br><pre> <code class="pgsql hljs">=&gt; \d pg_toast.pg_toast_33953_index</code> </pre><pre> <code class="plaintext hljs">Unlogged index "pg_toast.pg_toast_33953_index" Column | Type | Key? | Definition -----------+---------+------+------------ chunk_id | oid | yes | chunk_id chunk_seq | integer | yes | chunk_seq primary key, btree, for table "pg_toast.pg_toast_33953"</code> </pre><br>  “客户”列使用“扩展”策略：其值将被压缩。 让我们检查一下： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> accounts <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> client = repeat(<span class="hljs-string"><span class="hljs-string">'A'</span></span>,<span class="hljs-number"><span class="hljs-number">3000</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> id = <span class="hljs-number"><span class="hljs-number">1</span></span>; =&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_toast.pg_toast_33953;</code> </pre><pre> <code class="plaintext hljs"> chunk_id | chunk_seq | chunk_data ----------+-----------+------------ (0 rows)</code> </pre><br>  TOAST表中没有任何内容：重复字符被精细压缩，压缩后的值适合常规表页面。 <br><br> 现在，让客户端名称由随机字符组成： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> accounts <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> client = ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> string_agg( chr(trunc(<span class="hljs-number"><span class="hljs-number">65</span></span>+random()*<span class="hljs-number"><span class="hljs-number">26</span></span>)::<span class="hljs-type"><span class="hljs-type">integer</span></span>), <span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>,<span class="hljs-number"><span class="hljs-number">3000</span></span>) ) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> id = <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RETURNING</span></span> left(client,<span class="hljs-number"><span class="hljs-number">10</span></span>) || <span class="hljs-string"><span class="hljs-string">'...'</span></span> || right(client,<span class="hljs-number"><span class="hljs-number">10</span></span>);</code> </pre><pre> <code class="plaintext hljs"> ?column? ------------------------- TCKGKZZSLI...RHQIOLWRRX (1 row)</code> </pre><br> 这样的序列无法压缩，并且会进入TOAST表： <br><br><pre> <code class="pgsql hljs">=&gt; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> chunk_id, chunk_seq, length(chunk_data), left(encode(chunk_data,<span class="hljs-string"><span class="hljs-string">'escape'</span></span>)::<span class="hljs-type"><span class="hljs-type">text</span></span>, <span class="hljs-number"><span class="hljs-number">10</span></span>) || <span class="hljs-string"><span class="hljs-string">'...'</span></span> || right(encode(chunk_data,<span class="hljs-string"><span class="hljs-string">'escape'</span></span>)::<span class="hljs-type"><span class="hljs-type">text</span></span>, <span class="hljs-number"><span class="hljs-number">10</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_toast.pg_toast_33953;</code> </pre><pre> <code class="plaintext hljs"> chunk_id | chunk_seq | length | ?column? ----------+-----------+--------+------------------------- 34000 | 0 | 2000 | TCKGKZZSLI...ZIPFLOXDIW 34000 | 1 | 1000 | DDXNNBQQYH...RHQIOLWRRX (2 rows)</code> </pre><br> 我们可以看到数据被分解为2000字节的块。 <br><br> 当访问长值时，PostgreSQL会为应用程序自动透明地恢复原始值，并将其返回给客户端。 <br><br> 当然，压缩和分解然后还原需要大量资源。 因此，在PostgreSQL中存储海量数据并不是最好的主意，尤其是当它们被频繁使用并且不需要事务逻辑（例如：扫描原始会计凭证）时。 一个更有益的替代方法是使用存储在DBMS中的文件名将此类数据存储在文件系统上。 <br><br>  TOAST表仅用于访问长值。 此外，TOAST表支持它自己的多版本转换并发：除非数据更新达到一个长值，否则新的行版本将在TOAST表中引用相同的值，从而节省了空间。 <br><br> 请注意，TOAST仅适用于表，不适用于索引。 这对要索引的键的大小施加了限制。 <br><blockquote> 有关内部数据结构的更多详细信息，请阅读<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文档</a> 。 <br></blockquote><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">继续阅读</a> 。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN469087/">https://habr.com/ru/post/zh-CN469087/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN469073/index.html">求和系列的离散导数或摘要</a></li>
+<li><a href="../zh-CN469075/index.html">Grokay DLR</a></li>
+<li><a href="../zh-CN469077/index.html">微软的新Python课程[英文]</a></li>
+<li><a href="../zh-CN469079/index.html">Visual Studio Code中的Python：9月扩展程序更新</a></li>
+<li><a href="../zh-CN469085/index.html">我们从受密码保护的微控制器瑞萨M16C中取出软件</a></li>
+<li><a href="../zh-CN469093/index.html">比较不太流行和不太流行的CLI库的比较：悬崖，普拉克，铅和其他（第2部分）</a></li>
+<li><a href="../zh-CN469095/index.html">ML.NET和模型构建器更新已发布：新增功能</a></li>
+<li><a href="../zh-CN469097/index.html">具有php7，node.js和Redis的CentOS 8 Web服务器</a></li>
+<li><a href="../zh-CN469099/index.html">在开发人员面试中测试任务-是否有意义？</a></li>
+<li><a href="../zh-CN469101/index.html">学习英语：如何学习以英语为母语</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

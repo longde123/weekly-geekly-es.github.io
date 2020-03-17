@@ -1,0 +1,131 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕤 🧑🏾‍🤝‍🧑🏻 🆎 将FFmpeg编译为WebAssembly（= ffmpeg.js）：第3部分-将avi转换为mp4 🧗🏻 👩🏽‍🚒 👇🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="该系列的翻译部分清单： 
+
+
+1. 做饭 
+2. 用Emscripten编译 
+3. 将AVI转换为mp4 （您在这里） 
+
+
+
+ 在这一部分中，我们将分析： 
+
+
+
+1. 使用优化的参数编译FFmpeg库。 
+2. Emscripten文件系统管理。 
+3. ffmpeg.js v0.1.0和视频...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>将FFmpeg编译为WebAssembly（= ffmpeg.js）：第3部分-将avi转换为mp4</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/473166/"><p></p><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/899/a0b/a50/899a0ba50105cb44cf23fe8cc40b8e42.png" width="640" height="360"></div><br><br><p> 该系列的翻译部分清单： </p><br><ol><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">做饭</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">用Emscripten编译</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">将AVI转换为mp4</a> （您在这里） </li></ol><br><hr><br><p> 在这一部分中，我们将分析： </p><br><br><ol><li> 使用优化的参数编译FFmpeg库。 </li><li>  Emscripten文件系统管理。 </li><li>  ffmpeg.js v0.1.0和视频转换的开发。 </li></ol><br><a name="habracut"></a><hr><br><h1> 使用优化的参数编译FFmpeg库 </h1><br><p> 尽管本部分的最终目标是创建ffmpeg.js v0.1.0以便将avi转换为mp4，但在上一部分中，我们仅创建了“裸”版本的FFmpeg，可以使用多个参数进行优化。 </p><br><ol><li>  <b>-Oz</b> ：优化代码并减小其大小（从30到15 MB） </li><li>  <b>-o javascript / ffmpeg-core.js</b> ：将js和wasm文件保存到javascript目录。  （我们将从ffmpeg.js包装器库中调用ffmpeg-core.js，该包装器库提供了漂亮的API） </li><li> <b>-s MODULARIZE = 1</b> ：创建一个库，而不是一个命令行实用程序（您将需要修改源，以下详细信息） </li><li>  <b>-s EXPORTED_FUNCTIONS =“ [_ ffmpeg]”</b> ：将C函数“ ffmpeg”导出到JavaScript世界 </li><li>  <b>-s EXTRA_EXPORTED_RUNTIME_METHODS =“ [cwrap，FS，getValue，setValue]”</b> ：用于处理文件系统和指针的附加功能，有关详细信息，请参见文章<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">与代码交互</a> 。 </li><li>  <b>-s ALLOW_MEMORY_GROWTH = 1</b> ：取消对已用内存的限制 </li><li>  <b>-lpthread</b> ：已删除，因为我们计划创建自己的工作程序。  （这是出版物第四部分的待办事项） </li></ol><br><blockquote><p> 有关每个参数的更多详细信息，可以在github存储库脚本中的<a href="">src / settings.js</a>中找到。 </p></blockquote><br><p> 当添加<b>-s MODULARIZE = 1时，</b>我们将需要修改源代码以满足模块化的要求（实际上，摆脱了main（）函数）。 您只需要更改三行。 </p><br><p>  1. <b>fftools / ffmpeg.c</b> ：将main重命名为ffmpeg </p><br><pre><code class="plaintext hljs">- int main(int argc, char **argv) + int ffmpeg(int argc, char **argv)</code> </pre> <br><p>  2. <b>fftools / ffmpeg.h</b> ：将ffmpeg添加到文件末尾以导出功能 </p><br><pre> <code class="plaintext hljs">+ int ffmpeg(int argc, char** argv); #endif /* FFTOOLS_FFMPEG_H */</code> </pre> <br><p>  3. <b>fftools / cmdutils.c</b> ：注释退出（退出），以便我们的库不会为我们退出运行时（稍后我们将对此进行改进）。 </p><br><pre> <code class="plaintext hljs">void exit_program(int ret){ if (program_exit) program_exit(ret); - exit(ret); + // exit(ret); }</code> </pre> <br><p> 我们新版本的编译脚本： </p><br><pre> <code class="plaintext hljs">emcc \ -Llibavcodec -Llibavdevice -Llibavfilter -Llibavformat -Llibavresample -Llibavutil -Llibpostproc -Llibswscale -Llibswresample \ -Qunused-arguments -Oz \ -o javascript/ffmpeg-core.js fftools/ffmpeg_opt.o fftools/ffmpeg_filter.o fftools/ffmpeg_hw.o fftools/cmdutils.o fftools/ffmpeg.o \ -lavdevice -lavfilter -lavformat -lavcodec -lswresample -lswscale -lavutil -lm \ -s MODULARIZE=1 \ -s EXPORTED_FUNCTIONS="[_ffmpeg]" \ -s EXTRA_EXPORTED_RUNTIME_METHODS="[cwrap, FS, getValue, setValue]" \ -s TOTAL_MEMORY=33554432 \ -s ALLOW_MEMORY_GROWTH=1</code> </pre> <br><p>  ffmpeg-core.js准备好了！ </p><br><p> 如果您有使用ffmpeg的经验，那么您已经知道典型命令如下所示： </p><br><pre> <code class="plaintext hljs">$ ffmpeg -i input.avi output.mp4</code> </pre> <br><p> 而且由于我们使用ffmpeg函数而不是main，因此命令调用将如下所示： </p><br><pre> <code class="plaintext hljs">const args = ['./ffmpeg', '-i', 'input.avi', 'output.mp4']; ffmpeg(args.length, args);</code> </pre> <br><p> 当然，并非所有事情都那么简单，我们需要在JavaScript和C语言世界之间架起一座桥梁，所以让我们从emscripten文件系统开始。 </p><br><h1>  Emscripten文件系统管理 </h1><br><p>  Emscripten有一个虚拟文件系统来支持对C的读取/写入，ffmpeg-core.js使用该文件系统来处理视频文件。 </p><br><blockquote><p> 在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">File System API中</a>阅读有关此内容的更多信息。 </p></blockquote><br><p> 为了使一切正常，我们从emscripten中导出FS API，这是由于上述参数所致： </p><br><pre> <code class="plaintext hljs">-s EXTRA_EXPORTED_RUNTIME_METHODS="[cwrap, FS, getValue, setValue]"</code> </pre> <br><p> 要保存文件，您需要在Node.js环境中以Uint8Array格式准备数组，可以通过以下方式进行操作： </p><br><pre> <code class="plaintext hljs">const fs = require('fs'); const data = new Uint8Array(fs.readFileSync('./input.avi'));</code> </pre> <br><p> 并使用FS.writeFile（）将其保存到emscripten文件系统中： </p><br><pre> <code class="plaintext hljs">require('./ffmpeg-core.js)() .then(Module =&gt; { Module.FS.writeFile('input.avi', data); });</code> </pre> <br><p> 并从emscripten下载文件： </p><br><pre> <code class="plaintext hljs">require('./ffmpeg-core.js)() .then(Module =&gt; { const data = Module.FS.readFile('output.mp4'); });</code> </pre> <br><p> 让我们开始开发ffmpeg.js来将这些复杂性隐藏在漂亮的API之后。 </p><br><h1> 开发ffmpeg.js v0.1.0和视频转换 </h1><br><p>  ffmpeg.js的开发并非易事，因为您经常需要在JavaScript和C的世界之间切换，但是如果您熟悉<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">指针</a> ，将会更容易理解这里发生的事情。 </p><br><p> 我们的任务是像这样开发ffmpeg.js： </p><br><pre> <code class="plaintext hljs">const fs = require('fs'); const ffmpeg = require('@ffmpeg/ffmpeg'); (async () =&gt; { await ffmpeg.load(); const data = ffmpeg.transcode('./input.avi', 'mp4'); fs.writeFileSync('./output.mp4', data); })();</code> </pre> <br><p> 首先，下载ffmpeg-core.js，它通常是异步完成的，以免阻塞主线程。 </p><br><p> 看起来是这样的： </p><br><pre> <code class="plaintext hljs">const { setModule } = require('./util/module'); const FFmpegCore = require('./ffmpeg-core'); module.exports = () =&gt; ( new Promise((resolve, reject) =&gt; { FFmpegCore() .then((Module) =&gt; { setModule(Module); resolve(); }); }) );</code> </pre> <br><p> 将一个promise <b>换成</b>另一个promise似乎很奇怪，这是因为<b>FFmpegCore（）</b>不是真正的promise，而只是一个模拟promise API的函数。 </p><br><p> 下一步是使用<b>Module</b>通过<b>cwrap</b>函数获取ffmpeg函数： </p><br><pre> <code class="plaintext hljs">// int ffmpeg(int argc, char **argv) const ffmpeg = Module.cwrap('ffmpeg', 'number', ['number', 'number']);</code> </pre> <br><p>  <b>cwrap</b>的第一个参数是函数的名称（必须在EXPORTED_FUNCTIONS中，且带有下划线），第二个是返回值的类型，第三个是函数的参数的类型（int argc和char ** argv）。 </p><br><p> 很清楚为什么<b>argc是一个</b>数字，但是为什么<b>argv</b>也是一个数字？  <b>argv</b>是一个指针，并且该指针将地址存储在内存中（类型为0xfffffff），因此该指针类型是WebAssembly中的32位无符号。 这就是为什么我们将数字指定为<b>argv</b>类型的原因。 </p><br><p> 要调用ffmpeg（），第一个参数在JavaScript中将是一个常规数，但第二个参数应是一个指向字符数组的指针（JavaScript中的Uint8）。 </p><br><p> 我们将此任务分为两个子任务： </p><br><ol><li> 如何创建一个指向字符数组的指针？ </li><li> 如何创建一个指向指针数组的指针？ </li></ol><br><p> 我们将通过创建<b>str2ptr</b>实用程序解决第一个问题： </p><br><pre> <code class="plaintext hljs">const { getModule } = require('./module'); module.exports = (s) =&gt; { const Module = getModule(); const ptr = Module._malloc((s.length+1)*Uint8Array.BYTES_PER_ELEMENT); for (let i = 0; i &lt; s.length; i++) { Module.setValue(ptr+i, s.charCodeAt(i), 'i8'); } Module.setValue(ptr+s.length, 0, 'i8'); return ptr; };</code> </pre> <br><p>  <b>Module._malloc（）</b>与C中的<b>malloc（）</b>类似，它在堆上分配一块内存。  <b>Module.setValue（）</b>通过指针设置特定值。 </p><br><blockquote><p> 切记在字符数组的末尾添加0，以免发生意外情况。 </p></blockquote><br><p> 处理完第一<b>个子</b>任务后，创建<b>strList2ptr</b>来解决第二个任务： </p><br><pre> <code class="plaintext hljs">const { getModule } = require('./module'); const str2ptr = require('./str2ptr'); module.exports = (strList) =&gt; { const Module = getModule(); const listPtr = Module._malloc(strList.length*Uint32Array.BYTES_PER_ELEMENT); strList.forEach((s, idx) =&gt; { const strPtr = str2ptr(s); Module.setValue(listPtr + (4*idx), strPtr, 'i32'); }); return listPtr; };</code> </pre> <br><p> 在这里主要要了解的是，指针是JavaScript中的<b>Uint32</b>值，因此<b>listPtr</b>是指向Uint32数组的指针，该数组存储指向Uint8数组的指针。 </p><br><p>  <b>放在</b>一起，我们得到以下<b>ffmepg.transcode（）的实现</b> ： </p><br><pre> <code class="plaintext hljs">const fs = require('fs'); const { getModule } = require('./util/module'); const strList2ptr = require('./util/strList2ptr'); module.exports = (inputPath, outputExt) =&gt; { const Module = getModule(); const data = new Uint8Array(fs.readFileSync(inputPath)); const ffmpeg = Module.cwrap('ffmpeg', 'number', ['number', 'number']); const args = ['./ffmpeg', '-i', 'input.avi', `output.${outputExt}`]; Module.FS.writeFile('input.avi', data); ffmpeg(args.length, strList2ptr(args)); return Buffer.from(Module.FS.readFile(`output.${outputExt}`)); };</code> </pre> <br><p> 做完了！ 现在我们有了ffmpeg.js v0.1.0，可以将avi转换为mp4。 </p><br><p> 您可以通过安装库自己测试结果： </p><br><pre> <code class="plaintext hljs">$ npm install @ffmpeg/ffmpeg@0.1.0</code> </pre> <br><p> 然后像这样转换文件： </p><br><pre> <code class="plaintext hljs">const fs = require('fs'); const ffmpeg = require('@ffmpeg/ffmpeg'); (async () =&gt; { await ffmpeg.load(); const data = ffmpeg.transcode('./input.avi', 'mp4'); fs.writeFileSync('./output.mp4', data); })();</code> </pre> <br><p> 请记住，到目前为止，该库仅适用于Node.js，但是在下一部分中，我们将添加对Web-worker（以及Node.js中的child_process）的支持。 </p><br><p> 源代码： </p><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ffmpeg-core.js</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ffmpeg.js</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN473166/">https://habr.com/ru/post/zh-CN473166/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN473146/index.html">.NET Core 3.0方案中的Blazor Server和性能</a></li>
+<li><a href="../zh-CN473150/index.html">现在是时候制作一个新的Windows Terminal profile.json</a></li>
+<li><a href="../zh-CN473154/index.html">友好的开放空间JS：客户端渲染和包装创建</a></li>
+<li><a href="../zh-CN473156/index.html">如何在实践中测试知识，获得入读硕士课程和工作邀请的好处</a></li>
+<li><a href="../zh-CN473158/index.html">当您有75％的员工患有自闭症时，会是什么样？</a></li>
+<li><a href="../zh-CN473168/index.html">ASP.NET和ASP.NET Core中即将进行的SameSite Cookie更改</a></li>
+<li><a href="../zh-CN473172/index.html">.NET Core 3.0中的Blazor服务器使用方案和性能</a></li>
+<li><a href="../zh-CN473176/index.html">是时候制作一个新的Windows Terminal profile.json</a></li>
+<li><a href="../zh-CN473182/index.html">增加现代汽车ICE特性灵活性的原理</a></li>
+<li><a href="../zh-CN473184/index.html">Docker + php-fpm + PhpStorm + Xdebug</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

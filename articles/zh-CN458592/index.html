@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🈶 🆓 🛸 从高Ceph延迟到使用eBPF / BCC的内核补丁 🔰 📢 ✍️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Linux有大量的内核调试工具和应用程序。 它们中的大多数会对应用程序性能产生不利影响，因此不能在生产中使用。 
+
+ 几年前， 开发了另一种工具 -eBPF。 这样就可以以较低的开销跟踪内核和用户应用程序，而无需重建程序并将第三方模块加载到内核中。 
+
+ 现在有许多使用eBPF的应用程序实用程序，在...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>从高Ceph延迟到使用eBPF / BCC的内核补丁</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/selectel/blog/458592/"><img src="https://habrastorage.org/webt/-8/ok/na/-8okna9qfyroicvgoz-zenv7-si.png" alt="图片"><br><br>  Linux有大量的内核调试工具和应用程序。 它们中的大多数会对应用程序性能产生不利影响，因此不能在生产中使用。 <br><a name="habracut"></a><br> 几年前， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">开发了另一种工具</a> -eBPF。 这样就可以以较低的开销跟踪内核和用户应用程序，而无需重建程序并将第三方模块加载到内核中。 <br><br> 现在有许多使用eBPF的应用程序实用程序，在本文中，我们将研究如何基于<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PythonBCC</a>库编写我们自己的分析实用程序。 本文基于真实事件。 我们将从问题的出现到纠正问题，以说明如何在特定情况下使用现有实用程序。 <br><br><h2>  Ceph很慢 </h2><br> 新主机已添加到Ceph集群。 将一些数据迁移到其中之后，我们注意到处理写入请求的速度比其他服务器上的速度要低得多。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/4c/_r/yv/4c_ryvapivstw8l-nr7dipfvh8e.png"></div><br> 与其他平台不同，此主机上使用了bcache和新的linux 4.15内核。 首次在此使用此配置的主机。 到那时，很明显，理论上任何事情都可能成为问题的根源。 <br><br><h3> 调查主机 </h3><br> 首先，让我们看看ceph-osd进程内部发生了什么。 为此，我们使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">perf</a>和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">flamescope</a> （有关更多信息，请<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">参见</a> ）： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/uw/gj/ox/uwgjoxekagdl-noj-wp_uy5g8q8.png"></div><br> 图片告诉我们<strong>fdatasync（）</strong>函数花了很多时间将请求发送给<strong>generic_make_request（）</strong>函数。 这意味着最有可能导致问题的原因是osd守护程序本身之外的某个地方。 它可以是内核，也可以是磁盘。  iostat输出在使用bcache磁盘处理请求时显示高延迟。 <br><br> 检查主机时，我们发现systemd-udevd守护程序消耗大量CPU时间-在多个内核上大约占20％。 这是一种奇怪的行为，因此您需要找出其原因。 由于Systemd-udevd可与uevents配合使用，因此我们决定通过<strong>udevadm Monitor</strong>对其进行查看。 事实证明，为系统中的每个块设备生成了大量更改事件。 这是非常不寻常的，因此您将需要查看产生所有这些事件的原因。 <br><br><h3> 使用BCC工具包 </h3><br> 正如我们已经发现的那样，内核（以及系统调用中的ceph守护程序）在<strong>generic_make_request（）中</strong>花费了大量时间。 让我们尝试测量此功能的速度。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">密件抄送</a>已经具有很好的实用性。 我们将通过守护进程的PID跟踪守护进程，其信息输出之间的间隔为1秒，并以毫秒为单位输出结果。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/o7/zw/rl/o7zwrly0nejoo5r7zbezws3jxmo.png"></div><br> 通常此功能是快速的。 她所做的只是将请求发送到设备驱动程序队列。 <br><br>  <strong>Bcache</strong>是一个复杂的设备，实际上包含三个磁盘： <br><br><ul><li> 备份设备（缓存的磁盘），在这种情况下，它是慢速硬盘； </li><li> 缓存设备（缓存磁盘），这里是NVMe设备的一部分； </li><li> 应用程序可使用的bcache虚拟设备。 </li></ul><br> 我们知道请求传输很慢，但是对于这些设备中的哪个设备呢？ 我们稍后会处理。 <br><br> 现在我们知道，事件可能会引起问题。 要找到真正导致其生成的原因并不是那么简单。 假设这是一种定期运行的软件。 让我们看看使用同<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">一套BCC实用程序中</a>的<strong>execsnoop</strong>脚本在系统上启动了哪种软件。 运行它，并将输出定向到文件。 <br><br> 例如，像这样： <br><br><pre><code class="bash hljs">/usr/share/bcc/tools/execsnoop | tee ./execdump</code> </pre> <br> 我们不会在这里给出execsnoop的完整输出，但是我们感兴趣的一行看起来像这样： <br><br><pre> <code class="bash hljs">sh 1764905 5802 0 sudo arcconf getconfig 1 AD | grep Temperature | awk -F <span class="hljs-string"><span class="hljs-string">'[:/]'</span></span> <span class="hljs-string"><span class="hljs-string">'{print $2}'</span></span> | sed <span class="hljs-string"><span class="hljs-string">'s/^ \([0-9]*\) C.*/\1/'</span></span></code> </pre><br> 第三列是流程的PPID（父PID）。  PID 5802的过程被证明是我们监控系统的线程之一。 检查监视系统的配置时，发现错误的参数。 每30秒测量一次HBA适配器的温度，这比所需的温度要高得多。 将验证间隔更改为更长的间隔后，我们发现在此主机上处理请求的延迟不再与其他主机脱颖而出。 <br><br> 但是，尚不清楚为什么bcache设备这么慢。 我们准备了具有相同配置的测试平台，并尝试通过在bcache上运行fio来重现该问题，并定期启动udevadm触发器以生成uevent。 <br><br><h3> 编写基于BCC的工具 </h3><br> 让我们尝试编写一个简单的实用程序，以跟踪和显示对<strong>generic_make_request（）</strong>的最慢调用。 我们也对调用此函数的驱动器名称感兴趣。 <br><br> 该计划很简单： <br><br><ul><li> 将<strong>kprobe</strong>注册到<strong>generic_make_request（）</strong> ： <br><ul><li> 我们保存可以通过function参数访问的磁盘名称； </li><li> 保存时间戳。 </li></ul><br></li></ul><ul><li> 注册<strong>kretprobe</strong>以从<strong>generic_make_request（）</strong>返回： <br><ul><li> 获取当前时间戳； </li><li> 我们搜索保存的时间戳并将其与当前时间戳进行比较； </li><li> 如果结果大于指定的结果，那么我们将找到保存的磁盘名称并将其显示在终端上。 </li></ul><br></li></ul>  <strong>Kprobes</strong>和<strong>kretprobes</strong>使用断点机制动态更改功能代码。 您可以阅读有关此主题的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文档</a>和一篇<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">不错的</a>文章。 如果查看<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">BCC</a>中各种实用程序的代码，您会发现它们具有相同的结构。 因此，在本文中，我们将省略脚本参数的分析，然后转到BPF程序本身。 <br><br>  python脚本中的eBPF文本如下所示： <br><br><pre> <code class="python hljs">bpf_text = “”” <span class="hljs-comment"><span class="hljs-comment"># Here will be the bpf program code “””</span></span></code> </pre><br> 为了在函数之间交换数据，eBPF程序使用<a href="">哈希表</a> 。 我们也会。 作为关键字，我们将使用流程的PID，并为值定义结构： <br><br><pre> <code class="python hljs">struct data_t { u64 pid; u64 ts; char comm[TASK_COMM_LEN]; u64 lat; char disk[DISK_NAME_LEN]; }; BPF_HASH(p, u64, struct data_t); BPF_PERF_OUTPUT(events);</code> </pre><br> 在这里，我们注册了一个名为<em>p</em>的哈希表，该哈希表的键类型为<em>u64，</em>而值的类型为<em>struct data_t</em> 。 该表将在我们的BPF程序的上下文中可用。  BPF_PERF_OUTPUT宏注册另一个表，称为<em>事件</em> ，用于<a href="">将数据传输</a>到用户空间。 <br><br> 在测量函数调用与函数调用之间的延迟或对不同函数的调用之间的延迟时，应牢记所接收的数据必须属于同一上下文。 换句话说，您需要记住可能并行启动的功能。 我们有机会测量在一个进程的上下文中调用一个函数与在另一个进程的上下文中从该函数返回之间的延迟，但这很可能是无用的。 一个很好的例子是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">biolatency实用程序</a> ，其中将指向<em>结构请求</em>的指针（反映单个磁盘<em>请求</em> ）设置为哈希表中的键。 <br><br> 接下来，我们需要编写在调用被调查函数时将运行的代码： <br><br><pre> <code class="python hljs">void start(struct pt_regs *ctx, struct bio *bio) { u64 pid = bpf_get_current_pid_tgid(); struct data_t data = {}; u64 ts = bpf_ktime_get_ns(); data.pid = pid; data.ts = ts; bpf_probe_read_str(&amp;data.disk, sizeof(data.disk), (void*)bio-&gt;bi_disk-&gt;disk_name); p.update(&amp;pid, &amp;data); }</code> </pre><br> 在这里，被称为<a href="">generic_make_request（）</a>函数的第二个参数将被替换为第二个参数。 在那之后，我们获得了我们正在工作的进程的PID，以及当前的时间戳（以纳秒为单位）。 我们将所有这些都写入<em>新分配的struct data_t data中</em> 。 我们从<em>bio</em>结构获取磁盘名称，该磁盘名称在调用<strong>generic_make_request（）</strong>时传递，并将其保存在相同的<em>数据</em>结构中。 最后一步是将一个条目添加到前面提到的哈希表中。 <br><br> 从<strong>generic_make_request（）</strong>返回时将调用以下函数： <br><br><pre> <code class="python hljs">void stop(struct pt_regs *ctx) { u64 pid = bpf_get_current_pid_tgid(); u64 ts = bpf_ktime_get_ns(); struct data_t* data = p.lookup(&amp;pid); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (data != <span class="hljs-number"><span class="hljs-number">0</span></span> &amp;&amp; data-&gt;ts &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>) { bpf_get_current_comm(&amp;data-&gt;comm, sizeof(data-&gt;comm)); data-&gt;lat = (ts - data-&gt;ts)/<span class="hljs-number"><span class="hljs-number">1000</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (data-&gt;lat &gt; MIN_US) { FACTOR data-&gt;pid &gt;&gt;= <span class="hljs-number"><span class="hljs-number">32</span></span>; events.perf_submit(ctx, data, sizeof(struct data_t)); } p.delete(&amp;pid); } }</code> </pre><br> 此功能与上一个功能相似：我们可以识别进程PID和时间戳，但不会为新的数据结构分配内存。 相反，我们在哈希表中查找键==当前PID的现有结构。 如果找到该结构，那么我们将找出正在运行的进程的名称并将其添加到其中。 <br><br> 为了获得线程GID，需要在此处使用二进制移位。 即 在我们正在工作的上下文中启动线程的主要进程的PID。 我们正在<a href="">调用</a>的<a href="">bpf_get_current_pid_tgid（）</a>函数以一个64位值返回线程的GID及其PID。 <br><br> 当输出到终端时，现在我们对流不感兴趣，而对主要过程感兴趣。 在将接收到的延迟与给定阈值进行比较之后，我们通过<em>事件</em>表将<em>数据</em>结构传输到用户空间，然后从<em>p中</em>删除记录。 <br><br> 在将加载此代码的python脚本中，我们需要将MIN_US和FACTOR替换为延迟阈值和时间单位，我们将通过参数传递它们： <br><br><pre> <code class="python hljs">bpf_text = bpf_text.replace(<span class="hljs-string"><span class="hljs-string">'MIN_US'</span></span>,str(min_usec)) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> args.milliseconds: bpf_text = bpf_text.replace(<span class="hljs-string"><span class="hljs-string">'FACTOR'</span></span>,<span class="hljs-string"><span class="hljs-string">'data-&gt;lat /= 1000;'</span></span>) label = <span class="hljs-string"><span class="hljs-string">"msec"</span></span> <span class="hljs-keyword"><span class="hljs-keyword">else</span></span>: bpf_text = bpf_text.replace(<span class="hljs-string"><span class="hljs-string">'FACTOR'</span></span>,<span class="hljs-string"><span class="hljs-string">''</span></span>) label = <span class="hljs-string"><span class="hljs-string">"usec"</span></span></code> </pre><br> 现在，我们需要通过<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">BPF宏</a>准备BPF程序并注册示例： <br><br><pre> <code class="python hljs">b = BPF(text=bpf_text) b.attach_kprobe(event=<span class="hljs-string"><span class="hljs-string">"generic_make_request"</span></span>,fn_name=<span class="hljs-string"><span class="hljs-string">"start"</span></span>) b.attach_kretprobe(event=<span class="hljs-string"><span class="hljs-string">"generic_make_request"</span></span>,fn_name=<span class="hljs-string"><span class="hljs-string">"stop"</span></span>)</code> </pre><br> 我们还必须在脚本中定义<em>struct data_t</em> ，否则我们将无法读取任何内容： <br><br><pre> <code class="python hljs">TASK_COMM_LEN = <span class="hljs-number"><span class="hljs-number">16</span></span> <span class="hljs-comment"><span class="hljs-comment"># linux/sched.h DISK_NAME_LEN = 32 # linux/genhd.h class Data(ct.Structure): _fields_ = [("pid", ct.c_ulonglong), ("ts", ct.c_ulonglong), ("comm", ct.c_char * TASK_COMM_LEN), ("lat", ct.c_ulonglong), ("disk",ct.c_char * DISK_NAME_LEN)]</span></span></code> </pre><br> 最后一步是将数据输出到终端： <br><br><pre> <code class="python hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">print_event</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(cpu, data, size)</span></span></span><span class="hljs-function">:</span></span> <span class="hljs-keyword"><span class="hljs-keyword">global</span></span> start event = ct.cast(data, ct.POINTER(Data)).contents <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> start == <span class="hljs-number"><span class="hljs-number">0</span></span>: start = event.ts time_s = (float(event.ts - start)) / <span class="hljs-number"><span class="hljs-number">1000000000</span></span> print(<span class="hljs-string"><span class="hljs-string">"%-18.9f %-16s %-6d %-1s %s %s"</span></span> % (time_s, event.comm, event.pid, event.lat, label, event.disk)) b[<span class="hljs-string"><span class="hljs-string">"events"</span></span>].open_perf_buffer(print_event) <span class="hljs-comment"><span class="hljs-comment"># format output start = 0 while 1: try: b.perf_buffer_poll() except KeyboardInterrupt: exit()</span></span></code> </pre><br> 该脚本本身在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GItHub</a>上<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">可用</a> 。 让我们尝试在使用bcache编写fio并调用udevadm monitor的测试平台上运行它： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/0q/wl/yo/0qwlyofk3ynh0ksh1rcqe_9kt6w.png"></div><br> 终于！ 现在，我们看到看起来像制动的bcache设备实际上是对已缓存驱动器上的<strong>generic_make_request（）</strong>的制动调用。 <br><br><h3> 挖掘内核 </h3><br> 在传输请求的过程中到底放慢了什么？ 我们看到延迟甚至发生在请求开始计费之前，即 尚未解决针对特定请求进行进一步统计的请求（/ proc / diskstats或iostat）。 通过在重现问题时运行iostat或<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">BCC生物等待时间脚本</a> （可以基于请求记帐的开始和结束）来轻松验证这一点。 这些实用程序都不会在查询缓存驱动器时出现问题。 <br><br> 如果我们看一下<strong>generic_make_request（）</strong>函数，我们将看到在<strong>记录</strong>请求之前又调用了两个函数。 第一个， <strong>generic_make_request_checks（）</strong> ，检查磁盘设置请求的合法性。 第二个是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">blk_queue_enter（）</a> ，它对<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">wait_event_interruptible（）</a>有一个有趣的调用： <br><br><pre> <code class="python hljs">ret = wait_event_interruptible(q-&gt;mq_freeze_wq, (atomic_read(&amp;q-&gt;mq_freeze_depth) == <span class="hljs-number"><span class="hljs-number">0</span></span> &amp;&amp; (preempt || !blk_queue_preempt_only(q))) || blk_queue_dying(q));</code> </pre><br> 在其中，内核等待队列的解冻。 我们测量延迟<strong>blk_queue_enter（）</strong> ： <br><br><pre> <code class="bash hljs">~<span class="hljs-comment"><span class="hljs-comment"># /usr/share/bcc/tools/funclatency blk_queue_enter -i 1 -m Tracing 1 functions for "blk_queue_enter"... Hit Ctrl-C to end. msecs : count distribution 0 -&gt; 1 : 341 |****************************************| msecs : count distribution 0 -&gt; 1 : 316 |****************************************| msecs : count distribution 0 -&gt; 1 : 255 |****************************************| 2 -&gt; 3 : 0 | | 4 -&gt; 7 : 0 | | 8 -&gt; 15 : 1 | |</span></span></code> </pre><br> 看来我们已经接近解决方案。 用于“冻结/解冻”队列的函数是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">blk_mq_freeze_queue</a>和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">blk_mq_unfreeze_queue</a> 。 当需要更改查询队列的设置时使用它们，这对于此队列中的查询可能具有危险。 调用<strong>blk_mq_freeze_queue（）时</strong> ， <strong>blk_freeze_queue_start（）</strong>函数将递增<strong>q-&gt; mq_freeze_depth计数器</strong> 。 之后，内核在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">blk_mq_freeze_queue_wait（）中</a>等待空队列。 <br><br> 清除该队列的等待时间等同于磁盘延迟，因为内核会等待所有排队的操作完成。 队列为空时，将应用对设置的更改。 然后， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">调用blk_mq_unfreeze_queue（）</a> ，递减计数器<strong>Frozen_depth</strong> 。 <br><br> 现在我们知道足够纠正这种情况了。  udevadm trigger命令导致应用块设备的设置。 这些设置在udev规则中进行了描述。 通过尝试通过sysfs或查看内核源代码来更改设置，我们可以准确地找出哪些设置“冻结了”队列。 我们还可以尝试使用BCC <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">跟踪</a>实用程序，该实用程序针对每个<strong>blk_freeze_queue</strong>调用显示终端的内核堆栈和用户空间跟踪，例如： <br><br><pre> <code class="bash hljs">~<span class="hljs-comment"><span class="hljs-comment"># /usr/share/bcc/tools/trace blk_freeze_queue -K -U PID TID COMM FUNC 3809642 3809642 systemd-udevd blk_freeze_queue blk_freeze_queue+0x1 [kernel] elevator_switch+0x29 [kernel] elv_iosched_store+0x197 [kernel] queue_attr_store+0x5c [kernel] sysfs_kf_write+0x3c [kernel] kernfs_fop_write+0x125 [kernel] __vfs_write+0x1b [kernel] vfs_write+0xb8 [kernel] sys_write+0x55 [kernel] do_syscall_64+0x73 [kernel] entry_SYSCALL_64_after_hwframe+0x3d [kernel] __write_nocancel+0x7 [libc-2.23.so] [unknown] 3809631 3809631 systemd-udevd blk_freeze_queue blk_freeze_queue+0x1 [kernel] queue_requests_store+0xb6 [kernel] queue_attr_store+0x5c [kernel] sysfs_kf_write+0x3c [kernel] kernfs_fop_write+0x125 [kernel] __vfs_write+0x1b [kernel] vfs_write+0xb8 [kernel] sys_write+0x55 [kernel] do_syscall_64+0x73 [kernel] entry_SYSCALL_64_after_hwframe+0x3d [kernel] __write_nocancel+0x7 [libc-2.23.so] [unknown]</span></span></code> </pre><br>  Udev规则很少更改，通常会在控制之下。 因此，我们看到，即使使用已经设置的值，也会导致将请求从应用程序传输到磁盘的延迟增加。 当然，在磁盘配置没有变化（例如，设备未连接/断开连接）时生成udev事件不是一个好习惯。 但是，如果没有必要，我们可以帮助内核不要做无用的工作，也不要冻结请求队列。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">三个</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">小的</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">提交可以</a>纠正这种情况。 <br><br><h2> 结论 </h2><br>  eBPF是一个非常灵活且功能强大的工具。 在本文中，我们研究了一个实际案例，并演示了可行方法的一小部分。 如果您对开发BCC实用程序感兴趣，则应查看<a href="">官方教程</a> ，该<a href="">教程</a>很好地描述了基础知识。 <br><br> 还有其他有趣的基于eBPF的调试和性能分析工具。 其中之一是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">bpftrace</a> ，它使您可以用类似awk的语言编写功能强大的单行和小型程序。 另一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">-ebpf_exporter</a> ，使您可以将低级别的高分辨率指标直接收集到您的Prometheus服务器中，并具有获得漂亮的可视化甚至将来发出警报的能力。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN458592/">https://habr.com/ru/post/zh-CN458592/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN458574/index.html">如何从开发人员成长为团队负责人并与之进一步共处</a></li>
+<li><a href="../zh-CN458576/index.html">Web应用程序中的文本管理和本地化</a></li>
+<li><a href="../zh-CN458582/index.html">亚马逊工程师创造了一种AI阻止设备，将猫拒之门外</a></li>
+<li><a href="../zh-CN458584/index.html">7月11日，Group-IB网络研讨会“针对初学者的恶意软件分析：基本方法”</a></li>
+<li><a href="../zh-CN458590/index.html">iOS应用程序中的架构方法</a></li>
+<li><a href="../zh-CN458594/index.html">不要忘记使用L7平衡中的重复请求来增加对客户端做出响应的机会</a></li>
+<li><a href="../zh-CN458596/index.html">小巧的小乐趣＃6：OpenAI Gym-玩游戏和控制机器人</a></li>
+<li><a href="../zh-CN458598/index.html">在环境地图上识别光源</a></li>
+<li><a href="../zh-CN458600/index.html">什么是电动自行车（在两个制造商的五个型号的两个部分中进行的小组审查），第1部分</a></li>
+<li><a href="../zh-CN458604/index.html">为什么两家最大的电子制造商联手开展新的GPU项目</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

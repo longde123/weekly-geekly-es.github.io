@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔸 💍 👨🏻‍✈️ VMware vSphere中的VM性能分析。 第3部分：存储 🐦 💃🏿 🎪</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="第1部分。关于CPU 
+ 第2部分。关于内存 
+
+ 今天，我们将分析vSphere中的磁盘子系统指标。 存储问题是虚拟机运行缓慢的最常见原因。 如果在使用CPU和RAM的情况下，故障排除在虚拟机监控程序级别结束，则在磁盘出现问题时，您可能必须处理数据网络和存储系统。 
+
+ 我将以块访问存储为例分析该...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>VMware vSphere中的VM性能分析。 第3部分：存储</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/dataline/blog/461127/"><img src="https://habrastorage.org/webt/2z/yj/ri/2zyjri-ljt0oq1lfki5jwlxuyuc.png"><br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">第1部分。关于CPU</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">第2部分。关于内存</a> <br><br> 今天，我们将分析vSphere中的磁盘子系统指标。 存储问题是虚拟机运行缓慢的最常见原因。 如果在使用CPU和RAM的情况下，故障排除在虚拟机监控程序级别结束，则在磁盘出现问题时，您可能必须处理数据网络和存储系统。 <br><br> 我将以块访问存储为例分析该主题，尽管对于文件访问，计数器大致相同。 <br><a name="habracut"></a><br><h3> 一点理论 </h3><br> 在谈论虚拟机磁盘子系统的性能时，通常要注意三个相关参数： <br><br><ul><li> 输入/输出操作数（每秒输入/输出操作，IOPS）； </li><li> 带宽（吞吐量）； </li><li> 输入/输出操作的延迟（Latency）。 </li></ul><br>  <b>IOPS的数量</b>通常对于随机工作负载很重要：访问位于不同位置的磁盘上的块。 数据库，业务应用程序（ERP，CRM）等可以用作此类负载的示例。 <br><br>  <b>吞吐量</b>对于顺序加载<b>很</b>重要：访问一个接一个的块。 例如，文件服务器（但并非总是如此）和视频监视系统会产生这样的负载。 <br><br> 吞吐量与I / O操作的数量有关，如下所示： <br><br>  <i>吞吐量= IOPS *块大小</i> ，其中块大小是块的大小。 <br><br> 块大小是一个非常重要的功能。 现代ESXi版本允许的块最大为32,767 KB。 如果块更大，则将其分为几个。 并非所有存储系统都可以在如此大的块上有效地工作，因此高级设置ESXi具有DiskMaxIOSize参数。 使用它，您可以减小虚拟机管理程序跳过的块的最大大小（更多详细信息，请参见<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处</a> ）。 我建议您在更改此参数之前咨询存储系统制造商，或者至少在实验室的工作台上测试更改。 <br><br> 大块大小可能会对存储性能产生不利影响。 即使IOPS的数量和吞吐量相对较小，大块大小也会发生高延迟。 因此，请注意此参数。 <br><br>  <b>延迟</b>是最有趣的性能参数。 虚拟机的I / O操作延迟是以下各项的总和： <br><br><ul><li> 系统管理程序内的延迟（KAVG，平均内核MilliSec /读取）； </li><li> 数据网络和存储（DAVG，平均驱动程序MilliSec / Command）给出的延迟。 </li></ul><br> 来宾操作系统中可见的总延迟（GAVG，平均来宾MilliSec /命令）是KAVG和DAVG的总和。 <br><br> 测量GAVG和DAVG，并计算KAVG：GAVG – DAVG。 <br><br><img src="https://habrastorage.org/webt/vl/nr/li/vlnrlisbs6bewpfc93um8pocz4c.png"><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><i>来源</i></a> <br><br> 让我们来<b>谈谈KAVG</b> 。 在正常操作中，KAVG应该趋于零，或者至少比DAVG小得多。 我知道何时KAVG会很高的唯一情况是VM磁盘上的IOPS限制。 在这种情况下，当尝试超过限制时，KAVG将增加。 <br><br>  KAVG的最重要组成部分是QAVG-Q在虚拟机管理程序中在队列中进行处理的时间。  KAVG的其余组件可以忽略不计。 <br><br> 磁盘适配器驱动程序中的队列和月亮队列具有固定的大小。 对于重载环境，此大小可能会有用。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">它</a>描述了如何在适配器驱动程序中增加队列（同时增加到卫星的队列）。 当只有一个虚拟机与月球一起工作时，此设置有效，这种情况很少见。 如果月球上有多个<i>VM</i> ，则还必须增加<i>Disk.SchedNumReqOutstanding</i>参数（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处的</a>说明）。 通过增加队列，可以分别减少QAVG和KAVG。 <br><br> 但是，再次，首先请阅读HBA供应商提供的文档，并在实验室进行测试。 <br><br> 包含SIOC（存储I / O控制）机制可能会影响到达月球的队列的大小。 通过动态更改服务器上到月球的队列，它可以从群集中的所有服务器统一访问月球。 也就是说，如果VM在要求性能不成比例的主机（嘈杂的邻居VM）上运行，则SIOC会减少该主机上到达月球的队列的长度（DQLEN）。 更多细节<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在这里</a> 。 <br><br>  KAVG进行了整理，现在对<b>DAVG</b>有所了解。 一切都很简单：DAVG是外部环境（数据网络和存储）引入的延迟。 任何不那么现代的存储系统都有其自己的性能计数器。 要分析DAVG的问题，请仔细研究它们。 如果在ESXi和存储方面一切正常，请检查数据网络。 <br><br> 为避免性能问题，请为存储选择正确的路径选择策略（PSP）。 几乎所有现代存储系统都支持PSP循环（带有或不带有ALUA，非对称逻辑单元访问）。 该策略允许您使用所有可用的存储路径。 对于ALUA，仅使用通往拥有月亮的控制器的路径。 并非ESXi上的所有存储系统都具有建立循环策略的默认规则。 如果您的存储系统没有规则，请使用存储制造商提供的插件，该插件将在集群中的所有主机上创建相应的规则，或者您自己创建规则。 详细信息<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在这里</a> 。 <br><br> 另外，一些存储供应商建议将每条路径的IOPS数量从标准值1000更改为1。在我们的实践中，这使我们可以“压缩”存储的更多性能，并在控制器发生故障或更新时大大减少了故障转移所需的时间。 检查供应商的建议，如果没有禁忌症，请尝试更改此参数。 详细信息<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在这里</a> 。 <br><br><h3> 虚拟机磁盘子系统的基本性能计数器 </h3><br>  vCenter中的磁盘子系统性能计数器收集在“数据存储”，“磁盘”，“虚拟磁盘”部分中： <br><br><img src="https://habrastorage.org/webt/vh/kw/s4/vhkws4yppe9rqfk5pogjaey0_im.png"><br><br>  “ <b>数据存储”</b>部分包含VM磁盘所在的vSphere磁盘存储（数据存储）的指标。 在这里，您可以找到以下标准计数器： <br><br><ul><li>  IOPS（每秒平均读取/写入请求）， </li><li> 带宽（读/写速率）， </li><li> 延迟（读/写/最高延迟）。 </li></ul><br> 从柜台名称上看，原则上一切都清楚。 我再次提醒您一个事实，这里的统计信息不是针对特定的VM（或VM磁盘），而是针对整个数据存储区的常规统计。 我认为，至少在最小测量周期为2秒的基础上，更方便地在ESXTOP中查看这些统计信息。 <br><br>  “ <b>磁盘”</b>部分包含VM使用的块设备的指标。 有总和类型的IOPS计数器（每个测量周期的I / O操作数）和与块访问有关的几个计数器（命令中止，总线复位）。 我认为，此信息也更方便在ESXTOP中观看。 <br><br> 在对VM磁盘子系统性能问题进行故障排除方面，“ <b>虚拟磁盘”</b>部分最有用。 在这里，您可以看到每个虚拟磁盘的性能。 需要此信息以了解特定虚拟机是否有问题。 除了用于输入/输出操作，读取/写入量和延迟的标准计数器之外，本节还包含一些有用的计数器，它们显示块大小：读/写请求大小。 <br><br> 在下图中，显示了VM磁盘的性能图，您可以在其中查看IOPS数量，延迟和块大小。 <br><br><img src="https://habrastorage.org/webt/6_/1e/io/6_1eiop7odinrffnof8y6jkqoc4.png"><br><br> 如果启用了SIOC，也可以在整个数据存储中查看性能指标。 以下是有关平均延迟和IOPS的一些基本信息。 默认情况下，此信息只能实时查看。 <br><br><img src="https://habrastorage.org/webt/3z/fu/2f/3zfu2fvddarsk_ki3lnavc8juqs.png"><br><br><h3>  ESXTOP </h3><br>  ESXTOP具有多个屏幕，这些屏幕显示有关整个主机磁盘子系统，各个虚拟机及其磁盘的信息。 <br><br> 让我们从有关虚拟机的信息开始。 通过“ v”键调出“磁盘VM”屏幕： <br><br><img src="https://habrastorage.org/webt/x-/ix/kf/x-ixkfuuxxrv64gpsxezoo8lsci.png"><br><br>  <b>NVDISK</b>是VM磁盘的数量。 要查看每个磁盘上的信息，请按“ e”并输入您感兴趣的VM的GID。 <br><br> 从其名称中可以清楚地看到此屏幕上其余参数的含义。 <br><br> 疑难解答的另一个有用屏幕是磁盘适配器。 通过“ d”键调用它（在下图中，选择了字段A，B，C，D，E，G）： <br><br><img src="https://habrastorage.org/webt/oo/yk/2n/ooyk2nk1kburs6exfrg1km9auum.png"><br><br>  <b>NPTH</b>是此适配器可见的<b>月球</b>路径数。 要获取有关适配器上每个路径的信息，请按“ e”并输入适配器的名称： <br><br><img src="https://habrastorage.org/webt/nb/rl/wr/nbrlwrvqdj95qy_qqna0ultn3tw.png"><br><br>  <b>AQLEN-</b>适配器上的最大队列大小。 <br><br> 在此屏幕上还显示了延迟计数器，我在上面谈到过： <b>KAVG / cmd，GAVG / cmd，DAVG / cmd，QAVG / cmd</b> 。 <br><br> 磁盘设备屏幕（用“ u”键调用）显示有关单个块设备的信息-卫星（在下图中，选择了A，B，F，G，I字段）。 在这里，您可以看到进入月球的队列的状态。 <br><br><img src="https://habrastorage.org/webt/ik/e0/lk/ike0lkaa77navbia1n-sjfvqwci.png"><br><br>  <b>DQLEN-</b>块设备的队列大小。 <br>  <b>ACTV</b>是ESXi核心中I / O命令的数量。 <br>  <b>QUED-</b>队列中I / O命令的数量。 <br>  <b>美元</b> -ACTV / DQLEN×100％。 <br>  <b>负载</b> -（ACTV + QUED）/ DQLEN。 <br><br> 如果％USD高，则应考虑扩大阵容。 队列中的团队越多，QAVG以及相应的KAVG越高。 <br><br> 您还可以在“磁盘设备”屏幕上查看VAAI（用于阵列集成的vStorage API）是否正在存储上运行。 为此，选择字段A和O。 <br><br>  VAAI机制允许您将部分工作从虚拟机管理程序直接转移到存储系统，例如，调零，复制块或块。 <br><br><img src="https://habrastorage.org/webt/ue/ko/mf/uekomfb2nkqqtktz9xy2b_uarpa.png"><br><br> 如上图所示，VAAI在此存储系统上工作：积极使用零和ATS原语。 <br><br><h3>  ESXi磁盘优化技巧 </h3><br><ul><li> 注意块的大小。 </li><li> 在HBA上设置最佳队列大小。 </li><li> 请记住在数据存储上启用SIOC。 </li><li> 根据制造商的建议选择您的PSP。 </li><li> 确保VAAI正常运行。 </li></ul><br><div class="spoiler">  <b class="spoiler_title">有用的相关文章：</b> <div class="spoiler_text">  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">http://www.yellow-bricks.com/2011/06/23/disk-schednumreqoutstanding-the-story/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">http://www.yellow-bricks.com/2009/09/29/whats-that-alua-exactly/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">http://www.yellow-bricks.com/2019/03/05/dqlen-changes-what-is-going-on/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://www.codyhosterman.com/2017/02/understanding-vmware-esxi-queuing-and-the-flasharray/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://www.codyhosterman.com/2018/03/what-is-the-latency-stat-qavg/</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://kb.vmware.com/s/article/1267</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://kb.vmware.com/s/article/1268</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://kb.vmware.com/s/article/1027901</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://kb.vmware.com/s/article/2069356</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://kb.vmware.com/s/article/2053628</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://kb.vmware.com/s/article/1003469</a> <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">https://www.vmware.com/content/dam/digitalmarketing/vmware/zh/pdf/techpaper/performance/vsphere-esxi-vcenter-server-67-performance-best-practices.pdf</a> <br></div></div></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN461127/">https://habr.com/ru/post/zh-CN461127/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN461105/index.html">5个有用的Webpack插件</a></li>
+<li><a href="../zh-CN461107/index.html">Seryozha的剂量计。 第二部分 百年纪念管vs和平原子</a></li>
+<li><a href="../zh-CN461113/index.html">在生产中的微控制器项目中使用C ++的五年</a></li>
+<li><a href="../zh-CN461121/index.html">微控制器中的小型多任务实验</a></li>
+<li><a href="../zh-CN461125/index.html">在Visual Studio的源代码中创建顺序编号代码以对消息编号的任务（例如C＃）</a></li>
+<li><a href="../zh-CN461129/index.html">关于kote，妻子，两个儿子，这个主意……而不仅仅是。 延续故事</a></li>
+<li><a href="../zh-CN461131/index.html">ROS购物车第2部分。</a></li>
+<li><a href="../zh-CN461133/index.html">使用tSQLt测试SQL Server代码</a></li>
+<li><a href="../zh-CN461137/index.html">我们如何开发一种用于监视驾驶员注意力的设备。 体验Yandex.Taxi</a></li>
+<li><a href="../zh-CN461141/index.html">我与Hai句的第一天：她出奇地好</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

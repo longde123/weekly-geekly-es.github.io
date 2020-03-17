@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏽‍🔬 📇 🗯️ STM32和其他微控制器上的存储器性能分析：静态堆栈大小分析 👈🏽 👏🏼 ⛄️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="哈Ha！ 
+
+ 在上一篇文章中 ，我自己提到了它，并在评论中提出了问题-好的，使用科学的戳方法，我们选择了堆栈的大小，似乎没有东西掉落，但是我们可以以某种方式更可靠地评估它等于什么以及谁吃了这么多东西吗？ 
+
+ 我们简短地回答：是的，但是没有。 
+
+ 不可以，使用静态分析方法无法准确测量程序所需的堆...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>STM32和其他微控制器上的存储器性能分析：静态堆栈大小分析</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/443544/"> 哈Ha！ <br><br> 在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">上一篇文章中</a> ，我自己提到了它，并在评论中提出了问题-好的，使用科学的戳方法，我们选择了堆栈的大小，似乎没有东西掉落，但是我们可以以某种方式更可靠地评估它等于什么以及谁吃了这么多东西吗？ <br><br> 我们简短地回答：是的，但是没有。 <br><br> 不可以，使用静态分析方法无法准确测量程序所需的堆栈大小，但是，这些方法可以派上用场。 <br><br> 答案要长一些-削减了。 <br><a name="habracut"></a><br> 正如一小撮人所众所周知的，实际上，栈上的位置是为当前执行函数使用的局部变量分配的-带有static修饰符的变量除外，这些变量存储在bss区域的静态分配的内存中，因为它们必须保存它们在函数调用之间的含义。 <br><br> 执行该函数时，编译器会在堆栈上为其所需的变量添加空间，并在完成后释放此空间。 看起来一切都很简单，但是-这非常大胆- <b>但是</b>我们有几个问题： <br><br><ol><li> 函数调用其他也需要堆栈的函数 </li><li>有时函数不是通过直接引用而是通过指向函数的指针来调用其他函数 </li><li> 原则上，尽管A一定要避免，但也可以-尽管A调用了B，B调用了C，而C本身内部又调用了A时进行了递归函数调用 </li><li> 在任何时候都可能发生中断，其处理程序与需要其自身堆栈的函数相同 </li><li> 如果您具有中断层次结构，则该中断内部可能会发生另一个中断！ </li></ol><br> 毫无疑问，应该从此列表中删除递归函数调用，因为它们的存在是没有考虑堆栈大小的借口，而是要向代码作者表达您的意见。 遗憾的是，其他所有情况在一般情况下都无法消除（尽管特别可能存在细微差别：例如，您的所有中断在设计上都可以具有相同的优先级，例如在RIOT OS中，并且不会有嵌套的中断）。 <br><br> 现在想象一下一幅油画： <br><br><ul><li> 函数A，在堆栈上占用100个字节，调用函数B，该函数需要50个字节 </li><li> 在执行B时，A本身显然尚未完成，因此尚未释放其100个字节，因此我们在堆栈上已经有150个字节 </li><li> 函数B调用函数C，它根据一个指针执行此操作，根据程序逻辑，该指针可以指向6个不同的函数，这些函数占用5到50个字节的堆栈 </li><li> 在运行时C，一个重的处理程序运行相对较长的时间并占用20字节的堆栈时发生中断 </li><li> 在中断处理期间，发生另一个更高优先级的中断，该中断的处理程序需要10个字节的堆栈 </li></ul><br> 在这种精美的设计中，在所有情况下都取得了特别成功的巧合，您将<i>至少拥有五个同时活动的功能</i> -A，B，C和两个中断处理程序。 此外，它们中的一个没有栈消耗常量，因为它可能在不同的遍中只是一个不同的函数，并且要了解相互中断的可能性或不可能，您至少必须知道您是否完全拥有具有不同优先级的中断，并且最大程度地了解它们是否可以彼此重叠。 <br><br> 显然，对于任何自动静态代码分析器而言，此任务几乎都是压倒性的，并且只能在近似上限的情况下才能执行： <br><br><ul><li> 对所有中断处理程序的堆栈求和 </li><li> 总结在同一代码分支中运行的函数堆栈 </li><li> 尝试找到所有指向函数及其调用的指针，并将这些指针指向的函数中的最大堆栈大小作为堆栈大小 </li></ul><br> 在大多数情况下，您一方面会得到很高的估计，另一方面，您有机会跳过通过指针进行的一些特别棘手的函数调用。 <br><br> 因此，在一般情况下，我们可以简单地说： <b>此任务不会自动解决</b> 。 手动解决方案-知道该程序逻辑的人-需要挖掘很多数字。 <br><br> 不过，对堆栈大小的静态估计对于优化软件非常有用-至少出于简单的目的，即了解谁吃了很多而不是太多。 <br><br>  GNU / gcc工具链中有两个非常有用的工具： <br><br><ul><li> 标志-fstack-usage </li><li>  cflow实用程序 </li></ul><br> 如果将-fstack-usage添加到gcc标志（例如，添加到CFLAGS行中的Makefile），则对于<i>每个已</i>编译文件％filename％.c，编译器将创建文件％filename％.su，其中将包含简单明了的文本。 <br><br> 以<a href="">这个巨大的鞋垫</a>为例，例如<a href="">target.su</a> ： <br><br><pre><code class="plaintext hljs">target.c:159:13:save_settings 8 static target.c:172:13:disable_power 8 static target.c:291:13:adc_measure_vdda 32 static target.c:255:13:adc_measure_current 24 static target.c:76:6:cpu_setup 0 static target.c:81:6:clock_setup 8 static target.c:404:6:dma1_channel1_isr 24 static target.c:434:6:adc_comp_isr 40 static target.c:767:6:systick_activity 56 static target.c:1045:6:user_activity 104 static target.c:1215:6:gpio_setup 24 static target.c:1323:6:target_console_init 8 static target.c:1332:6:led_bit 8 static target.c:1362:6:led_num 8 static</code> </pre> <br> 在这里，我们看到堆栈中每个函数的实际消耗量，可以据此为自己得出一些结论-举例来说，如果我们遇到RAM不足的情况，那么首先应该进行优化。 <br><br> 同时，请注意， <b>此文件实际上并未提供有关调用其他函数的函数实际消耗堆栈的准确信息</b> ！ <br><br> 要了解总消耗量，我们需要构建一个调用树并总结其每个分支中包含的所有功能的堆栈。 例如，可以通过在一个或多个文件上设置<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GNU cflow</a>实用程序来完成此操作。 <br><br> 在这里，我们将得到的权重要高一个数量级，对于相同的目标，我只给出其中的一部分。c： <br><br><pre> <code class="bash hljs">olegart@oleg-npc /mnt/c/Users/oleg/Documents/Git/dap42 (umdk-emb) $ cflow src/stm32f042/umdk-emb/target.c adc_comp_isr() &lt;void adc_comp_isr (void) at src/stm32f042/umdk-emb/target.c:434&gt;: TIM_CR1() ADC_DR() ADC_ISR() DMA_CCR() GPIO_BSRR() GPIO_BRR() ADC_TR1() ADC_TR1_HT_VAL() ADC_TR1_LT_VAL() TIM_CNT() DMA_CNDTR() DIV_ROUND_CLOSEST() NVIC_ICPR() clock_setup() &lt;void clock_setup (void) at src/stm32f042/umdk-emb/target.c:81&gt;: rcc_clock_setup_in_hsi48_out_48mhz() crs_autotrim_usb_enable() rcc_set_usbclk_source() dma1_channel1_isr() &lt;void dma1_channel1_isr (void) at src/stm32f042/umdk-emb/target.c:404&gt;: DIV_ROUND_CLOSEST() gpio_setup() &lt;void gpio_setup (void) at src/stm32f042/umdk-emb/target.c:1215&gt;: rcc_periph_clock_enable() button_setup() &lt;void button_setup (void) at src/stm32f042/umdk-emb/target.c:1208&gt;: gpio_mode_setup() gpio_set_output_options() gpio_mode_setup() gpio_set() gpio_clear() rcc_peripheral_enable_clock() tim2_setup() &lt;void tim2_setup (void) at src/stm32f042/umdk-emb/target.c:1194&gt;: rcc_periph_clock_enable() rcc_periph_reset_pulse() timer_set_mode() timer_set_period() timer_set_prescaler() timer_set_clock_division() timer_set_master_mode() adc_setup_common() &lt;void adc_setup_common (void) at src/stm32f042/umdk-emb/target.c:198&gt;: rcc_periph_clock_enable() gpio_mode_setup() adc_set_clk_source() adc_calibrate() adc_set_operation_mode() adc_disable_discontinuous_mode() adc_enable_external_trigger_regular() ADC_CFGR1_EXTSEL_VAL() adc_set_right_aligned() adc_disable_temperature_sensor() adc_disable_dma() adc_set_resolution() adc_disable_eoc_interrupt() nvic_set_priority() nvic_enable_irq() dma_channel_reset() dma_set_priority() dma_set_memory_size() dma_set_peripheral_size() dma_enable_memory_increment_mode() dma_disable_peripheral_increment_mode() dma_enable_transfer_complete_interrupt() dma_enable_half_transfer_interrupt() dma_set_read_from_peripheral() dma_set_peripheral_address() dma_set_memory_address() dma_enable_circular_mode() ADC_CFGR1() memcpy() console_reconfigure() tic33m_init() strlen() tic33m_display_string()</code> </pre> <br> 甚至还不到一半。 <br><br> 要了解堆栈的实际消耗量，我们需要计算其中提到的<i>每个</i>函数的消耗量，并对<i>每个</i>分支的这些值求和。 <br><br> 虽然我们仍然不考虑指针和中断对函数的调用，包括。 嵌套（特别是在此代码中，它们可以嵌套）。 <br><br> 您可能会猜到，每次更改代码时都要这样做，说起来有点困难，这就是为什么没人通常这样做。 <br><br> 不过，有必要了解堆栈填充的原理-这可能会导致对项目代码的某些限制，从防止堆栈溢出的角度（例如，禁止嵌套中断或指针调用函数）的角度来看，这会增加其可靠性，特别是-fstack-usage可以极大地提高在缺少RAM的系统上帮助代码优化。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN443544/">https://habr.com/ru/post/zh-CN443544/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN443526/index.html">从算法到癌症：生物信息学院的演讲</a></li>
+<li><a href="../zh-CN443528/index.html">亚马逊为Elasticsearch发布了Open Distro</a></li>
+<li><a href="../zh-CN443530/index.html">数据库基础结构演进：从一台服务器上的数据库和应用程序到流复制</a></li>
+<li><a href="../zh-CN443532/index.html">用于3D打印的金属粉末的5个功能</a></li>
+<li><a href="../zh-CN443534/index.html">Compute Express Link-大数据互连</a></li>
+<li><a href="../zh-CN443554/index.html">PSoC 5LP中时钟频率形成的功能</a></li>
+<li><a href="../zh-CN443560/index.html">arkit-JavaScript，TypeScript和Flow的架构图</a></li>
+<li><a href="../zh-CN443562/index.html">广告渠道链转换的预测方法比较</a></li>
+<li><a href="../zh-CN443566/index.html">Firefox发送：免费的加密文件共享服务</a></li>
+<li><a href="../zh-CN443568/index.html">特里·戴维斯（Terry Davis）的传记，“有史以来最伟大的程序员”</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

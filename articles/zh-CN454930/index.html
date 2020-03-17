@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👗 🧓🏿 💤 V8中的垃圾收集：新的Orinoco GC如何工作 😲 ↩️ 👰🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="老实说，这是我最近读过的最残酷的文章之一：关于年轻时的死亡，关于从一个记忆区域到另一个记忆区域的迫害以及关于生产力的激烈斗争，有很多事情。 总的来说，欢迎来到Kat – Peter Marshall撰写了一篇出色的文章，介绍了当今V8中垃圾回收的工作原理。 
+
+
+
+ 在过去的几年中，V8中的垃圾回收...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>V8中的垃圾收集：新的Orinoco GC如何工作</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/badoo/blog/454930/"> 老实说，这是我最近读过的最残酷的文章之一：关于年轻时的死亡，关于从一个记忆区域到另一个记忆区域的迫害以及关于生产力的激烈斗争，有很多事情。 总的来说，欢迎来到Kat – Peter Marshall撰写了一篇出色的文章，介绍了当今V8中垃圾回收的工作原理。 <br><br><img src="https://habrastorage.org/webt/s1/vj/i4/s1vji4ia58-4d6fppntreacevai.jpeg"><a name="habracut"></a><br><br> 在过去的几年中，V8中的垃圾回收方法发生了很大变化。 作为Orinoco项目的一部分，他已经从始终如一的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">停滞世界</a>方法转变为具有渐进式后备的并行竞争方法。 <br><br> 注意：如果您喜欢观看报告而不是阅读文章，可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处进行</a> 。 如果没有，请继续阅读。 <br><br> 任何垃圾收集器都有一组需要定期执行的任务： <br><br><ol><li> 查找内存中的活物/死物。 <br></li><li> 重用死对象占用的内存。 <br></li><li> 压缩/碎片整理存储器（可选）。 <br></li></ol><br> 这些任务可以顺序执行，也可以交替执行。 最简单的方法是停止执行JavaScript，并按顺序在主线程中执行所有操作。 但是，这可能会导致延迟，这在我们<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">之前的</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文章</a>中<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">已经</a>讨论过，并且可能导致整个程序的性能下降。 <br><br><h2> 主GC（完整标记紧凑） </h2><br> 主GC从整个堆中收集垃圾。 <br><img src="https://habrastorage.org/webt/ap/4a/ew/ap4aewr_soaajwsy8pw7ybdn2qo.png"><br>  <i><font color="gray">垃圾清洁分为三个阶段：贴标签，处理和压实</font></i> <br><br><h3> 打标 </h3><br> 确定可以从中释放内存的对象是垃圾收集器的重要组成部分。 他根据有关其可达性的信息认为该对象还活着。 这意味着从当前运行时引用的任何对象都必须存储在内存中，并且所有不可访问的对象都可以由GC组装。 <br><br> 标记是寻找可触及物体的过程。  GC具有一组用于开始搜索的指针，即所谓的根集。 该集合包括当前执行堆栈中的对象和全局对象。 从此集合开始，GC将跟踪指向JavaScript对象的每个指针并将其标记为可访问，然后将其移至从对象到其他对象的指针，并递归重复此过程，直到标记每个可访问对象。 <br><br><h3> 处置方式 </h3><br> 处置是将死对象剩余的存储区域输入到称为空闲列表的列表中的过程。 标记过程完成后，GC会找到这些区域并将其添加到适当的列表中。 空闲列表在存储空间大小方面彼此不同，这使您可以快速找到合适的存储空间。 随后，当我们要分配内存时，我们将查看其中一个列表，并找到一个合适大小的部分。 <br><br><h3> 封条 </h3><br> 而且，主GC有时会根据其自身的启发式估计（基于页面碎片的程度）来决定清理/压缩某些内存页面。 您可以将压缩看作是对旧PC上的硬盘进行碎片整理的模拟。 我们将尚存的对象复制到尚未压缩的其他页面（此处仅使用空闲列表）。 因此，我们可以重用死对象遗留下来的分散的小内存块。 <br><br> 复制存活对象的GC的缺点之一是，当您创建许多长期存在的对象时，必须为复制它们付出高昂的代价。 出于这个原因，仅压缩了一些高度碎片化的内存页面，而其余部分则被简单地处理掉了，这不需要复制尚存的对象。 <br><br><h3> 记忆产生装置 </h3><br>  V8中的堆分为几代。 有年轻的一代（又分为“魔鬼”和“中级”一代）和老一代。 创建的对象放置在“ manger”中。 随后，如果他们在下一次垃圾回收中幸免于难，他们将保留在年轻一代中，但将其归入“中级”类别。 如果它们在下一次组装后仍然存在，则将它们放置在上一代中。 <br><img src="https://habrastorage.org/webt/bl/jl/qc/bljlqc2s8amymre3zunoc1lgngi.png"><br>  <i><font color="gray">一堆V8被分成几代人。</font></i>  <i><font color="gray">如果对象在垃圾回收中幸存下来，它们就会从年轻到老</font></i> <br><br> 在垃圾收集中，有一个重要的术语“世代假设。 简单来说，这意味着大多数对象“年轻”。 换句话说，从GC的角度来看，大多数对象都会被创建并几乎立即死亡。 这句话不仅适用于JavaScript，而且适用于大多数动态编程语言。 <br><br>  V8中的堆组织基于上述假设。 例如，乍一看，GC压缩/移动那些在垃圾回收之后幸存的对象似乎是违反直觉的，因为复制对象是在垃圾回收期间执行的相当昂贵的操作。 但是，基于世代假设，我们知道很少有对象可以在此过程中幸存下来。 因此，如果仅移动尚存的对象，则未移动的所有内容都将自动视为垃圾。 这意味着我们为复制支付的价格与尚存的对象的数量成正比，而不是全部创建的对象。 <br><br><h2> 辅助GC（清除剂） </h2><br>  V8中实际上有两个垃圾收集器。 主垃圾桶（mark-compact）非常有效地从整个堆中收集垃圾，而辅助垃圾桶（mark-compact）仅在年轻的内存中收集垃圾，这是因为生成假设告诉我们，主要垃圾收集工作应在此进行。 <br><br> 辅助GC的工作原理是，幸存对象始终移至新的内存页面。 在V8中，年轻记忆分为两个部分。 始终可以自由地将幸存的物体移入其中，在组装过程中，此最初为空的区域称为“ To-space”。 发生复制的区域称为“从空间”。 在最坏的情况下，每个对象都可以生存，然后必须将它们全部复制。 <br><br> 对于这种类型的程序集，有一组单独的指针，它们从旧内存指向年轻指针。 而且，我们不使用扫描整个堆，而是使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">写屏障</a>来维护该集合。 因此，将此集与堆栈和全局对象组合在一起，我们便可以在年轻内存中获得所有链接，而不必从旧内存中扫描所有对象。 <br><br> 将对象从“从”空间复制到“到”空间时，所有尚存的对象都放置在内存的连续部分中。 因此，可以消除碎片-死对象留下的内存间隙。 传输完成后，“到空间”变为“从空间”，反之亦然。  GC一旦完成工作，就会从From-space中的第一个空闲地址开始分配用于新对象的内存。 <br><img src="https://habrastorage.org/webt/jt/yl/43/jtyl43bxlb-u7n8cgp3spapeksm.png"><br>  <i><font color="gray">清道夫将尚存的对象转移到新的内存页面</font></i> <i><br></i> <br> 如果仅使用此策略，而不从年轻的内存中移动对象，则内存将很快结束。 因此，在两个垃圾回收中幸存下来的对象将移至旧内存。 <br><br> 最后一步是更新指向已移动对象的指针。 每个复制的对象都保留其原始地址，而保留转发地址，这是将来查找原始对象所必需的。 <br><img src="https://habrastorage.org/webt/ld/kv/oo/ldkvoorwihux9nfklfxk2p3fbos.png"><br>  <i><font color="gray">拾荒者会将“中间”对象转移到旧内存，并将对象从“危险”对象转移到新页面</font></i> <br><br> 因此，年轻内存中的垃圾回收包括三个步骤：标记对象，复制对象，更新指针。 <br><br><h2> 奥里诺科 </h2><br> 这些算法中的大多数在各种来源中都有描述，并且经常在支持自动垃圾收集的运行时环境中使用。 但是V8中的GC在成为真正的现代工具之前已经走了很长一段路。 描述其性能的重要指标之一是垃圾收集器执行其功能时主线程暂停的频率和时间。 对于经典的世界一流构建者而言，这次由于延迟，质量差的渲染和增加的响应时间而在使用页面的体验上留下了印记。 <br><img src="https://habrastorage.org/webt/za/ct/gv/zactgvbniosnjhuqfmuvbeazggs.png"><br>  <i><font color="gray">Orinoco GC V8徽标</font></i> <br><br>  Orinoco是使用最先进的并行，增量和竞争性垃圾收集技术的GC代码名称。 在GC的上下文中，有些术语具有特定的含义，因此让我们首先给出它们的定义。 <br><br><h3> 平行性 </h3><br> 并行是指主线程和辅助线程每单位时间执行大约相同的工作量。 这仍然是世界末日的方法，但是在这种情况下，暂停的持续时间除以参与工作的线程数（减去同步成本）。 <br><br> 这是三种技术中最简单的一种。 堆不会更改，因为未执行JavaScript，因此线程足以维持对对象的访问同步。 <br><img src="https://habrastorage.org/webt/1s/1z/sl/1s1zsldqhz08kn8nciao0dooadi.png"><br>  <i><font color="gray">主线程和辅助线程同时处理同一任务</font></i> <br><br><h3> 增量性 </h3><br> 增量性是指主线程间歇地执行少量工作。 代替完整的垃圾收集，完成了部分收集的小任务。 <br><br> 这是一个比较困难的任务，因为JavaScript在增量程序集之间运行，这意味着堆状态会发生变化，这又会使先前迭代中完成的部分工作无效。 <br><br> 从图中可以看出，这种方法不会减少总工作量（通常甚至增加工作量），但是会及时分配此工作。 因此，这是解决主要任务之一的好方法-减少主流的响应时间。 <br> 通过允许JavaScript在垃圾回收中几乎不中断地运行，该应用程序可以继续响应：响应用户输入并更新动画。 <br><img src="https://habrastorage.org/webt/mc/yi/t7/mcyit7ystjkd8iddxxfj8zqhruw.png"><br>  <i><font color="gray">小范围的GC在主线程中工作</font></i> <br><br><h3> 竞争能力 </h3><br> 竞争是主线程连续运行JavaScript，而辅助线程在后台收集垃圾。 这是三种技术中最困难的一种：堆可以随时更改，从而使GC之前完成的工作无效。 <br><br> 最重要的是，由于辅助流和主流同时读取或修改相同的对象，因此还存在读取/写入争用。 <br><img src="https://habrastorage.org/webt/bm/uh/9y/bmuh9y_1linhkt6v4rthj1xky3g.png"><br>  <i><font color="gray">汇编完全在后台进行，此时主线程可以执行JavaScript</font></i> <br><br><h2>  V8中的GC状态 </h2><br><h3> 清除 </h3><br>  V8在年轻内存中的辅助线程之间分配垃圾回收工作（清除）。 每个线程接收一组指针，然后将所有活动对象移动到To-space。 <br><br> 在To-space中移动对象时，线程需要通过原子读取/写入/比较和交换操作进行同步，以避免出现例如另一线程检测到相同对象但遵循不同路径并试图移动该对象的情况。 <br><br> 然后，将对象移动到To-space的线程返回并留下转发指针，以便其他找到该对象的线程可以遵循正确的地址。 为了对尚存的对象进行快速且无同步的内存分配，线程使用线程本地缓冲区。 <br><img src="https://habrastorage.org/webt/jy/hj/cf/jyhjcfoy8qok8juwfddy6cczslu.png"><br>  <i><font color="gray">并行装配可在多个辅助线程和主线程之间分配工作</font></i> <br><br><h3> 核心GC </h3><br>  V8中的主要GC首先标记对象。 一旦堆达到一定的限制（动态计算），竞争性标记就会开始工作。 每个流都接收一组指针，并且在它们之后，它们将找到的每个对象标记为可到达。 <br><br> 当JavaScript在主线程中运行时，竞争性标签完全在后台发生。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">写屏障</a>用于跟踪线程标记时在JavaScript中创建的对象之间的新链接。 <br><br><img src="https://habrastorage.org/webt/er/bi/-l/erbi-lduzw0biseu7gysr416fuq.png"><br>  <i><font color="gray">主GC使用竞争性标记，处置，并行压缩和指针更新</font></i> <br><br> 在竞争性贴标结束时，主线程将快速执行结束贴标的步骤。 在此期间，将暂停主线程中的JavaScript执行。 <br><br> 再次扫描根集以确保标记了所有活动对象，然后在多个线程中开始内存压缩和指针更新。 <br> 并非旧内存中的所有页面都被压缩-不会扫描的页面将被扫描以查找释放的内存区域（清除）以将其列出在空闲列表中。 <br><br> 在此暂停期间，清除任务与内存压缩和主线程的任务竞争，即使启动了在主线程中执行JavaScript的清除任务也可以继续。 <br><br><h2> 空闲时间GC </h2><br>  JavaScript开发人员无权访问GC-它是实现环境的一部分。 并且尽管JS代码无法直接调用GC，但V8提供了对嵌入引擎的环境的访问。 <br><br>  GC可以发送任务（空闲任务），这些任务可以“在您的空闲时间”完成，并且无论如何都是工作的一部分。 内嵌引擎的Chrome之类的环境可能会对空闲时间有所了解。 例如，在Chrome中，以每秒60帧的帧速率，浏览器大约需要16.6毫秒来渲染动画帧。 <br><br> 如果动画工作较早完成，则在下一帧之前的空闲时间中，Chrome可以执行从GC接收到的某些任务。 <br><img src="https://habrastorage.org/webt/la/-i/bi/la-ibisn9rw6ulv6djzufbu-tt0.png"><br>  <i><font color="gray">GC使用主流空闲时间进行预清洗</font></i> <br><br> 有关详细信息，请参见<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我们在空闲时间GC上的出版物</a> 。 <br><br><h2> 总结 </h2><br> 自推出以来，V8中的GC已经走了很长一段路。 向其中添加并行，增量和竞争性技术花费了数年，但获得了回报，使您可以在后台完成大部分工作。 <br><br> 与主流的暂停，响应时间和页面加载有关的所有方面都得到了显着改善，从而使页面上的动画，滚动和用户交互更加流畅。 并行收集器允许将新内存的总处理时间减少20-50％，具体取决于负载。 <br><br> 空闲时间GC将Gmail的已用堆大小减少了45％。 竞争性的标签和处置（清除）可以将重型WebGL游戏中的GC暂停持续时间减少多达50％。 <br><br> 但是，工作尚未完成。 减少暂停仍然是简化网络用户生活的重要任务，我们正在寻找使用更先进的技术来实现这一目标的可能性。 <br><br> 最重要的是，Blink（Chrome中的渲染器）还配备了一个油盘，我们正在努力改善两个GC之间的交互作用，并在油盘中使用Orinoco技术。 <br><br> 大多数JavaScript开发人员不需要考虑GC的工作原理，但是对此的一些理解可以帮助您做出有关内存使用和编程模式的最佳决策。 例如，给定V8堆的世代结构，从GC的角度来看，低生命的对象实际上非常便宜，因为我们主要为存活的对象付费。 这种模式不仅是JavaScript的特征，而且是支持垃圾回收的许多语言的特征。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN454930/">https://habr.com/ru/post/zh-CN454930/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN454918/index.html">如何在12小时内将两个零售商的支持结合起来</a></li>
+<li><a href="../zh-CN454922/index.html">《 PD法》后关于外国客户及其在俄罗斯工作特征的故事</a></li>
+<li><a href="../zh-CN454924/index.html">Veeam Backup for Microsoft Office 365 v3中的身份验证设置</a></li>
+<li><a href="../zh-CN454926/index.html">您对word2vec的了解都不是真的</a></li>
+<li><a href="../zh-CN454928/index.html">在RDP会话上绕过Windows锁定屏幕的方法</a></li>
+<li><a href="../zh-CN454932/index.html">投资和软件：5个用于在交易所进行交易的交易终端</a></li>
+<li><a href="../zh-CN454938/index.html">开发自己的内核以嵌入基于FPGA的处理器系统</a></li>
+<li><a href="../zh-CN454940/index.html">旅游健康保险：详细说明</a></li>
+<li><a href="../zh-CN454946/index.html">全球国家：为什么以及如何避免它们</a></li>
+<li><a href="../zh-CN454958/index.html">内幕：EPFL研究生院。 第4.1部分：日常生活</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

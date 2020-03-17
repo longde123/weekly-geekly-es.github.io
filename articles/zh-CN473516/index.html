@@ -1,0 +1,127 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍣 👗 🧑🏿‍🤝‍🧑🏼 编写微服务博客-API网关的第2部分 🍚 🦄 🕧</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在我们系列文章“在微服务上写博客”的第一部分中，我们描述了解决问题的通用方法。 
+
+ 现在轮到API网关或GW API了。 
+
+ 在我们的ptimofeev GW API中，我们实现了以下功能： 
+
+
+
+- 将REST请求转换为gRPC请求，反之亦然。 
+- 请求记录。 
+- 请求认证 
+- 为每个...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>编写微服务博客-API网关的第2部分</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/X5RetailGroup/blog/473516/"> 在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我们系列文章“在微服务上写博客”</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">第一部分中，</a>我们描述了解决问题的通用方法。 <br><br> 现在轮到API网关或GW API了。 <br><br> 在我们的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" class="user_link">ptimofeev</a> GW API中，我们实现了以下功能： <br><br><ul><li> 将REST请求转换为gRPC请求，反之亦然。 </li><li> 请求记录。 </li><li> 请求认证 </li><li> 为每个请求分配一个跟踪ID，以便在整个请求执行链中的微服务之间进一步传输。 </li></ul><a name="habracut"></a><br> 所以走吧... <br><br> 为了实现REST / gRPC转换功能，我们将使用gosh库<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">grpc-gateway</a> 。 <br><br> 此外，在我们要在REST上发布的每个微服务的原型中，您需要在服务接口的description部分中添加选项描述。 它实际上指定了执行REST访问的路径和方法。 <br><br><pre><code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">//  Category service CategoryService { //  rpc Create (CreateCategoryRequest) returns (CreateCategoryResponse) { option (google.api.http) = { post: "/api/v1/category" }; } }</span></span></code> </pre> <br> 根据此信息，代码生成脚本（./bin/protogen.sh）将创建gRPC服务器代码（在微服务目录中），gRPC客户端（在api-gw目录中）并生成最新的API文档（格式为{{service name}}）。 swagger.json） <br><br> 接下来，我们需要编写HTTP代理代码，该代码一方面将是HTTP服务器（用于处理REST请求），另一方面将是我们的微服务的gRPC客户端（gRPC服务器）。 <br><br> 我们会将这段代码放在文件./services/api-gw/main.go中。 <br><br> 首先，在导入部分，我们将客户端库连接到我们的微服务 <br>  （protogen.sh为我们生成了它们）： <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">import</span></span> ( … userService <span class="hljs-string"><span class="hljs-string">"./services/user/protobuf"</span></span> postService <span class="hljs-string"><span class="hljs-string">"./services/post/protobuf"</span></span> commentService <span class="hljs-string"><span class="hljs-string">"./services/comment/protobuf"</span></span> categoryService <span class="hljs-string"><span class="hljs-string">"./services/category/protobuf"</span></span> …</code> </pre><br> 接下来，我们指示gRPC服务“挂起”的地址和端口（我们从环境变量中获取值）： <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> ( <span class="hljs-comment"><span class="hljs-comment">// gRPC services userServerAdress=fmt.Sprintf("%s:%s",os.Getenv("USER_HOST"),os.Getenv("USER_PORT")) postServerAdress=fmt.Sprintf("%s:%s",os.Getenv("POST_HOST"),os.Getenv("POST_PORT")) commentServerAdress=fmt.Sprintf("%s:%s",os.Getenv("COMMENT_HOST"),os.Getenv("COMMENT_PORT")) categoryServerAdress=fmt.Sprintf("%s:%s",os.Getenv("CATEGORY_HOST"),os.Getenv("CATEGORY_PORT")) )</span></span></code> </pre><br> 最后，我们实现HTTP代理本身： <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">HTTPProxy</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(proxyAddr </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span></span>{ grpcGwMux:=runtime.NewServeMux() <span class="hljs-comment"><span class="hljs-comment">//---------------------------------------------------------------- //     gRPC //---------------------------------------------------------------- //   User grpcUserConn, err:=grpc.Dial( userServerAdress, grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to User service", err) } defer grpcUserConn.Close() err = userService.RegisterUserServiceHandler( context.Background(), grpcGwMux, grpcUserConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //   Post grpcPostConn, err:=grpc.Dial( postServerAdress, grpc.WithUnaryInterceptor(AccessLogInterceptor), grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to Post service", err) } defer grpcPostConn.Close() err = postService.RegisterPostServiceHandler( context.Background(), grpcGwMux, grpcPostConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //   Comment grpcCommentConn, err:=grpc.Dial( commentServerAdress, grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to Comment service", err) } defer grpcCommentConn.Close() err = commentService.RegisterCommentServiceHandler( context.Background(), grpcGwMux, grpcCommentConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //   Category grpcCategoryConn, err:=grpc.Dial( categoryServerAdress, grpc.WithInsecure(), ) if err!=nil{ log.Fatalln("Failed to connect to Category service", err) } defer grpcCategoryConn.Close() err = categoryService.RegisterCategoryServiceHandler( context.Background(), grpcGwMux, grpcCategoryConn, ) if err!=nil{ log.Fatalln("Failed to start HTTP server", err) } //---------------------------------------------------------------- //     REST //---------------------------------------------------------------- mux:=http.NewServeMux() mux.Handle("/api/v1/",grpcGwMux) mux.HandleFunc("/",helloworld) fmt.Println("starting HTTP server at "+proxyAddr) log.Fatal(http.ListenAndServe(proxyAddr,mux)) }</span></span></code> </pre><br> 在建立与微服务的连接时，我们使用grpc.WithUnaryInterceptor（AccessLogInterceptor）选项，我们将AccessLogInterceptor函数作为参数传递给该选项。 这无非就是中间件层的实现，即  AccessLogInterceptor函数将在子微服务的每个gRPC调用中执行。 <br><br><pre> <code class="go hljs">… <span class="hljs-comment"><span class="hljs-comment">//---------------------------------------------------------------- //   Post grpcPostConn, err:=grpc.Dial( … grpc.WithUnaryInterceptor(AccessLogInterceptor), … )</span></span></code> </pre> <br> 反过来，在AccessLogInterceptor函数中，我们已经实现了身份验证，日志记录和TraceId生成机制。 <br><br> 如果在传入（REST）请求的标头中指定了授权属性，则我们将在CheckGetJWTToken函数中对其进行解析和验证，该函数将返回错误，或者如果成功，则返回UserId和UserRole。 <br><br><pre> <code class="go hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> traceId,userId,userRole <span class="hljs-keyword"><span class="hljs-keyword">string</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-built_in"><span class="hljs-built_in">len</span></span>(md[<span class="hljs-string"><span class="hljs-string">"authorization"</span></span>])&gt;<span class="hljs-number"><span class="hljs-number">0</span></span>{ tokenString:= md[<span class="hljs-string"><span class="hljs-string">"authorization"</span></span>][<span class="hljs-number"><span class="hljs-number">0</span></span>] <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> tokenString!=<span class="hljs-string"><span class="hljs-string">""</span></span>{ err,token:=userService.CheckGetJWTToken(tokenString) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> err!=<span class="hljs-literal"><span class="hljs-literal">nil</span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> err } userId=fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"%s"</span></span>,token[<span class="hljs-string"><span class="hljs-string">"UserID"</span></span>]) userRole=fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"%s"</span></span>,token[<span class="hljs-string"><span class="hljs-string">"UserRole"</span></span>]) } }</code> </pre> <br> 接下来，我们形成TraceId并将其与UserId和UserRole一起包装在调用上下文中，并执行我们的微服务的gRPC调用。 <br><br><pre> <code class="go hljs"><span class="hljs-comment"><span class="hljs-comment">// ID  traceId=fmt.Sprintf("%d",time.Now().UTC().UnixNano()) callContext:=context.Background() mdOut:=metadata.Pairs( "trace-id",traceId, "user-id",userId, "user-role",userRole, ) callContext=metadata.NewOutgoingContext(callContext,mdOut) err:=invoker(callContext,method,req,reply,cc, opts...)</span></span></code> </pre><br> 最后，我们将服务调用事件写入日志。 <br><br><pre> <code class="go hljs">msg:=fmt.Sprintf(<span class="hljs-string"><span class="hljs-string">"Call:%v, traceId: %v, userId: %v, userRole: %v, time: %v"</span></span>, method,traceId,userId,userRole,time.Since(start)) app.AccesLog(msg)</code> </pre> <br> 另一个中间件处理器正在“垂悬”用户服务的特定方法（SignIn，SignUp）的答案。 该处理程序拦截gRPC响应，获取UserID和UserRole响应，将其转换为<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">JWT令牌，</a>并在REST响应中将其（JWT令牌）作为“授权”属性标头提供。 所描述的中间件代码在文件./api-gw/services/user/protobuf/functions.go中的gRPC客户端上实现。 <br><br> 我们连接响应处理程序。 <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">init</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span></span> { <span class="hljs-comment"><span class="hljs-comment">//     SignIn forward_UserService_SignIn_0 = forwardSignIn //     SignUp forward_UserService_SignUp_0 = forwardSignUp }</span></span></code> </pre><br> 一个示例是SignIn响应处理程序（SignUp处理程序与此类似）。 <br><br><pre> <code class="go hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">func</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">forwardSignIn</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(ctx context.Context, mux *runtime.ServeMux, marshaler runtime.Marshaler, w http.ResponseWriter, req *http.Request, resp proto.Message, opts ...</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">func</span></span></span></span><span class="hljs-function"><span class="hljs-params">(context.Context, http.ResponseWriter, proto.Message)</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">error</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-comment"><span class="hljs-comment">// proto.Message  SignInResponse signInResponse:=&amp;SignInResponse{} signInResponse.XXX_Merge(resp) token,err:=GetJWTToken(signInResponse.Slug,signInResponse.Role) if err!=nil{ http.Error(w, fmt.Sprintf("%v",err), http.StatusUnauthorized) return } w.Header().Set("authorization", token) runtime.ForwardResponseMessage(ctx, mux, marshaler, w, req, resp, opts...) }</span></span></code> </pre> <br> 待续... <br><br> 是的，可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处</a>查看项目的演示，源代码在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处</a> 。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN473516/">https://habr.com/ru/post/zh-CN473516/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN473500/index.html">在TSD上的应用以及通过HTTP服务与1C：Enterprise 8.3的通信。 第1部分（选择交换方法。API描述）</a></li>
+<li><a href="../zh-CN473502/index.html">Linux是否杀死了商业Unix？</a></li>
+<li><a href="../zh-CN473510/index.html">我们正在为具有面部识别功能的相机编写程序</a></li>
+<li><a href="../zh-CN473512/index.html">来自OpenStreetMap 482世界的新闻（08/10/2019-10/10/2019）</a></li>
+<li><a href="../zh-CN473514/index.html">编写微服务博客-第1部分“概述”</a></li>
+<li><a href="../zh-CN473528/index.html">没有交通拥堵的城市</a></li>
+<li><a href="../zh-CN473530/index.html">使用IDA FREE和其他免费工具进行开发和反向（不是从头开始）的简介</a></li>
+<li><a href="../zh-CN473532/index.html">黑客对物联网设备进行攻击的危险是什么：真实故事</a></li>
+<li><a href="../zh-CN473534/index.html">自动化OEM信息更改</a></li>
+<li><a href="../zh-CN473544/index.html">JPEG多次重新加载研究</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

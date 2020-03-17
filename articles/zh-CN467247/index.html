@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎹 🏿 🙌 有关V8，React和性能下降的故事。 第一部分 🔛 🧑🏾‍🤝‍🧑🏽 🕴🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="该材料是我们今天发布的翻译的第一部分，将讨论V8 JavaScript引擎如何选择代表内存中各种JS值的最佳方法，以及这如何影响V8的内部机制（所谓的表单）对象 （形状）。 所有这些都将帮助我们理清最近的React性能问题的实质。 
+
+  
+
+ JavaScript数据类型 
+ 每个JavaScri...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>有关V8，React和性能下降的故事。 第一部分</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ruvds/blog/467247/"> 该材料是我们今天发布的翻译的第一部分，将讨论V8 JavaScript引擎如何选择代表内存中各种JS值的最佳方法，以及这如何影响V8的内部机制（所谓的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">表单）对象</a> （形状）。 所有这些都将帮助我们理清最近的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">React性能问题</a>的实质。 <br><br> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><img src="https://habrastorage.org/webt/pu/wk/8i/puwk8ihuo_in6vqmeg86j2-5sxa.jpeg"></a> <br><a name="habracut"></a><br><h2>  <font color="#3AC1EF">JavaScript数据类型</font> </h2><br> 每个JavaScript值只能具有八个现有数据类型之一： <code>Number</code> ， <code>String</code> ， <code>Symbol</code> ， <code>BigInt</code> ， <code>Boolean</code> ， <code>Undefined</code> ， <code>Null</code>和<code>Object</code> 。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/36e/5e0/3fb/36e5e03fb481b601d2bb1cc61a1fa2f4.png"></div><br>  <i><font color="#999999">JavaScript数据类型</font></i> <br><br> 值的类型可以使用<code>typeof</code>运算符确定，但是有一个重要的例外： <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">typeof</span></span> <span class="hljs-number"><span class="hljs-number">42</span></span>; <span class="hljs-comment"><span class="hljs-comment">// 'number' typeof 'foo'; // 'string' typeof Symbol('bar'); // 'symbol' typeof 42n; // 'bigint' typeof true; // 'boolean' typeof undefined; // 'undefined' typeof null; // 'object' -   ,     typeof { x: 42 }; // 'object'</span></span></code> </pre> <br> 如您所见，尽管<code>null</code>具有自己的类型<code>typeof null</code> ，但<code>typeof null</code>命令返回<code>'object'</code>而不是<code>'null'</code> 。 为了理解这种类型的行为的原因，我们考虑到所有JavaScript类型的集合可以分为两组的事实： <br><br><ul><li> 对象（即，键入<code>Object</code> ）。 </li><li> 原始值（即任何非客观值）。 </li></ul><br> 根据这种知识，结果表明<code>null</code>表示“无对象值”，而<code>undefined</code>表示“无值”。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0e9/8e6/c97/0e98e6c97b3e87411146a60f1c67cf8e.png"></div><br>  <i><font color="#999999">原始值，对象，空值和未定义</font></i> <br><br> 遵循Java精神的这些思考，Brendan Eich设计了JavaScript，以便<code>typeof</code>运算符将为右图中的那些类型的值返回<code>'object'</code> 。 所有对象值和<code>null</code>都在这里。 这就是为什么表达式<code>typeof null === 'object'</code>为true的原因，尽管语言规范中存在单独的类型<code>Null</code> 。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/23e/df7/0e2/23edf70e2101cc687a759653f150305d.png"></div><br>  <i><font color="#999999">v ==='object'的表达式typeof为true</font></i> <br><br><h2>  <font color="#3AC1EF">价值表示</font> </h2><br>  JavaScript引擎应该能够表示内存中的所有JavaScript值。 但是，请务必注意，JavaScript中的值类型与JS引擎在内存中表示它们的方式是分开的。 <br><br> 例如，JavaScript中的值42为<code>number</code>类型。 <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">typeof</span></span> <span class="hljs-number"><span class="hljs-number">42</span></span>; <span class="hljs-comment"><span class="hljs-comment">// 'number'</span></span></code> </pre> <br> 有几种方法可以在内存中表示像42这样的整数： <br><div class="scrollable-table"><table><tbody><tr><td> 投稿 <br></td><td> 位 <br></td></tr><tr><td>  8位，另外两个 <br></td><td>  0010 1010 <br></td></tr><tr><td>  32位，最多增加两个 <br></td><td>  0000 0000 0000 0000 0000 0000 0000 0010 1010 <br></td></tr><tr><td> 压缩二进制十进制（BCD） <br></td><td>  0100 0010 <br></td></tr><tr><td>  32位，IEEE-754浮点数 <br></td><td>  0 100 0010 0010 1000 0000 0000 0000 0000 <br></td></tr><tr><td>  64位，IEEE-754浮点数 <br></td><td>  0100 0000 0100 0101 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 <br></td></tr></tbody></table></div><br> 根据ECMAScript标准，数字是64位浮点值，称为双精度浮点数（Float64）。 但是，这并不意味着JavaScript引擎总是将数字存储在Float64视图中。 那将是非常非常低效的！ 引擎可以使用数字的其他内部表示形式-只要值的行为与Float64数字的行为完全匹配即可。 <br><br> 事实证明，实际JS应用程序中的大多数数字都是有效的ECMAScript数组<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">索引</a> 。 即-在0到2 <sup>32</sup> -2范围内的整数。 <br><br><pre> <code class="javascript hljs">array[<span class="hljs-number"><span class="hljs-number">0</span></span>]; <span class="hljs-comment"><span class="hljs-comment">//      . array[42]; array[2**32-2]; //      .</span></span></code> </pre> <br>  JavaScript引擎可以选择最佳格式来表示内存中的此类值。 这样做是为了优化使用索引使用数组元素的代码。 执行内存访问操作的处理器需要将数组索引作为可存储在视图中的数字<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">加2来使用</a> 。 相反，如果我们以Float64值的形式表示数组的索引，则将浪费系统资源，因为每当有人访问数组元素时，引擎都需要将Float64数字转换为加2的格式，反之亦然。 <br><br>  32位数字加上最多两个数字的表示不仅对优化数组工作很有用。 通常，应该指出，处理器执行整数运算的速度比使用浮点值的运算快得多。 这就是为什么在以下示例中，没有问题的第一个周期是第二个周期的两倍。 <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">let</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">1000</span></span>; ++i) {  <span class="hljs-comment"><span class="hljs-comment">//  } for (let i = 0.1; i &lt; 1000.1; ++i) {  //  }</span></span></code> </pre> <br> 这同样适用于使用数学运算符的计算。 <br><br> 例如，操作员从下一个代码片段中获取余数除法的性能取决于计算中涉及的数字。 <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> remainder = value % divisor; <span class="hljs-comment"><span class="hljs-comment">//  -  `value`  `divisor`   , //    .</span></span></code> </pre> <br> 如果两个操作数均由整数表示，则处理器可以非常有效地计算结果。 对于<code>divisor</code>操作数由2的幂表示的数，V8中还有其他优化。 对于用浮点数表示的值，计算要复杂得多，并且要花费更长的时间。 <br><br> 由于整数运算通常比对浮点值进行运算要快得多，因此似乎引擎可以始终将所有整数和整数运算的所有结果简单地以加两个的格式存储。 不幸的是，这种方法会违反ECMAScript规范。 如前所述，该标准以Float64格式提供数字表示，并且某些使用整数的运算可能会导致以浮点数形式出现结果。 在这种情况下，JS引擎产生正确的结果很重要。 <br><br><pre> <code class="javascript hljs"><span class="hljs-comment"><span class="hljs-comment">//  Float64   53-  . //         . 2**53 === 2**53+1; // true // Float64   ,   -1 * 0   -0,  //           . -1*0 === -0; // true // Float64   Infinity,   , //     . 1/0 === Infinity; // true -1/0 === -Infinity; // true // Float64    NaN. 0/0 === NaN;</span></span></code> </pre> <br> 即使在前面的示例中，表达式左侧的所有数字都是整数，表达式右侧的所有数字都是浮点值。 这就是为什么使用32位格式（最多增加两个）无法正确执行以前的操作的原因。  JavaScript引擎必须特别注意以确保在执行整数运算时，您可以获得正确的（虽然看起来像上例一样，但看起来与众不同）Float64结果。 <br><br> 如果小整数落在有符号整数的31位表示形式的范围内，则V8使用称为<code>Smi</code>的特殊表示形式。 不是<code>Smi</code>值的所有内容都表示为<code>HeapObject</code>值，这是内存中某个实体的地址。 对于不属于<code>Smi</code>范围的数字，我们有一种特殊的<code>HeapObject</code>所谓的<code>HeapNumber</code> 。 <br><br><pre> <code class="javascript hljs">-<span class="hljs-literal"><span class="hljs-literal">Infinity</span></span> <span class="hljs-comment"><span class="hljs-comment">// HeapNumber -(2**30)-1 // HeapNumber  -(2**30) // Smi       -42 // Smi        -0 // HeapNumber         0 // Smi       4.2 // HeapNumber        42 // Smi   2**30-1 // Smi     2**30 // HeapNumber  Infinity // HeapNumber       NaN // HeapNumber</span></span></code> </pre> <br> 从上一个示例中可以看到，一些JS数字表示为<code>Smi</code> ，而有些则表示为<code>HeapNumber</code> 。  V8引擎在处理<code>Smi</code>编号方面进行了优化。 事实是，小整数在实际的JS程序中非常常见。 使用<code>Smi</code>值时，不必为单个实体分配内存。 此外，使用它们还可以使您快速执行整数运算。 <br><br><h2>  <font color="#3AC1EF">Smi，HeapNumber和MutableHeapNumber的比较</font> </h2><br> 让我们谈谈这些机制的内部结构是什么样的。 假设我们有以下对象： <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> o = {  <span class="hljs-attr"><span class="hljs-attr">x</span></span>: <span class="hljs-number"><span class="hljs-number">42</span></span>, <span class="hljs-comment"><span class="hljs-comment">// Smi  y: 4.2, // HeapNumber };</span></span></code> </pre> <br> 对象<code>x</code>的属性的值42被编码为<code>Smi</code> 。 这意味着它可以存储在对象本身内部。 另一方面，要存储值4.2，则需要创建一个单独的实体。 在对象中，将有一个指向该实体的链接。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/116/718/f34/116718f3426bccd613dd35dc95be9739.png"></div><br>  <i><font color="#999999">储存各种价值</font></i> <br><br> 假设我们正在执行以下JavaScript代码： <br><br><pre> <code class="javascript hljs">ox += <span class="hljs-number"><span class="hljs-number">10</span></span>; <span class="hljs-comment"><span class="hljs-comment">// ox   52 oy += 1; // oy   5.2</span></span></code> </pre> <br> 在这种情况下，属性<code>x</code>的值可以在其存储位置进行更新。 事实是<code>x</code>的新值是52，并且这个数字落在<code>Smi</code>的范围内。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/4d8/400/d42/4d8400d42a2046c9727d4ff76ad2b483.png"></div><br>  <i><font color="#999999">属性x的新值存储在先前值存储的位置。</font></i> <br><br> 但是，新的<code>y</code>值5.2不适合<code>Smi</code>的范围，此外，它与以前的y-4.2值不同。 结果，V8必须为新的<code>HeapNumber</code>实体分配内存，并已从对象中引用它。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/9ba/ecf/095/9baecf0951766c6e2781b552593b6b94.png"></div><br>  <i><font color="#999999">新实体HeapNumber存储新的y值</font></i> <br><br>  <code>HeapNumber</code>实体是不可变的。 这使您可以进行一些优化。 假设我们要将对象<code>x</code>的属性设置为属性<code>y</code> <code>x</code>值： <br><br><pre> <code class="javascript hljs">ox = oy; <span class="hljs-comment"><span class="hljs-comment">// ox   5.2</span></span></code> </pre> <br> 执行此操作时，我们可以简单地引用相同的<code>HeapNumber</code>实体，而不分配额外的内存来存储相同的值。 <br><br>  HeapNuber实体的抗扰性的缺点之一是，频繁更新具有<code>Smi</code>范围之外的值的字段的速度很慢。 在以下示例中对此进行了演示： <br><br><pre> <code class="javascript hljs"><span class="hljs-comment"><span class="hljs-comment">//   `HeapNumber`. const o = { x: 0.1 }; for (let i = 0; i &lt; 5; ++i) {  //    `HeapNumber`.  ox += 1; }</span></span></code> </pre> <br> 处理第一行时，将创建<code>HeapNumber</code>的实例，其初始值为0.1。 在循环的主体中，此值更改为1.1、2.1、3.1、4.1，最后更改为5.1。 结果，在执行此代码的过程中， <code>HeapNumber</code> 6个<code>HeapNumber</code>实例，其中五个实例在循环完成后将进行垃圾回收操作。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/d10/7e2/8f1/d107e28f181bf1eaf1fd57765bdfe49f.png"></div><br>  <i><font color="#999999">堆号实体</font></i> <br><br> 为了避免出现此问题，V8进行了优化，这是一种用于在数值已存储的相同位置更新数值不符合<code>Smi</code>范围的数值字段的机制。 如果数字字段存储的<code>Smi</code>实体不适合存储的值，则V8以对象的形式将该字段标记为<code>Double</code>并为<code>MutableHeapNumber</code>实体分配内存，该实体存储以Float64格式表示的实数值。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a17/c42/466/a17c42466cde98778836809e09df4da6.png"></div><br>  <i><font color="#999999">使用MutableHeapNumber实体</font></i> <br><br> 结果，在字段值更改之后，V8不再需要为新的<code>HeapNumber</code>实体分配内存。 相反，只需将新值写入现有的<code>MutableHeapNumber</code>实体。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/c86/3bd/d1c/c863bdd1c81213b080d86bed079e9e5f.png"></div><br>  <i><font color="#999999">将新值写入MutableHeapNumber</font></i> <br><br> 但是，这种方法有其缺点。 即，由于<code>MutableHeapNumber</code>的值可以更改，因此重要的是要确保系统以这些值按照语言规范提供的方式工作。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/176/be3/8ca/176be38cad03b4e4ab2881d7a9b67bfd.png"></div><br>  <i><font color="#999999">MutableHeapNumber的缺点</font></i> <br><br> 例如，如果将<code>ox</code>的值分配给其他变量<code>y</code> ，则<code>y</code>的值必须不随<code>ox</code>的后续更改而更改。 那将违反JavaScript规范！ 结果，在访问<code>ox</code> ，必须将数字重新打包为通常的<code>HeapNumber</code>值，然后才能将其分配为<code>y</code> 。 <br><br> 对于浮点数，V8使用其内部机制执行上述打包操作。 但是对于小整数，使用<code>MutableHeapNumber</code>将浪费时间，因为<code>Smi</code>是表示此类数字的更有效方法。 <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> object = { <span class="hljs-attr"><span class="hljs-attr">x</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span> }; <span class="hljs-comment"><span class="hljs-comment">// ""  `x`    object.x += 1; //   `x`  </span></span></code> </pre> <br> 为了避免系统资源的低效率使用，我们要做的小整数就是将对象形式的对应字段标记为<code>Smi</code> 。 因此，只要这些字段的值与<code>Smi</code>范围相对应，就可以直接在对象内部对其进行更新。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/b6a/d23/b96/b6ad23b9635e31d8f695d7170b8d3d7c.png"></div><br>  <i><font color="#999999">使用其值在Smi范围内的整数</font></i> <br><br> 待续... <br><br>  <b>亲爱的读者们！</b> 您是否遇到过由JS引擎功能引起的JavaScript性能问题？ <br><br> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><img src="https://habrastorage.org/webt/it/t5/3p/itt53pns2iucwylb3bwn1fmmtnu.png"></a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN467247/">https://habr.com/ru/post/zh-CN467247/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN467231/index.html">在您的iOS应用中介绍使用Apple登录</a></li>
+<li><a href="../zh-CN467237/index.html">提升HTTPS上的DNS服务器</a></li>
+<li><a href="../zh-CN467239/index.html">数据科学家和跑车少年之间的区别</a></li>
+<li><a href="../zh-CN467241/index.html">ROS卡车手推车。 第4部分。使用rviz和gazebo编辑器创建机器人仿真</a></li>
+<li><a href="../zh-CN467245/index.html">德米特里·马特斯科维奇（Dmitry Matskevich），德布雷恩（Dbrain）：关于企业家精神障碍，人工智能和情感安全的问题</a></li>
+<li><a href="../zh-CN467249/index.html">有关V8，React和性能下降的故事。 第二部分</a></li>
+<li><a href="../zh-CN467251/index.html">人质COBOL和数学。 第一部分</a></li>
+<li><a href="../zh-CN467253/index.html">人质COBOL和数学。 第二部分</a></li>
+<li><a href="../zh-CN467255/index.html">每个React开发人员都应该知道的三个常见的安全错误</a></li>
+<li><a href="../zh-CN467257/index.html">不要一次将所有鸡蛋存放在一个篮子里</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👊🏻 🗺️ ⬛️ 我们的双手并非无聊：在K8s中恢复Rook集群 🖖🏽 👨🏽‍🔬 🧐</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我们已经讨论过我们如何/为什么喜欢Rook：在很大程度上，它简化了Kubernetes集群中的存储工作。 但是，通过这种简单性，会遇到一些困难。 我们希望新材料即使在这些困难显现出来之前也将有助于更好地理解这些困难。 
+
+ 为了使阅读更有趣，我们从集群中一个假设问题的后果开始。 
+
+ “一切都消失了...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>我们的双手并非无聊：在K8s中恢复Rook集群</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/477680/"><img src="https://habrastorage.org/webt/x_/rb/jm/x_rbjmnxk6egjidxf_fvk1otkqe.png"><br><br> 我们<a href="https://habr.com/ru/company/flant/blog/451818/">已经讨论过</a>我们如何/为什么喜欢Rook：在很大程度上，它简化了Kubernetes集群中的存储工作。 但是，通过这种简单性，会遇到一些困难。 我们希望新材料即使在这些困难显现出来之前也将有助于更好地理解这些困难。 <br><br> 为了使阅读更有趣，我们从集群<i>中一个</i>假设问题的<i>后果</i>开始。 <a name="habracut"></a><br><br><h2>  “一切都消失了！” </h2><br> 想象一下，您曾经在K8s集群中配置并启动Rook，他对他的工作感到满意，但是在某个“奇妙”的时刻，发生了以下事情： <br><br><ul><li> 新的Pod无法安装Ceph RBD。 </li><li> 诸如<code>lsblk</code>和<code>df</code>类的命令在Kubernetes主机上不起作用。 这自动表示节点安装的RBD映像“有问题”。 我看不懂它们，这表明显示器无法访问... </li><li> 是的，集群中没有操作监视器。 而且，甚至没有带有OSD的豆荚，也没有MGR豆荚。 </li></ul><br>  pod <code>rook-ceph-operator</code>什么时候推出的？ 不久之前，他已被部署。 怎么了  Rook-operator决定建立一个新的集群...现在如何恢复该集群及其中的数据？ <br><br> 首先，让我们走一条<s>更</s>有趣的路，对Rook的“内部”进行了周到的研究，并逐步恢复了其组成部分。 当然，有一种<s>较短的</s>正确方法：使用备份。 如您所知，管理员分为两种：一种是不执行备份的管理员，另一种是已经进行备份的管理员。 <br><br><h2> 一点练习或长途跋涉 </h2><br><h3> 看一下并还原显示器 </h3><br> 因此，让我们看一下ConfigMap的列表：备份需要<code>rook-ceph-config</code>和<code>rook-config-override</code> 。 它们在成功部署集群后出现。 <br><br>  <i><b>注意</b> ：在新版本中，通过<a href="https://github.com/rook/rook/pull/3573">此PR后</a> ，ConfigMaps不再是集群部署成功的指示。</i> <br><br> 要执行进一步的操作，我们需要重新启动所有已安装RBD映像（ <code>ls /dev/rbd*</code> ）的服务器。 必须通过sysrq（或“步行”到达数据中心）完成。 此要求是由于断开已安装的RBD的任务而导致的，因此无法进行常规的重新引导（它将无法正常尝试将其卸载）。 <br><br> 剧院从衣架开始，而Ceph集群从监视器开始。 让我们看看它们。 <br><br>  Rook在监视器窗格中安装了以下实体： <br><br><pre> <code class="plaintext hljs">Volumes: rook-ceph-config: Type: ConfigMap (a volume populated by a ConfigMap) Name: rook-ceph-config rook-ceph-mons-keyring: Type: Secret (a volume populated by a Secret) SecretName: rook-ceph-mons-keyring rook-ceph-log: Type: HostPath (bare host directory volume) Path: /var/lib/rook/kube-rook/log ceph-daemon-data: Type: HostPath (bare host directory volume) Path: /var/lib/rook/mon-a/data Mounts: /etc/ceph from rook-ceph-config (ro) /etc/ceph/keyring-store/ from rook-ceph-mons-keyring (ro) /var/lib/ceph/mon/ceph-a from ceph-daemon-data (rw) /var/log/ceph from rook-ceph-log (rw)</code> </pre> <br> 让我们看看<code>rook-ceph-mons-keyring</code>的秘密是什么： <br><br><pre> <code class="plaintext hljs">kind: Secret data: keyring: LongBase64EncodedString=</code> </pre> <br> 我们解码并获得具有管理员和监视器权限的常规密钥环： <br><br><pre> <code class="plaintext hljs">[mon.] key = AQAhT19dlUz0LhBBINv5M5G4YyBswyU43RsLxA== caps mon = "allow *" [client.admin] key = AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br> 记住了 现在查看秘密的<code>rook-ceph-admin-keyring</code> ： <br><br><pre> <code class="plaintext hljs">kind: Secret data: keyring: anotherBase64EncodedString=</code> </pre> <br> 里面有什么？ <br><br><pre> <code class="plaintext hljs">[client.admin] key = AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br> 一样的 让我们看看...例如，这是<code>rook-ceph-mgr-a-keyring</code>的秘密： <br><br><pre> <code class="plaintext hljs">[mgr.a] key = AQBZR19dbVeaIhBBXFYyxGyusGf8x1bNQunuew== caps mon = "allow *" caps mds = "allow *" caps osd = "allow *"</code> </pre> <br> 最后，我们在ConfigMap <code>rook-ceph-mon</code>发现了更多秘密： <br><br><pre> <code class="plaintext hljs">kind: Secret data: admin-secret: AQAhT19d9MMEMRGG+wxIwDqWO1aZiZGcGlSMKp== cluster-name: a3ViZS1yb29r fsid: ZmZiYjliZDMtODRkOS00ZDk1LTczNTItYWY4MzZhOGJkNDJhCg== mon-secret: AQAhT19dlUz0LhBBINv5M5G4YyBswyU43RsLxA==</code> </pre> <br> 这是带有钥匙圈的初始列表，上面描述的所有秘密均来自此。 <br><br> 如您所知（请参阅<code>dataDirHostPath</code>中的<code>dataDirHostPath</code> ），Rook将此数据存储在两个位置。 因此，让我们转到节点来查看位于带有监视器和OSD的Pod中安装的目录中的keyring'y。 为此，请找到节点<code>/var/lib/rook/mon-a/data/keyring</code>然后查看： <br><br><pre> <code class="plaintext hljs"># cat /var/lib/rook/mon-a/data/keyring [mon.] key = AXAbS19d8NNUXOBB+XyYwXqXI1asIzGcGlzMGg== caps mon = "allow *"</code> </pre> <br>  <b>突然之间，</b>秘密变得不一样了-不同于ConfigMap中<b>的</b>秘密。 <br><br> 管理员密钥环又如何呢？ 我们也有： <br><br><pre> <code class="plaintext hljs"># cat /var/lib/rook/kube-rook/client.admin.keyring [client.admin] key = AXAbR19d8GGSMUBN+FyYwEqGI1aZizGcJlHMLgx= caps mds = "allow *" caps mon = "allow *" caps osd = "allow *" caps mgr = "allow *"</code> </pre> <br> 这是问题所在。 发生了故障：重新创建了集群...但实际上不是。 <br><br> 很明显，新生成的密钥环存储在秘密中，而<b>不是</b>来自我们的旧集群。 因此： <br><br><ul><li> 我们从监视器<code>/var/lib/rook/mon-a/data/keyring</code>文件<code>/var/lib/rook/mon-a/data/keyring</code> （或从备份）中获取<code>/var/lib/rook/mon-a/data/keyring</code> ； </li><li> 更改密钥<code>rook-ceph-mons-keyring</code> ； </li><li> 从管理员注册密钥环并在ConfigMap'e <code>rook-ceph-mon</code>监视； </li><li> 卸下带有显示器的吊舱控制器。 </li></ul><br> 奇迹不会持续很长时间：监视器将出现并启动。 万岁，一个开始！ <br><br><h3> 还原OSD </h3><br> 我们进入pod <code>rook-operator</code> ：调用<code>ceph mon dump</code>表示所有监视器都已安装到位，而<code>ceph -s</code>它们已达到法定人数。 但是，如果您查看OSD树（ <code>ceph osd tree</code> ），您会发现其中有些奇怪：OSD开始出现，但它们为空。 事实证明，还需要以某种方式恢复它们。 但是如何？ <br><br> 同时， <code>rook-ceph-config</code>和<code>rook-config-override</code>以及许多其他名称为<code>rook-ceph-osd-$nodename-config</code> ConfigMap出现在ConfigMap中，因此需要。 让我们看看它们： <br><br><pre> <code class="plaintext hljs">kind: ConfigMap data: osd-dirs: '{"/mnt/osd1":16,"/mnt/osd2":18}'</code> </pre> <br> 一切都错了，一切都混了！ <br><br> 将操作员窗格缩放为零，从OSD删除生成的Deployment Pod，然后修复这些ConfigMap。 但是，从哪里获得<b>正确的</b> OSD映射图呢？ <br><br><ul><li> 让我们尝试再次探究节点上的<code>/mnt/osd[1-2]</code>目录-希望我们可以在那里找到一些东西。 </li><li>  <code>/mnt/osd1</code>目录中有2个子目录： <code>osd0</code>和<code>osd16</code> 。 最后一个只是在ConfigMap（16）中指定的ID？ </li><li> 让我们<code>osd0</code>大小，看看<code>osd0</code>比<code>osd16</code> 。 </li></ul><br> 我们得出结论， <code>osd0</code>是必需的OSD，在ConfigMap <code>/mnt/osd1</code>其指定为<code>/mnt/osd1</code> （因为我们使用<a href="https://github.com/rook/rook/issues/3379">基于目录的osd</a> 。） <br><br> 逐步，我们检查所有节点并编辑ConfigMap。 完成所有说明后，您可以运行Rook运算符的pod并读取其日志。 在他们身上一切都很棒： <br><br><ul><li> 我是集群运营商； </li><li> 我在节点上发现了驱动器； </li><li> 我找到了监视器； </li><li> 监控者成为朋友，即 形成法定人数 </li><li> 正在运行OSD部署... </li></ul><br> 让我们回到Rook运算符的pod上，检查集群的活动性……是的，我们对某些节点上OSD名称的结论犯了一个小错误！ 没关系：他们再次更正了ConfigMaps，从新的OSD中删除了多余的目录，并进入了人们期待已久的<code>HEALTH_OK</code>状态！ <br><br> 检查池中的图像： <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># rbd ls -p kube pvc-9cfa2a98-b878-437e-8d57-acb26c7118fb pvc-9fcc4308-0343-434c-a65f-9fd181ab103e pvc-a6466fea-bded-4ac7-8935-7c347cff0d43 pvc-b284d098-f0fc-420c-8ef1-7d60e330af67 pvc-b6d02124-143d-4ce3-810f-3326cfa180ae pvc-c0800871-0749-40ab-8545-b900b83eeee9 pvc-c274dbe9-1566-4a33-bada-aabeb4c76c32 …</span></span></code> </pre> <br> 一切就绪-群集已保存！ <br><br><h2> 我很<s>懒惰</s>做备份，还是快速方法 </h2><br> 如果为Rook完成了备份，那么恢复过程将变得更加简单，并归结为以下内容： <br><br><ol><li> 扩展到零部署Rook运算符； </li><li> 我们除去Rook运算符之外的所有部署； </li><li> 我们从备份中还原所有机密和ConfigMap。 </li><li> 恢复节点上<code>/var/lib/rook/mon-*</code>的内容； </li><li> 恢复（如果突然丢失）CRD <code>CephCluster</code> ， <code>CephFilesystem</code> ， <code>CephBlockPool</code> ， <code>CephNFS</code> ， <code>CephObjectStore</code> ； </li><li> 将Rook运算符的部署扩展回1。 </li></ol><br><h2> 有用的提示 </h2><br> 做备份！ <br><br> 并避免需要从其中恢复的情况： <br><br><ol><li> 在大规模重启群集（包括重新引导服务器）之前，请将Rook运算符缩放为零，以使其作用不大。 </li><li> 在监视器上，预先<a href="">添加nodeAffinity</a> 。 </li><li> 注意预先<a href="">设置超时时间</a> <code>ROOK_MON_HEALTHCHECK_INTERVAL</code>和<code>ROOK_MON_OUT_TIMEOUT</code> 。 </li></ol><br><h2> 而不是结论 </h2><br> 毫无疑问地认为，Rook是一个额外的“层”（在Kubernetes中组织存储的一般方案中），它大大简化了，它也增加了基础架构中的新困难和潜在问题。 事情仍然“微不足道”：一方面，在这些风险与解决方案为您的特定案例带来的收益之间做出平衡，明智的选择。 <br><br> 顺便说一下，最近<a href="https://github.com/rook/rook/commit/b651239d3f9a793c95b5c06668b7f28771254082">在</a> Rook文档中<a href="https://github.com/rook/rook/commit/b651239d3f9a793c95b5c06668b7f28771254082">添加了</a> “将现有Rook Ceph群集纳入新的Kubernetes群集”部分。 它更详细地描述了将现有数据移动到新的Kubernetes集群或恢复由于某种原因而崩溃的集群所需执行的操作。 <br><br><h2> 聚苯乙烯 </h2><br> 另请参阅我们的博客： <br><br><ul><li>  “ <a href="https://habr.com/ru/company/flant/blog/451818/">白痴还是白痴-这就是问题</a> ”； </li><li>  “ <a href="https://habr.com/ru/company/flant/blog/348044/">Rook是Kubernetes的“自助式”数据仓库</a> ”； </li><li>  “ <a href="https://habr.com/ru/company/flant/blog/474208/">Rancher的K8分布式存储Longhorn已转移到CNCF</a> 。” </li><li>  “ <a href="https://habr.com/ru/company/flant/blog/329666/">通过基于Ceph的Kubernetes中的配置来创建持久性存储</a> 。” </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN477680/">https://habr.com/ru/post/zh-CN477680/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN477668/index.html">11月29日下午6点-devleads-mitap</a></li>
+<li><a href="../zh-CN477670/index.html">什么使测试自动化</a></li>
+<li><a href="../zh-CN477672/index.html">团队成员的权利和义务：法律和文化方面</a></li>
+<li><a href="../zh-CN477674/index.html">AI是否意味着爱？</a></li>
+<li><a href="../zh-CN477678/index.html">俄罗斯数字电视的前景</a></li>
+<li><a href="../zh-CN477682/index.html">基础架构中的旧版服务</a></li>
+<li><a href="../zh-CN477684/index.html">Angular：交互式应用程序的最佳构建伴侣</a></li>
+<li><a href="../zh-CN477686/index.html">我们在AI旅程大会上</a></li>
+<li><a href="../zh-CN477688/index.html">12月IT活动摘要</a></li>
+<li><a href="../zh-CN477692/index.html">有在生产中使用ZGC和Shenandoah GC的经验</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

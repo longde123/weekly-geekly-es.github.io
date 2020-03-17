@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👦🏼 🚺 👨🏼‍🚀 我们如何将延迟复制用于PostgreSQL的灾难恢复 😔 👨🏼‍🎤 🎹</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="复制不是备份。 还是不行 这是我们通过意外删除快捷方式将延迟复制用于恢复的方式。 
+
+
+ GitLab的基础架构专家负责运行GitLab.com ，这是GitLab本质上最大的实例。 有300万用户和将近700万个项目，这是具有专用架构的最大的开源SaaS站点之一。 如果没有PostgreSQL数据...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>我们如何将延迟复制用于PostgreSQL的灾难恢复</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/445446/"><p><img src="https://habrastorage.org/webt/d5/ij/ht/d5ijhtuldyyxn2aomtg2r4sdvum.jpeg"></p><br><p> 复制不是备份。 还是不行 这是我们通过意外删除快捷方式将延迟复制用于恢复的方式。 </p><br><p>  GitLab的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">基础架构专家</a>负责运行<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GitLab.com</a> ，这是GitLab本质上最大的实例。 有300万用户和将近700万个项目，这是具有专用架构的最大的开源SaaS站点之一。 如果没有PostgreSQL数据库系统，GitLab.com的基础架构将步履维艰，如果数据丢失会导致任何故障，我们只是出于容错的目的而这么做。 这样的灾难不太可能发生，但是我们已经做好了充分的准备，并准备了各种备份和复制机制。 </p><br><p>复制不是适合您的数据库备份工具（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">请参见下文</a> ）。 但是现在，我们将看到如何使用延迟复制来快速恢复意外删除的数据：在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GitLab.com上，</a>用户<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">删除</a>了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>gitlab-ce</code></a>项目<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的快捷方式</a> ，并失去了与合并请求和任务的联系。 </p><br><p> 使用延迟的副本，我们仅需1.5小时即可恢复数据。 看看情况如何。 </p><a name="habracut"></a><br><h3 id="vosstanovlenie-na-moment-vremeni-s-postgresql">  PostgreSQL的时间点恢复 </h3><br><p>  PostgreSQL具有内置功能，可以在特定时间点恢复数据库状态。 它被称为<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">时间点恢复</a> （PITR），并使用相同的机制来维护副本的相关性：从整个数据库群集的可靠快照（基本备份）开始，我们应用许多状态更改，直到某个时间点为止。 </p><br><p> 要将此功能用于冷备份，我们会定期进行基本的数据库备份，并将其存储在归档文件中（GitLab归档文件实时保存在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Google云存储中</a> ）。 我们还通过归档<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">预写日志</a> （WAL） <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">日志来</a>监视数据库状态的变化。 有了所有这些，我们就可以执行PITR进行灾难恢复：我们从发生错误之前拍摄的图片开始，并应用WAL存档中的更改直到失败。 </p><br><h3 id="chto-takoe-otlozhennaya-replikaciya"> 什么是延迟复制？ </h3><br><p> 延迟复制是延迟WAL更改的应用。 也就是说，交易发生在<code>X</code>小时，但它将在副本中出现，在<code>X + d</code>小时<code>X + d</code>有<code>d</code>的延迟。 </p><br><p>  PostgreSQL有两种方法来配置数据库的物理副本：从存档还原和流复制。 实际上， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">从存档中恢复</a>就像PITR一样工作，但是持续不断：我们不断从WAL存档中提取更改并将其应用于副本。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">流复制</a>直接从上游数据库主机检索WAL流。 我们更喜欢从存档中恢复-它更易于管理且性能正常，并且不会落后于工作集群。 </p><br><h3 id="kak-nastroit-otlozhennoe-vosstanovlenie-iz-arhiva"> 如何从存档设置延迟恢复 </h3><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">恢复选项</a>在<code>recovery.conf</code>文件<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">中</a>描述。 一个例子： </p><br><pre> <code class="plaintext hljs">standby_mode = 'on' restore_command = '/usr/bin/envdir /etc/wal-ed/env /opt/wal-e/bin/wal-e wal-fetch -p 4 "%f" "%p"' recovery_min_apply_delay = '8h' recovery_target_timeline = 'latest'</code> </pre> <br><p> 使用这些参数，我们设置了一个懒惰的副本，并从存档中进行了恢复。 这里<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">wal-e用于</a>从存档中提取WAL段（ <code>restore_command</code> ），更改将在八个小时后应用（ <code>recovery_min_apply_delay</code> ）。 例如，副本将监视归档文件中时间线的更改，例如，由于集群中的故障转移（ <code>recovery_target_timeline</code> ）。 </p><br><p> 使用<code>recovery_min_apply_delay</code>您可以配置延迟的流复制，但是有一些技巧与复制插槽，热备用反馈等相关联。  WAL存档使您可以避免它们。 </p><br><p>  <code>recovery_min_apply_delay</code>参数仅在PostgreSQL 9.3中出现。 在以前的版本中，对于延迟复制，您需要配置<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">恢复管理功能</a>的组合（ <code>pg_xlog_replay_pause(), pg_xlog_replay_resume()</code> ）或将WAL段保留在归档中以保持时间延迟。 </p><br><h3 id="kak-postgresql-eto-delaet">  PostgreSQL如何做到这一点？ </h3><br><p> 很想知道PostgreSQL如何实现延迟恢复。 让我们看一下<a href=""><code>recoveryApplyDelay(XlogReaderState)</code></a> 。 从<a href="">主循环中</a>为WAL中的每个条目调用它。 </p><br><pre> <code class="plaintext hljs">static bool recoveryApplyDelay(XLogReaderState *record) { uint8 xact_info; TimestampTz xtime; long secs; int microsecs; /* nothing to do if no delay configured */ if (recovery_min_apply_delay &lt;= 0) return false; /* no delay is applied on a database not yet consistent */ if (!reachedConsistency) return false; /* * Is it a COMMIT record? * * We deliberately choose not to delay aborts since they have no effect on * MVCC. We already allow replay of records that don't have a timestamp, * so there is already opportunity for issues caused by early conflicts on * standbys. */ if (XLogRecGetRmid(record) != RM_XACT_ID) return false; xact_info = XLogRecGetInfo(record) &amp; XLOG_XACT_OPMASK; if (xact_info != XLOG_XACT_COMMIT &amp;&amp; xact_info != XLOG_XACT_COMMIT_PREPARED) return false; if (!getRecordTimestamp(record, &amp;xtime)) return false; recoveryDelayUntilTime = TimestampTzPlusMilliseconds(xtime, recovery_min_apply_delay); /* * Exit without arming the latch if it's already past time to apply this * record */ TimestampDifference(GetCurrentTimestamp(), recoveryDelayUntilTime, &amp;secs, &amp;microsecs); if (secs &lt;= 0 &amp;&amp; microsecs &lt;= 0) return false; while (true) { // Shortened: // Use WaitLatch until we reached recoveryDelayUntilTime // and then break; } return true; }</code> </pre> <br><p> 最重要的是，延迟是基于事务提交时间戳（ <code>xtime</code> ）中记录的物理时间。 如您所见，该延迟仅适用于提交，并且不涉及其他记录-所有更改都直接应用，并且提交被延迟，因此我们只有在配置了延迟之后才能看到更改。 </p><br><h3 id="kak-ispolzovat-otlozhennuyu-repliku-dlya-vosstanovleniya-dannyh"> 如何使用惰性副本恢复数据 </h3><br><p> 假设我们有一个生产中的数据库集群和一个延迟了八小时的副本。 让我们看看如何使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">意外删除快捷方式</a>的示例恢复数据。 </p><br><p> 当发现问题时，我们<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">暂停了从存档中恢复</a>懒惰副本的操作： </p><br><pre> <code class="plaintext hljs">SELECT pg_xlog_replay_pause();</code> </pre> <br><p> 稍作停顿，我们没有风险副本会重复<code>DELETE</code>请求。 有用的东西，如果您需要时间弄清楚。 </p><br><p> 最重要的是，延迟的副本必须到达<code>DELETE</code>请求之前的位置。 我们大致知道移除的物理时间。 我们删除了<code>recovery_min_apply_delay</code> ，并将<code>recovery_target_time</code>添加到了<code>recovery.conf</code> 。 因此副本立即到达正确的时刻： </p><br><pre> <code class="plaintext hljs">recovery_target_time = '2018-10-12 09:25:00+00'</code> </pre> <br><p> 使用时间戳记，最好减少多余的部分，以免丢失。 是的，减少幅度越大，我们丢失的数据就越多。 同样，如果我们跳过<code>DELETE</code>请求，所有内容将再次被删除，您将不得不重新开始（甚至为PITR进行冷备份）。 </p><br><p> 我们重新启动了Postgres的延迟实例，并重复WAL段直到指定的时间为止。 您可以根据要求跟踪此阶段的进度： </p><br><pre> <code class="plaintext hljs">SELECT -- current location in WAL pg_last_xlog_replay_location(), -- current transaction timestamp (state of the replica) pg_last_xact_replay_timestamp(), -- current physical time now(), -- the amount of time still to be applied until recovery_target_time has been reached '2018-10-12 09:25:00+00'::timestamptz - pg_last_xact_replay_timestamp() as delay;</code> </pre> <br><p> 如果时间戳不再更改，则恢复已完成。 您可以将<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>recovery_target_action</code></a>操作配置为在重播后关闭，推进或暂停实例（默认情况下它会暂停）。 </p><br><p> 在该请求失败之前，数据库进入了状态。 现在，您可以例如导出数据。 我们导出了有关快捷方式以及与任务的所有连接和合并请求的已删除数据，并将它们传输到工作数据库中。 如果损失很大，则可以简单地推广副本并将其用作主要副本。 但是，在我们恢复到这一刻之后，所有的变化都将丢失。 </p><br><p> 代替时间戳，最好使用事务ID。 使用<code>log_statements = 'ddl'</code>为DDL语句（例如<code>DROP TABLE</code> ）编写这些ID很有用。 如果我们有一个事务ID，我们将使用<code>recovery_target_xid</code>并将所有内容运行到<code>DELETE</code>请求之前的事务中。 </p><br><p> 恢复工作非常简单：从<code>recovery.conf</code>删除所有更改，然后重新启动Postgres。 很快，复制品将再次出现8个小时的延迟，我们已为以后的麻烦做好了准备。 </p><br><h3 id="preimuschestva-dlya-vosstanovleniya"> 恢复收益 </h3><br><p> 使用延迟的副本而不是冷备份，您无需花费数小时从存档中还原整个映像。 例如，我们需要五个小时来获得2 TB的整个基本备份。 然后，您仍然必须应用整个每日WAL以恢复到所需状态（在最坏的情况下）。 </p><br><p> 延迟副本比冷备份在两个方面要好： </p><br><ol><li> 无需从存档中获取整个基础备份。 </li><li> 有一个固定的八小时WAL时段窗口，需要重复。 </li></ol><br><p> 我们还将不断检查是否有可能从WAL中制作PITR，并且我们会迅速注意到WAL归档文件的损坏或其他问题，并监控延迟副本的延迟。 </p><br><p> 在此示例中，我们花了50分钟才能恢复，也就是说，速度为每小时110 GB WAL数据（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">那时</a>存档仍在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">AWS S3上</a> ）。 总共，我们解决了问题，并在1.5小时内恢复了数据。 </p><br><h3 id="itogi-gde-prigoditsya-otlozhennaya-replika-a-gde-net"> 底线：延迟的副本在哪里派上用场（哪里不方便） </h3><br><p> 如果您意外丢失数据并在配置的延迟内注意到此灾难，请使用延迟复制作为急救。 </p><br><blockquote> 但请记住：复制不是备份。 </blockquote><p> 备份和复制具有不同的目标。 如果不小心创建了<code>DELETE</code>或<code>DROP TABLE</code>则冷备份很有用。 我们从冷存储器进行备份，并还原表或整个数据库的先前状态。 但是同时， <code>DROP TABLE</code>查询几乎立即在工作群集上的所有副本中播放，因此常规复制不会在这里保存您。 当租用单独的服务器并分配负载时，复制本身使数据库可访问。 </p><br><p> 即使副本延迟，有时如果数据中心崩溃，隐藏损坏或您没有立即注意到的其他事件，我们有时仍然确实需要在安全的地方进行冷备份。 一次复制没有任何意义。 </p><br><p>  <strong>注意事项</strong> 现在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">，</a>在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GitLab.com，</a>我们仅在系统级别上防止数据丢失，而在用户级别上不恢复数据。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN445446/">https://habr.com/ru/post/zh-CN445446/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN445434/index.html">世界上最糟糕的工作：寻找一名Habraautor</a></li>
+<li><a href="../zh-CN445436/index.html">在DevOps中进行再培训-为自己做好准备</a></li>
+<li><a href="../zh-CN445438/index.html">了解基于它的元素和Web组件</a></li>
+<li><a href="../zh-CN445440/index.html">代码审查：贡献者和审查者的错误提示</a></li>
+<li><a href="../zh-CN445444/index.html">REC和Trina（Solar）的高性能太阳能模块更新</a></li>
+<li><a href="../zh-CN445448/index.html">在Linux中使用Docker配置Letencrypt证书的自动接收</a></li>
+<li><a href="../zh-CN445450/index.html">toster.ru的浏览器扩展</a></li>
+<li><a href="../zh-CN445452/index.html">口才有用的存储库？</a></li>
+<li><a href="../zh-CN445454/index.html">Raspberry Pi零内部便捷技术Active Star 40盲文显示器</a></li>
+<li><a href="../zh-CN445456/index.html">以1 TB / s的速度搜索</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

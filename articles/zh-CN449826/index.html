@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚜 👩‍👧 ✍🏻 [翻译] Envoy线程模型 🚈 👩🏻‍🚒 ☂️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="哈Ha！ 我向您介绍了Matt Klein的文章“ Envoy线程模型”的翻译。 
+
+ 对于我来说，这篇文章似乎足够有趣，并且由于Envoy最常被用作“ istio”的一部分或仅用作“ inress controller” kubernetes的一部分，因此大多数人与典型的Nginx或Haproxy...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>[翻译] Envoy线程模型</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/449826/"> 哈Ha！ 我向您介绍了Matt Klein的文章<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“ Envoy线程模型”</a>的翻译。 <br><br> 对于我来说，这篇文章似乎足够有趣，并且由于Envoy最常被用作“ istio”的一部分或仅用作“ inress controller” kubernetes的一部分，因此大多数人与典型的Nginx或Haproxy装置没有直接的交互。 但是，如果发生故障，最好从内部了解其工作原理。 我尝试将尽可能多的文本翻译成俄语，包括特殊词，以备不时之需，我将原文放在方括号中。 欢迎来到猫。 <br><a name="habracut"></a><br> 目前，Envoy代码库中的低级技术文档非常匮乏。 为了解决这个问题，我计划撰写一系列有关各种Envoy子系统的博客文章。 由于这是第一篇文章，所以请让我知道您的想法以及对以下文章可能感兴趣的内容。 <br><br> 关于Envoy，我遇到的最常见的技术问题之一是要求对所使用的线程模型进行低级描述。 在本文中，我将描述Envoy如何将连接映射到线程，以及对线程本地存储系统的描述，该系统在内部用于使代码更加并行和高性能。 <br><br><h1> 线程概述 </h1><br><img src="https://habrastorage.org/webt/jy/46/yw/jy46ywgcjdk8zvrpwyeisan8hzm.png"><br><br>  <b>Envoy使用三种不同类型的流：</b> <br><br><ul><li>  <b>Main：</b>该线程控制流程的开始和结束以及XDS（xDiscovery服务）API的所有处理，包括DNS，运行状况检查，常规群集和服务管理（运行时），统计信息重置，管理和常规管理进程-Linux信号，热重启等。此线程中发生的一切都是异步且无阻塞的。 通常，主线程协调功能的所有关键过程，这些过程不需要大量的CPU即可完成。 这允许大多数控制代码被编写为好像是单线程的。 </li><li>  <b>工作者：</b>默认情况下，Envoy为系统中的每个硬件线程创建一个工作者线程，可以使用<code>--concurrency</code>选项对其进行控制。 每个工作线程都会启动一个“非阻塞”事件循环，该事件循环负责侦听每个侦听器，在编写本文时（2017年7月29日），该侦听器没有分片，接收新侦听器连接，创建要连接的过滤器堆栈的实例，并在连接的生命周期内处理所有I / O操作。 同样，这允许大多数连接处理代码被编写为好像是单线程的。 </li><li>  <b>文件刷新器：</b> Envoy编写的每个文件（主要是访问日志）当前都有一个独立的阻止流。 这是由于以下事实：即使使用<code>O_NONBLOCK</code> ，有时也会阻止写入文件系统缓存的文件（叹气）。 当工作线程需要写入文件时，实际上会将数据移到内存中的缓冲区中，并最终通过<b>文件刷新</b>流将其<b>刷新</b> 。 这是代码的一个区域，从技术上讲，所有工作线程在尝试填充内存缓冲区时都可以阻塞同一锁。 </li></ul><br><h1> 连接处理 </h1><br> 如上面简要讨论的，所有工作线程都在不进行任何分段的情况下侦听所有侦听器。 因此，内核用于将接收到的套接字正确发送到工作线程。 现代内核通常非常擅长于此，它们使用诸如增加输入输出（IO）的优先级等功能来尝试用工作填充线程，然后再开始使用也侦听同一套接字的其他线程，并且不使用循环锁定等功能。 （自旋锁）处理每个请求。 <br><br> 一旦在工作线程上接受了连接，它就永远不会离开该线程。 连接的所有进一步处理均在工作线程中完全处理，包括任何转发行为。 <br><br>  <b>这有几个重要的后果：</b> <br><br><ul><li>  <u>Envoy中的所有连接池都在工作流中。</u>  <u>因此，尽管HTTP / 2连接池一次仅与每个上游主机建立一个连接，但是，如果有四个辅助线程，则在稳定状态下将有四个与上游主机的HTTP / 2连接。</u> </li><li>  Envoy以这种方式工作的原因是，通过将所有内容存储在一个工作流中，几乎所有代码都可以编写而不会阻塞，就好像它们是单线程的一样。 这种设计使编写许多代码变得更加容易，并且可以为几乎无限数量的工作流进行难以置信的扩展。 </li><li> 但是，主要结论之一是，从内存池和连接效率的角度来看，配置<code>--concurrency</code>参数实际上非常重要。 具有多余线程的工作线程将导致内存丢失，创建更多的非活动连接并减慢进入连接池的速度。 在Lyft，我们的特使边车集装箱的并发性非常低，因此其性能大致相当于其旁边的服务。 我们仅以最大的并发性将Envoy作为边缘代理（edge）运行。 </li></ul><br><h1> 非阻塞意味着什么？ </h1><br> 到目前为止，“无阻塞”一词在讨论主线程和工作线程的工作方式时已被使用多次。 只要没有任何阻塞，就可以编写所有代码。 但是，这并不完全正确（这不完全正确吗？）。 <br><br>  <b>Envoy使用了一些冗长的进程锁：</b> <br><br><ul><li> 如前所述，在编写访问日志时，所有工作线程在填充日志缓冲区到内存之前都会获得相同的锁。 锁的保持时间应该非常短，但是有可能以高并发和高吞吐量来挑战此锁。 </li><li>  Envoy使用非常复杂的系统来处理流本地的统计信息。 这将是另一篇文章的主题。 但是，我将简要提及一下，作为本地处理流量统计信息的一部分，有时需要获得对中央“统计信息存储”的锁定。 永远不需要此锁。 </li><li> 主线程需要定期与所有工作流程进行协调。 这是通过“发布”从主线程到工作线程，有时是从工作线程回发布到主线程来完成的。 对于发送，需要进行阻止，以便可以将已发布的消息排队等待后续传递。 这些锁永远都不应遭受激烈的竞争，但是在技术上仍然可以将其锁定。 </li><li> 当Envoy将日志写入系统错误流（标准错误）时，它将收到整个过程的锁定。 总体而言，Envoy的本地日志记录在性能方面被认为很糟糕，因此没有太多关注改进它。 </li><li> 还有其他几种随机锁，但是它们都不是性能至关重要的，并且永远都不应引起争议。 </li></ul><br><h1> 线程本地存储 </h1><br> 由于Envoy将主线程职责与工作流职责分开的方式，因此要求可以对主线程执行复杂的处理，然后以高并发程度将其提供给每个工作流。 本节从较高级别描述了Envoy线程本地存储（TLS）系统。 在下一节中，我将描述如何使用它来管理集群。 <br><br><img src="https://habrastorage.org/webt/hc/e4/bs/hce4bsjgfljckbekacfilceotyq.png"><br><br> 如前所述，主线程在Envoy流程中处理几乎所有管理功能和控制平面的功能。 控制平面在这里有点过载，但是如果您在Envoy流程本身中查看它，并将其与辅助线程执行的转发进行比较，这似乎是适当的。 通常，主线程进程会做一些工作，然后需要根据此工作的结果更新每个工作线程， <u>而工作线程并不需要为每个访问设置锁</u> 。 <br><br>  <b>TLS（线程本地存储）Envoy系统的工作方式如下：</b> <br><br><ul><li> 在主线程中运行的代码可以为整个过程分配一个TLS插槽。 尽管这是抽象的，但实际上它是向量中提供O（1）访问的索引。 </li><li> 主流可以在其插槽中设置任意数据。 完成此操作后，数据将作为常规事件循环事件发布在每个工作流中。 </li><li> 辅助线程可以从其TLS插槽读取并检索那里可用的任何本地线程数据。 </li></ul><br> 尽管这是一个非常简单且功能强大的范例，但它与RCU阻止（读取-复制-更新）的概念非常相似。 本质上，工作流在运行时永远不会在TLS插槽中看到任何数据更改。 仅在工作事件之间的休息期间发生更改。 <br><br>  <b>特使有两种不同的用法：</b> <br><br><ul><li> 通过在每个工作流程上存储各种数据，可以无障碍地访问该数据。 </li><li> 通过在每个工作线程上以只读模式存储指向全局数据的全局指针。 因此，每个工作线程都有一个数据引用计数器，该引用不能在工作执行期间减少。 只有当所有工作人员冷静下来并上传新的共享数据时，旧数据才会被破坏。 它与RCU相同。 </li></ul><br><h1> 集群更新线程 </h1><br> 在本节中，我将描述如何使用TLS（线程本地存储）来管理集群。 群集管理包括xDS和/或DNS API处理以及运行状况检查。 <br><br><img src="https://habrastorage.org/webt/by/jw/4q/byjw4qhlo9xjsprdu9ngi9dop_y.png"><br><br>  <b>群集流管理包括以下组件和步骤：</b> <br><br><ol><li> 群集管理器是Envoy中的一个组件，它管理所有已知的群集上游，CDS（群集发现服务）API，SDS（秘密发现服务）和EDS（端点发现服务），DNS和活动的外部检查健康（健康检查）。 他负责为每个上游群集创建一个“最终一致”的表示形式，其中包括发现的主机以及运行状况。 </li><li> 运行状况检查程序执行活动的运行状况检查，并将运行状况的变化报告给集群管理器。 </li><li> 执行CDS（集群发现服务）/ SDS（秘密发现服务）/ EDS（端点发现服务）/ DNS以确定集群成员身份。 状态更改将返回到集群管理器。 </li><li> 每个工作流程不断运行一个事件循环。 </li><li> 当集群管理器确定集群的状态已更改时，它将创建一个新的只读集群快照并将其发送到每个工作线程。 </li><li> 在下一个休眠期间，工作流将更新专用TLS插槽中的快照。 </li><li> 在主机应确定负载均衡的I / O事件期间，负载均衡器将请求TLS插槽（线程本地存储）以获取主机信息。 不需要锁。 还请注意，TLS还可在升级期间触发事件，以便负载均衡器和其他组件可以重新计算缓存，数据结构等。 这超出了本文的范围，但是在代码中的各个地方都有使用。 </li></ol><br> 使用以上过程，Envoy可以处理每个请求而没有任何锁（除了前面描述的锁以外）。 除了TLS代码本身的复杂性之外，大多数代码不需要了解多线程的工作原理，并且可以单线程模式编写。 除了出色的性能之外，这使得编写大多数代码更加容易。 <br><br><h1> 其他使用TLS的子系统 </h1><br>  TLS（线程本地存储）和RCU（读取副本更新）在Envoy中得到了广泛使用。 <br><br>  <b>使用示例：</b> <br><br><ul><li>  <b>在执行期间更改功能的机制：</b>在主线程中计算当前启用的功能列表。 然后，使用RCU语义为每个工作流程提供一个只读快照。 </li><li>  <b>替换路由表</b> ：对于RDS（路由发现服务）提供的路由表，在主线程中创建了路由表。 稍后将使用RCU语义（只读副本更新）将只读快照提供给每个工作流程。 这使得修改路由表具有原子效率。 </li><li>  <b>HTTP标头缓存：</b>事实证明，为每个请求计算HTTP标头（当每个内核执行〜25K + RPS时）非常昂贵。  Envoy大约每半秒钟集中计算一次标头，并通过TLS和RCU将其提供给每位员工。 </li></ul><br> 还有其他情况，但是前面的示例应该可以很好地理解TLS的用途。 <br><br><h1> 已知的性能陷阱 </h1><br> 尽管Envoy总体上运行良好，但是在以很高的并发性和带宽使用时，仍需要注意一些知名领域： <br><br><ul><li> 如本文所述，当前所有工作线程在写入访问日志内存缓冲区时均被锁定。 具有高并发性和高吞吐量，由于写入最终文件时的无序交付，有必要打包每个工作流的访问日志。 或者，您可以为每个工作流程创建单独的访问日志。 </li><li> 尽管统计数据非常优化，并发性和吞吐量非常高，但是单个统计数据可能存在原子竞争。 解决此问题的方法是每个工作流使用计数器，并定期重置中央计数器。 这将在后续文章中讨论。 </li><li> 如果将Envoy部署在需要大量处理资源的连接很少的情况下，则现有体系结构将无法正常工作。 无法保证通信将在工作流之间平均分配。 这可以通过平衡工作连接来解决，其中将实现在工作流程之间交换连接的能力。 </li></ul><br><h1> 结论 </h1><br>  Envoy线程模型旨在提供便利的编程和大量并发功能，因为如果配置不正确，可能会浪费内存和连接。 该模型使它可以在大量线程和吞吐量下很好地工作。 <br><br> 正如我在Twitter上简要提到的那样，设计还可以在用户模式下的全功能网络堆栈之上运行，例如DPDK（数据平面开发套件），这可能导致常规服务器每秒通过完整的L7处理来处理数百万个请求。 看看未来几年将建造什么将是非常有趣的。 <br><br> 最后一个快速评论：很多次有人问我为什么我们选择Envoy的C ++。 像以前一样，原因是它仍然是构建这篇文章中描述的体系结构的唯一被广泛使用的工业级语言。  C ++绝对不适合所有项目，甚至也不适合许多项目，但对于某些用例，它仍然是完成任务（完成任务）的唯一工具。 <br><br><h1> 链接到代码 </h1><br>  <b>具有本文中讨论的接口和标头实现的文件链接：</b> <br><br><ul><li>  <a href="">github.com/lyft/envoy/blob/master/include/envoy/thread_local/thread_local.h</a> </li><li>  <a href="">github.com/lyft/envoy/blob/master/source/common/thread_local/thread_local_impl.h</a> </li><li>  <a href="">github.com/lyft/envoy/blob/master/include/envoy/upstream/cluster_manager.h</a> </li><li>  <a href="">github.com/lyft/envoy/blob/master/source/common/upstream/cluster_manager_impl.h</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN449826/">https://habr.com/ru/post/zh-CN449826/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN449808/index.html">积极的Hack Day 9实验：批判性思维如何帮助生活和工作</a></li>
+<li><a href="../zh-CN449814/index.html">Windows XP正式死亡，现在终于</a></li>
+<li><a href="../zh-CN449818/index.html">实时统计和监视PHP脚本。 ClickHouse和Grafana向Pinba寻求帮助</a></li>
+<li><a href="../zh-CN449820/index.html">即时自定义熟悉的文件关联</a></li>
+<li><a href="../zh-CN449824/index.html">俄罗斯钢铁创业历险记：团队建设</a></li>
+<li><a href="../zh-CN449828/index.html">“老鼠哭了，又被刺了。”实践中采用进口替代。 第四部分（理论，最后）。 系统与服务</a></li>
+<li><a href="../zh-CN449830/index.html">电力线控制HD44780</a></li>
+<li><a href="../zh-CN449832/index.html">量子未来</a></li>
+<li><a href="../zh-CN449836/index.html">Dell U2419HC：带有全高清和USB-C的时尚24英寸显示器</a></li>
+<li><a href="../zh-CN449840/index.html">起始条：一种新的网络钓鱼方法</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

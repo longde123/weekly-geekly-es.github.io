@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦕 🤜🏾 👨🏾‍💻 我们如何找到AspNetCore.Mvc的严重漏洞并切换到我们自己的序列化 🦀 🧙🏿 🐁</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="哈Ha！ 
+
+ 在本文中，我们想分享我们在优化性能和探索AspNetCore.Mvc功能方面的经验。 
+
+
+
+ 背景知识 
+ 几年前，在我们加载的一项服务中，我们注意到CPU资源的大量消耗。 看起来很奇怪，因为该服务的任务是实际上已经接收了消息并将其放入队列中，并且之前已经对该消息执行了一些操作，例...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>我们如何找到AspNetCore.Mvc的严重漏洞并切换到我们自己的序列化</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/retailrocket/blog/435626/"> 哈Ha！ <br><br> 在本文中，我们想分享我们在优化性能和探索AspNetCore.Mvc功能方面的经验。 <br><br><img src="https://habrastorage.org/webt/da/rm/2b/darm2bah850jodxea3wgdjr60qk.jpeg"><br><br><h2> 背景知识 </h2><br> 几年前，在我们加载的一项服务中，我们注意到CPU资源的大量消耗。 看起来很奇怪，因为该服务的任务是实际上已经接收了消息并将其放入队列中，并且之前已经对该消息执行了一些操作，例如验证，数据添加等。 <br><br> 分析的结果是，我们发现反序列化“占用”了处理器的大部分时间。 我们抛出了标准的序列化器，并在Jil上编写了自己的序列化器，结果资源消耗减少了数倍。 一切都按其应有的方式工作，我们设法忘记了它。 <br><a name="habracut"></a><br><h2> 问题 </h2><br> 我们在安全，性能和容错性等各个方面都在不断改善我们的服务，因此“安全团队”对我们的服务进行各种测试。 不久前，关于日志错误的警报“飞”向我们-不知何故我们又错过了一条无效消息。 <br><br> 经过详细的分析，一切看起来都很奇怪。 有一个请求模型（这里我将给出一个简化的代码示例）： <br><br><pre><code class="json hljs">public class RequestModel { public string Key { get; set; } FromBody] Required] public PostRequestModelBody Body { get; set; } } public class PostRequestModelBody { [Required] [MinLength(1)] public IEnumerable&lt;long&gt; ItemIds { get; set; } }</code> </pre> <br> 有一个带有操作Post的控制器，例如： <br><br><pre> <code class="json hljs">[Route(<span class="hljs-string"><span class="hljs-string">"api/[controller]"</span></span>)] public class HomeController : Controller { [HttpPost] public async Task&lt;ActionResult&gt; Post(RequestModel request) { if (this.ModelState.IsValid) { return this.Ok(); } return this.BadRequest(); } }</code> </pre> <br> 一切似乎合乎逻辑。 如果请求来自“正文”视图 <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br> 该API将返回BadRequest，对此有测试。 <br><br> 然而，在日志中我们看到了相反的情况。 我们从日志中获取了消息，并将其发送到API，并获得状态OK ...和...日志中的新错误。 不相信我们的眼睛，我们犯了一个错误，并确保是的，确实是ModelState.IsValid == true。 同时，他们注意到异常长的查询执行时间约为500毫秒，而通常的响应时间很少超过50毫秒，并且正在生产中，每秒可处理数千个请求！ <br><br> 此请求与我们的测试之间的区别仅在于该请求包含600多个空行... <br><br> 接下来将有很多bukaf代码。 <br><br><h2> 原因 </h2><br> 他们开始了解出什么问题了。 为了消除该错误，他们编写了一个干净的应用程序（从中给出了一个示例），我们使用该应用程序重现了所描述的情况。 总的来说，我们花了一些<a href="">工夫</a>研究，测试，心理调试代码AspNetCore.Mvc，结果发现问题出在<a href="">JsonInputFormatter中</a> 。 <br><br>  JsonInputFormatter使用一个JsonSerializer，它获取用于反序列化和类型化的流，并尝试序列化每个属性（如果它是一个数组）-该数组的每个元素。 同时，如果在序列化过程中发生错误，JsonInputFormatter将保存每个错误及其路径，将其标记为已处理，以便您可以继续尝试进一步反序列化。 <br><br> 以下是JsonInputFormatter错误处理程序的代码（在上述链接的Github上可用）： <br><br><pre> <code class="json hljs">void ErrorHandler(object sender, Newtonsoft.Json.Serialization.ErrorEventArgs eventArgs) { successful = false; // When ErrorContext.Path does not include ErrorContext.Member, add Member to form full path. var path = eventArgs.ErrorContext.Path; var member = eventArgs.ErrorContext.Member?.ToString(); var addMember = !string.IsNullOrEmpty(member); if (addMember) { // Path.Member case (path.Length &lt; member.Length) needs no further checks. if (path.Length == member.Length) { // Add Member in Path.Memb case but not for Path.Path. addMember = !string.Equals(path, member, StringComparison.Ordinal); } else if (path.Length &gt; member.Length) { // Finally, check whether Path already ends with Member. if (member[0] == '[') { addMember = !path.EndsWith(member, StringComparison.Ordinal); } else { addMember = !path.EndsWith(<span class="hljs-attr"><span class="hljs-attr">"."</span></span> + member, StringComparison.Ordinal); } } } if (addMember) { path = ModelNames.CreatePropertyModelName(path, member); } // Handle path combinations such as <span class="hljs-string"><span class="hljs-string">""</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"Property"</span></span>, or <span class="hljs-string"><span class="hljs-string">"Parent"</span></span>+<span class="hljs-string"><span class="hljs-string">"[12]"</span></span>. var key = ModelNames.CreatePropertyModelName(context.ModelName, path); exception = eventArgs.ErrorContext.Error; var metadata = GetPathMetadata(context.Metadata, path); var modelStateException = WrapExceptionForModelState(exception); context.ModelState.TryAddModelError(key, modelStateException, metadata); _logger.JsonInputException(exception); // Error must always be marked as handled // Failure to do so can cause the exception to be rethrown at every recursive level and // overflow the stack for x<span class="hljs-number"><span class="hljs-number">6</span></span><span class="hljs-number"><span class="hljs-number">4</span></span> CLR processes eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>; }</code> </pre><br> 将标记为已处理的错误在处理器的最后进行 <br><br><pre> <code class="json hljs">eventArgs.ErrorContext.Handled = <span class="hljs-literal"><span class="hljs-literal">true</span></span>;</code> </pre> <br><br> 因此，实现了一个功能，用于输出所有反序列化错误和到它们的路径，它们在哪个字段/元素上……几乎所有... <br><br> 事实是，JsonSerializer限制为200个错误，此后它崩溃，而所有代码崩溃并且ModelState变为... valid！...错误也丢失了。 <br><br><h2> 解决方案 </h2><br> 我们毫不犹豫地使用Jil Deserializer为Asp.Net Core实现了Json格式化程序。 由于体内错误的数量对我们绝对不重要，因此仅存在错误的事实就很重要（通常很难想象这种情况确实有用），因此序列化程序代码非常简单。 <br><br> 我将给出自定义JilJsonInputFormatter的主要代码： <br><br><pre> <code class="json hljs">using (var reader = context.ReaderFactory(request.Body, encoding)) { try { var result = JSON.Deserialize( reader: reader, type: context.ModelType, options: this.jilOptions); if (result == <span class="hljs-literal"><span class="hljs-literal">null</span></span> &amp;&amp; !context.TreatEmptyInputAsDefaultValue) { return await InputFormatterResult.NoValueAsync(); } else { return await InputFormatterResult.SuccessAsync(result); } } catch { // -   } return await InputFormatterResult.FailureAsync(); }</code> </pre> <br>  <b>注意！</b> 吉尔区分大小写，这意味着身体的内容 <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"ItemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br> 和 <br><br><pre> <code class="json hljs">{<span class="hljs-attr"><span class="hljs-attr">"itemIds"</span></span>:[<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span>,<span class="hljs-string"><span class="hljs-string">""</span></span> … ] }</code> </pre> <br> 不一样的东西。 在第一种情况下，如果使用camelCase，则反序列化后的ItemIds属性将为null。 <br><br> 但是由于这是我们的API，所以我们可以使用和控制它，对我们而言这并不重要。 如果它是一个公共API，并且有人已经调用了它，并且没有在camelCase中传递参数名称，则可能会出现问题。 <br><br><h2> 结果 </h2><br> 结果甚至超出了我们的预期，API有望开始将BadRequest返回到所请求的请求，并且很快完成了请求。 下面是一些图表的屏幕截图，清楚地显示了部署前后的响应时间和CPU的变化。 <br> 要求提前期： <br><br><img src="https://habrastorage.org/getpro/habr/post_images/62d/412/60a/62d41260a72b6a3c07c9aeb1e990a3ad.png" alt="图片"><br><br> 大约在16:00进行了部署。 部署之前，p99的执行时间为30-57ms，部署之后为9-15ms。  （您不能注意18:00的重复高峰-这是另一个部署） <br><br> 这是CPU图形的变化方式： <br><br><img src="https://habrastorage.org/getpro/habr/post_images/09c/95b/b8c/09c95bb8cf8bc500d0e7383ddbca8827.png" alt="图片"><br><br> 因此，在撰写本文时，我们向Github带来了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">问题</a> ，它被标记为里程碑3.0.0-preview3的错误。 <br><br><h2> 总结 </h2><br> 在问题解决之前，我们认为最好不要使用标准反序列化，尤其是在拥有公共API的情况下。 知道了这个问题，攻击者可以轻松地将您的服务放入其中，并向其中抛出一堆类似的无效请求，因为错误数组越大，正文越多，则JsonInputFormatter中的处理时间就越长。 <br><br>  <b>开发团队负责人Artyom Astashkin</b> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN435626/">https://habr.com/ru/post/zh-CN435626/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN435614/index.html">Rust新闻＃4（2018年12月）</a></li>
+<li><a href="../zh-CN435616/index.html">Peer Zoning如何简化我们的生活并帮助平衡EMC VPLEX的负载</a></li>
+<li><a href="../zh-CN435618/index.html">我的Google就业准备经验</a></li>
+<li><a href="../zh-CN435620/index.html">实现未来学家的想法</a></li>
+<li><a href="../zh-CN435624/index.html">35C3会议精选的有趣报告</a></li>
+<li><a href="../zh-CN435628/index.html">Chrome浏览器内置的广告拦截器将于7月9日开始</a></li>
+<li><a href="../zh-CN435630/index.html">云中的网络IB：2019年的5个趋势</a></li>
+<li><a href="../zh-CN435636/index.html">如何从Dota 2的专家那里学习机器学习</a></li>
+<li><a href="../zh-CN435638/index.html">关于开发人员的幸福以及在哪里找到它</a></li>
+<li><a href="../zh-CN435640/index.html">IT领域HR专业人员的事件摘要（2019年1月）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

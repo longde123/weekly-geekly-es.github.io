@@ -1,0 +1,125 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😳 🤾🏻 👨🏽‍💼 带有Kubernetes的GitLab CI中的JUnit 🤷🏾 💾 👩🏿‍🤝‍👩🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="尽管每个人都知道测试软件非常重要和必要，并且许多人已经很长时间自动进行了测试，但是在Habr的开放空间中没有一个配方可以在此细分市场中设置一堆（我们最喜欢的）GitLab和JUnit这样受欢迎的产品。 。 填补这一空白！ 
+
+
+
+ 介绍性 
+ 首先，我将概述背景： 
+
+
+
+- 由于我们所有的应用程序...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>带有Kubernetes的GitLab CI中的JUnit</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/460897/"> 尽管每个人都知道测试软件非常重要和必要，并且许多人已经很长时间自动进行了测试，但是在Habr的开放空间中没有一个配方可以在此细分市场中设置一堆（我们最喜欢的）GitLab和JUnit这样受欢迎的产品。 。 填补这一空白！ <br><br><img src="https://habrastorage.org/webt/pc/q_/3i/pcq_3iq519cc6s_xqbeivsqyza4.png"><br><br><h2> 介绍性 </h2><br> 首先，我将概述背景： <br><br><ul><li> 由于我们所有的应用程序都在Kubernetes中工作，因此我们将考虑在适当的基础架构中运行测试。 </li><li> 对于组装和部署，我们使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">werf</a> （就基础架构组件而言，这也自动意味着涉及Helm）。 </li><li> 我将不介绍直接创建测试的详细信息：在我们的案例中，客户端是自己编写测试的，我们仅确保测试能够运行（并且合并请求中提供了相应的报告）。 </li></ul><a name="habracut"></a><br> 整个动作序列将是什么样的？ <br><br><ol><li> 应用程序组装-我们将省略此阶段的描述。 </li><li> 将应用程序部署到单独的Kubernetes集群名称空间并启动测试。 </li><li> 通过GitLab搜索工件并解析JUnit报告。 </li><li> 删除以前创建的名称空间。 </li></ol><br> 现在-实施！ <br><br><h2> 客制化 </h2><br><h3> 吉它实验室 </h3><br> 让我们从<code>.gitlab-ci.yaml</code>片段开始，该片段描述了应用程序的部署和运行测试。 清单相当庞大，因此用注释进行了彻底的补充： <br><br><pre> <code class="bash hljs">variables: <span class="hljs-comment"><span class="hljs-comment">#   werf,    WERF_VERSION: "1.0 beta" .base_deploy: &amp;base_deploy script: #  namespace  K8s,    - kubectl --context="${WERF_KUBE_CONTEXT}" get ns ${CI_ENVIRONMENT_SLUG} || kubectl create ns ${CI_ENVIRONMENT_SLUG} #  werf   —    .   # (https://werf.io/how_to/gitlab_ci_cd_integration.html#deploy-stage) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf deploy --stages-storage :local --namespace ${CI_ENVIRONMENT_SLUG} --set "global.commit_ref_slug=${CI_COMMIT_REF_SLUG:-''}" #   `run_tests` #      Helm- --set "global.run_tests=${RUN_TESTS:-no}" --set "global.env=${CI_ENVIRONMENT_SLUG}" #  timeout (  )      --set "global.ci_timeout=${CI_TIMEOUT:-900}" --timeout ${CI_TIMEOUT:-900} dependencies: - Build .test-base: &amp;test-base extends: .base_deploy before_script: #     ,   $CI_COMMIT_REF_SLUG - mkdir /mnt/tests/${CI_COMMIT_REF_SLUG} || true #  , .. GitLab      build-dir' - mkdir ./tests || true - ln -s /mnt/tests/${CI_COMMIT_REF_SLUG} ./tests/${CI_COMMIT_REF_SLUG} after_script: #        Job' # (, ,  ) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf dismiss --namespace ${CI_ENVIRONMENT_SLUG} --with-namespace #   ,      allow_failure: true variables: RUN_TESTS: 'yes' #    werf # (https://werf.io/how_to/gitlab_ci_cd_integration.html#infrastructure) WERF_KUBE_CONTEXT: 'admin@stage-cluster' tags: #     `werf-runner` - werf-runner artifacts: #     ,      #     — ,     paths: - ./tests/${CI_COMMIT_REF_SLUG}/* #      expire_in: 7 day # :       GitLab' reports: junit: ./tests/${CI_COMMIT_REF_SLUG}/report.xml #        #         —   -  stages: - build - tests build: stage: build script: #  —     werf # (https://werf.io/how_to/gitlab_ci_cd_integration.html#build-stage) - type multiwerf &amp;&amp; source &lt;(multiwerf use ${WERF_VERSION}) - werf version - type werf &amp;&amp; source &lt;(werf ci-env gitlab --tagging-strategy tag-or-branch --verbose) - werf build-and-publish --stages-storage :local tags: - werf-runner except: - schedules run tests: &lt;&lt;: *test-base environment: # " "  namespace' # (https://docs.gitlab.com/ce/ci/variables/predefined_variables.html) name: tests-${CI_COMMIT_REF_SLUG} stage: tests except: - schedules</span></span></code> </pre> <br><h3>  Kubernetes </h3><br> 现在在<code>.helm/templates</code>目录中，使用Job- <code>tests-job.yaml</code>创建一个YAML来运行所需的测试和Kubernetes资源。 解释见清单后： <br><br><pre> <code class="plaintext hljs">{{- if eq .Values.global.run_tests "yes" }} --- apiVersion: v1 kind: ConfigMap metadata: name: tests-script data: tests.sh: | echo "======================" echo "${APP_NAME} TESTS" echo "======================" cd /app npm run test:ci cp report.xml /app/test_results/${CI_COMMIT_REF_SLUG}/ echo "" echo "" echo "" chown -R 999:999 /app/test_results/${CI_COMMIT_REF_SLUG} --- apiVersion: batch/v1 kind: Job metadata: name: {{ .Chart.Name }}-test annotations: "helm.sh/hook": post-install,post-upgrade "helm.sh/hook-weight": "2" "werf/watch-logs": "true" spec: activeDeadlineSeconds: {{ .Values.global.ci_timeout }} backoffLimit: 1 template: metadata: name: {{ .Chart.Name }}-test spec: containers: - name: test command: ['bash', '-c', '/app/tests.sh'] {{ tuple "application" . | include "werf_container_image" | indent 8 }} env: - name: env value: {{ .Values.global.env }} - name: CI_COMMIT_REF_SLUG value: {{ .Values.global.commit_ref_slug }} - name: APP_NAME value: {{ .Chart.Name }} {{ tuple "application" . | include "werf_container_env" | indent 8 }} volumeMounts: - mountPath: /app/test_results/ name: data - mountPath: /app/tests.sh name: tests-script subPath: tests.sh tolerations: - key: dedicated operator: Exists - key: node-role.kubernetes.io/master operator: Exists restartPolicy: OnFailure volumes: - name: data persistentVolumeClaim: claimName: {{ .Chart.Name }}-pvc - name: tests-script configMap: name: tests-script --- apiVersion: v1 kind: PersistentVolumeClaim metadata: name: {{ .Chart.Name }}-pvc spec: accessModes: - ReadWriteOnce resources: requests: storage: 10Mi storageClassName: {{ .Chart.Name }}-{{ .Values.global.commit_ref_slug }} volumeName: {{ .Values.global.commit_ref_slug }} --- apiVersion: v1 kind: PersistentVolume metadata: name: {{ .Values.global.commit_ref_slug }} spec: accessModes: - ReadWriteOnce capacity: storage: 10Mi local: path: /mnt/tests/ nodeAffinity: required: nodeSelectorTerms: - matchExpressions: - key: kubernetes.io/hostname operator: In values: - kube-master persistentVolumeReclaimPolicy: Delete storageClassName: {{ .Chart.Name }}-{{ .Values.global.commit_ref_slug }} {{- end }}</code> </pre> <br> 此配置<b>中</b>描述了<b>哪些资源</b> ？ 部署时，为项目创建一个唯一的名称空间（在<code>.gitlab-ci.yaml</code> <code>tests-${CI_COMMIT_REF_SLUG}</code>也指出了）并将其滚动到其中： <br><br><ol><li> 带有测试脚本的<b>ConfigMap</b> ； </li><li> 带有pod描述和指定<code>command</code>指令的作业，该指令仅运行测试； </li><li>  <b>PV和PVC</b> ，这使您可以存储测试数据。 </li></ol><br>  <code>if</code>在清单的开头，请注意引入条件-因此，必须将带有应用程序的Helm图表的其他YAML文件包装在<i>相反的</i>结构中，以便它们不会在测试期间部署。 那就是： <br><br><pre> <code class="plaintext hljs">{{- if ne .Values.global.run_tests "yes" }} ---    {{- end }}</code> </pre> <br> 但是，如果测试<b>需要某些基础结构</b> （例如Redis，RabbitMQ，Mongo，PostgreSQL等），则<i>可以</i>关闭其YAML。 将它们部署在测试环境中……当然，可以根据需要进行调整。 <br><br><h3> 最后一点 </h3><br> 因为 到目前为止，使用werf进行的组装和部署<i>仅</i>在构建服务器（使用gitlab-runner）上有效，并且带有测试的pod在向导上运行，您将需要在向导上创建<code>/mnt/tests</code>目录并将其提供给Runner， <b>例如，通过NFS</b> 。 带有说明的详细示例可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">K8s文档中</a>找到。 <br><br> 结果将是： <br><br><pre> <code class="plaintext hljs">user@kube-master:~$ cat /etc/exports | grep tests /mnt/tests IP_gitlab-builder/32(rw,nohide,insecure,no_subtree_check,sync,all_squash,anonuid=999,anongid=998) user@gitlab-runner:~$ cat /etc/fstab | grep tests IP_kube-master:/mnt/tests /mnt/tests nfs4 _netdev,auto 0 0</code> </pre> <br> 没有人禁止直接在gitlab-runner上制作NFS球，然后将其安装在吊舱中。 <br><br><h3> 注意事项 </h3><br> 您可能会问，如果您可以直接在shell运行器上运行测试脚本，为什么要使Job的创建复杂化？ 答案很简单... <br><br> 一些测试需要访问基础架构（MongoDB，RabbitMQ，PostgreSQL等），以检查使用它们的正确性。 我们将测试统一化-通过这种方法，可以轻松地包含这样的其他实体。 除此之外，我们在部署中获得了一种<b>标准</b>方法（即使使用NFS，也需要进行附加目录安装）。 <br><br><h2> 结果 </h2><br> 应用准备好的配置后会看到什么？ <br><br> 合并请求将显示有关在其最后一个管道中启动的测试的摘要统计信息： <br><br><img src="https://habrastorage.org/webt/c5/2w/ix/c52wixmvclqqugnkbxbwe7p6brm.png"><br><br> 您可以单击每个错误以获取详细信息： <br><br><img src="https://habrastorage.org/webt/3-/0p/dp/3-0pdpuwwpkbkye-dajzbbdpgde.png"><br><br>  <i><b>注意</b> ：细心的读者会注意到我们正在测试NodeJS应用程序，并且在屏幕截图-.NET中...不要惊讶：在本文准备过程中，测试第一个应用程序没有错误，但在另一个应用程序中发现了错误。</i> <br><br><h2> 结论 </h2><br> 显然，没有什么复杂的！ <br><br> 原则上，如果您已经有一个shell生成器并且可以运行，并且不需要Kubernetes，那么将其拧紧测试将是比这里描述的还要简单的任务。 在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GitLab CI文档中，</a>您将找到Ruby，Go，Gradle，Maven等示例。 <br><br><h2> 聚苯乙烯 </h2><br> 另请参阅我们的博客： <br><br><ul><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Kubernetes和GitLab的最佳CI / CD实践（审查和视频报告）</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Werf是我们在Kubernetes中的CI / CD工具（审查和视频报告）</a> ” <i>（Dmitry Stolyarov； 2019年5月27日在DevOpsConf上）</i> ； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在GitLab CI中创建自定义工作流的提示</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">用于在生产中进行持续集成和交付的GitLab CI</a> 。” </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN460897/">https://habr.com/ru/post/zh-CN460897/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN460883/index.html">关于不断变化的需求和小功能的好处世界中的生活</a></li>
+<li><a href="../zh-CN460885/index.html">根据Plesk在HighLoad ++ Siberia 2019上的有趣报告</a></li>
+<li><a href="../zh-CN460887/index.html">没有其他编程语言。 第三部分：物理</a></li>
+<li><a href="../zh-CN460891/index.html">如何使用量子计算创始人的方法区分好SCRUM与坏</a></li>
+<li><a href="../zh-CN460893/index.html">从内而外看向爱沙尼亚的迁移-利弊</a></li>
+<li><a href="../zh-CN460899/index.html">7月26日，Deworkacy-Rostelecom的DocOps</a></li>
+<li><a href="../zh-CN460901/index.html">为什么高级开发人员找不到工作</a></li>
+<li><a href="../zh-CN460905/index.html">企业家最少的SEO知识</a></li>
+<li><a href="../zh-CN460907/index.html">使用Liquibase在Spring Boot应用程序中管理数据库结构。 第二部分</a></li>
+<li><a href="../zh-CN460909/index.html">2050年我们会吃什么</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⏯️ 🧔 🥌 在MySQL中为Zabbix使用分区和大量监视对象 🧚🏽 😿 📼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="对于监视服务器和服务，我们长期以来一直成功使用基于Nagios和Munin的组合解决方案。 但是，这一堆有很多缺点，因此我们像许多人一样，正在积极利用Zabbix 。 在本文中，我们将讨论如何在增加指标数量和增加MySQL数据库数量时以最小的努力解决性能问题 
+
+ 在Zabbix中使用MySQL数据...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>在MySQL中为Zabbix使用分区和大量监视对象</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/lenvendo/blog/480082/"> 对于监视服务器和服务，我们长期以来一直成功使用基于Nagios和Munin的组合解决方案。 但是，这一堆有很多缺点，因此我们像许多人一样，正在积极利用<a href="https://www.zabbix.com/">Zabbix</a> 。 在本文中，我们将讨论如何在增加指标数量和增加MySQL数据库数量时以最小的努力解决性能问题 <br><a name="habracut"></a><br><h3> 在Zabbix中使用MySQL数据库时出现问题 </h3><br> 虽然数据库很小，并且其中存储的度量标准数量也很小，但是一切都很棒。 启动Zabbix Server本身的常规管家进程已成功从数据库中删除了过时的记录，从而阻止了该记录的增长。 但是，一旦捕获的指标数量增加并且数据库大小达到一定大小，一切都会变得更糟。 管家停止在指定的时间间隔内删除数据，旧数据开始保留在数据库中。 管家运行期间，Zabbix服务器上的负载增加，可能会持续很长时间。 显然，有必要以某种方式解决当前局势。 <br><br> 这是一个已知的问题，几乎所有在Zabbix上进行大量监视的人都面临着同样的事情。 也有几种解决方案：例如，用PostgreSQL或什至Elasticsearch代替MySQL，但是最简单，最成熟的解决方案是切换到将表数据存储在MySQL数据库中的分区表。 我们决定就这样走。 <br><br><h3> 从常规MySQL表迁移到分区表 </h3><br>  Zabbix有据可查，并且它存储度量的表是已知的。 这些表是： <code>history</code> （用于存储浮点值）， <code>history_str</code> （用于存储短字符串值）， <code>history_text</code> （用于存储长文本值）和<code>history_uint</code> （用于存储整数值）。 还有一个<code>trends</code>表，用于存储变化的动态，但是我们决定不去修改它，因为它的大小很小，稍后我们将返回它。 <br><br> 通常，需要处理哪些表是很明确的。 我们决定根据每月的数字（除 每月四个分区：从1号到7号，从8号到14号，从15号到21号，以及从22号到1号（下个月）。 困难在于，我们需要“快速”将所需的表转换为分区，而又不会中断Zabbix Server和收集指标。 <br><br> 奇怪的是，这些表的结构在此方面对我们有所帮助。 例如， <code>history</code>表具有以下结构： <br><br><pre> <code class="sql hljs">`itemid` bigint(20) unsigned NOT NULL, `clock` int(11) NOT NULL DEFAULT '0', `value` double(16,4) NOT NULL DEFAULT '0.0000', `ns` int(11) NOT NULL DEFAULT '0',</code> </pre> <br> 一会儿 <br><br><pre> <code class="sql hljs">KEY `history_1` (`itemid`,`clock`)</code> </pre> <br> 如您所见，每个指标最终都输入到一个表中，其中有两个对我们来说非常重要且方便的<b>itemid</b>和<b>clock</b>字段。 因此，我们可以很好地创建一个临时表，例如，使用名称<code>history_tmp</code> ，为其创建一个<code>history_tmp</code> ，然后将<code>history</code>表中的所有数据传输到该表，然后将<code>history</code>表重命名为<code>history_old</code> ，将<code>history_tmp</code>表重命名为<code>history</code> ，然后添加数据我们已经从<code>history_old</code>填充到<code>history</code>并删除了<code>history_old</code> 。 您可以完全安全地进行此操作，我们不会有任何损失，因为上面指出的<b>itemid</b>和<b>clock</b>字段提供了到特定时间而不是某种序列号的链接指标。 <br><br><h3> 过渡程序本身 </h3><br><blockquote> 注意！ 在开始任何操作之前，非常需要从数据库进行完整备份。 我们都是有生命的人，可能会在命令集中犯错，从而导致数据丢失。 是的 备份副本不会提供最大的相关性，但最好有一个总比没有好。 </blockquote> 因此，请勿关闭或停止任何操作。 最主要的是，在MySQL服务器本身上，应该有足够的可用磁盘空间，即 因此，对于上述每个表<code>history</code> ， <code>history_text</code> ， <code>history_str</code> ， <code>history_uint</code> ，至少要有足够的空间来创建后缀为“ _tmp”的表，因为它的数量与原始表的数量相同。 <br><br> 我们将不会为上述每个表多次描述所有内容，而仅以其中一个示例（ <code>history</code>表）的形式考虑所有内容。 <br><br> 因此，基于<code>history</code>表的结构创建一个空的<code>history_tmp</code>表。 <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> <span class="hljs-string"><span class="hljs-string">`history_tmp`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LIKE</span></span> <span class="hljs-string"><span class="hljs-string">`history`</span></span>;</code> </pre> <br> 我们创建所需的分区。 例如，让我们做一个月。 每个分区都是基于分区规则创建的，基于<b>时钟</b>字段的值，我们将其与时间戳进行比较： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> <span class="hljs-string"><span class="hljs-string">`history_tmp`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RANGE</span></span>( clock ) ( <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> p20190201 <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LESS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THAN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">UNIX_TIMESTAMP</span></span>(<span class="hljs-string"><span class="hljs-string">"2019-02-01 00:00:00"</span></span>)), <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> p20190207 <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LESS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THAN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">UNIX_TIMESTAMP</span></span>(<span class="hljs-string"><span class="hljs-string">"2019-02-07 00:00:00"</span></span>)), <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> p20190214 <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LESS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THAN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">UNIX_TIMESTAMP</span></span>(<span class="hljs-string"><span class="hljs-string">"2019-02-14 00:00:00"</span></span>)), <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> p20190221 <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LESS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THAN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">UNIX_TIMESTAMP</span></span>(<span class="hljs-string"><span class="hljs-string">"2019-02-21 00:00:00"</span></span>)), <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> p20190301 <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LESS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THAN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">UNIX_TIMESTAMP</span></span>(<span class="hljs-string"><span class="hljs-string">"2019-03-01 00:00:00"</span></span>)) );</code> </pre> <br> 该运算符将分区添加到我们创建的<code>history_tmp</code>表中。 让我们澄清一下， <b>时钟</b>字段值小于“ 2019-02-01 00:00:00”的数据将落入分区<i>p20190201</i> ，然后<b>时钟</b>字段值大于“ 2019-02-01 00:00:00”但小于的数据“ 2019-02-07 00:00:00”将加入聚会<i>p20190207</i> ，依此类推。 <br><blockquote>  <b>重要说明：</b>如果分区表中的数据中的时钟字段值大于或等于“ 2019-03-01 00:00:00”，会发生什么？ 由于没有适合该数据的分区，因此它们将不会落入表中并丢失。 因此，您一定不要忘记及时创建其他分区，以避免此类数据丢失（有关以下内容）。 </blockquote> 因此，准备了临时表。 填写数据。 该过程可能需要很长时间，但是幸运的是它不会阻止任何其他请求，因此您只需要耐心： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IGNORE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> <span class="hljs-string"><span class="hljs-string">`history_tmp`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> history;</code> </pre> <br> 初始填充期间不需要IGNORE关键字，因为表中仍然没有数据，但是，添加数据时将需要它。 此外，如果您必须中断该过程并在填写数据时重新开始，则可能会很有用。 <br><br> 因此，经过一段时间（甚至几个小时），第一次数据上传就过去了。 如您所知， <code>history_tmp</code>表现在不包含<code>history</code>表中的所有数据，而仅包含查询开始时其中的数据。 实际上，您可以在这里进行选择：要么再进行一次通过（如果填充过程持续很长时间），要么立即重命名上述表。 首先，让我们进行第二遍。 首先，我们需要了解<code>history_tmp</code>最后插入记录的时间： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">max</span></span>(clock) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> history_tmp;</code> </pre> <br> 假设您收到： <b>1551045645</b> 。 现在，我们在第二次数据填充中使用获得的值： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IGNORE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> <span class="hljs-string"><span class="hljs-string">`history_tmp`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> history <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> clock&gt;=<span class="hljs-number"><span class="hljs-number">1551045645</span></span>;</code> </pre> <br> 该段落应以更快的速度结束。 但是，如果第一次通过进行了数小时，而第二次也进行了很长时间，则进行第三次通过可能是正确的，该过程与第二次完全相似。 <br><br> 最后，我们再次执行以下操作来获得在<code>history_tmp</code>最后一次插入记录的时间： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">max</span></span>(clock) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> history_tmp;</code> </pre> <br> 假设您有<b>1551085645</b> 。 保留此值-我们将需要它来重新填充。 <br><br> 现在，实际上，当填充<code>history_tmp</code>的主要数据结束时，我们将重命名表： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">RENAME</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> history <span class="hljs-keyword"><span class="hljs-keyword">TO</span></span> history_old; <span class="hljs-keyword"><span class="hljs-keyword">RENAME</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> history_tmp <span class="hljs-keyword"><span class="hljs-keyword">TO</span></span> history; <span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span>;</code> </pre> <br> 为了避免将数据插入不存在的表的时刻，我们将此块设计为一个事务，因为在第一个RENAME执行之后直到第二个RENAME执行之后， <code>history</code>表将不存在。 但是，即使<code>history</code>表中的RENAME操作之间有一些数据到达而该表本身尚不存在（由于重命名），我们也会得到少量可以忽略的插入错误（我们有监视功能，没有库）。 <br><br> 现在，我们有了一个带有分区的新<code>history</code>表，但是在将数据插入到<code>history_tmp</code>表的最后一次传递中，它没有收到足够的数据。 但是我们在<code>history_old</code>表中有此数据，现在我们从那里共享它。 为此，我们将需要先前保存的值1551085645。为什么要保存此值，并且不使用当前<code>history</code>表中已存在的最大填充时间？ 因为已经有新数据进入了，所以我们会得到错误的时间。 因此，我们测量数据： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">IGNORE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> <span class="hljs-string"><span class="hljs-string">`history`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> history_old <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> clock&gt;=<span class="hljs-number"><span class="hljs-number">1551045645</span></span>;</code> </pre> <br> 完成此操作后，我们将在新的分区<code>history</code>表中保留旧表中的所有数据，以及重命名该表后出现的数据。  <code>history_old</code>表不再需要。 您可以立即删除它，也可以在删除它之前制作它的备份副本（如果您有偏执狂）。 <br><br> 对于<code>history_str</code> ， <code>history_text</code>和<code>history_uint</code> ，需要重复上述整个过程。 <br><br><h3>  Zabbix服务器设置中需要解决的问题 </h3><br> 现在，有关数据历史记录的数据库维护工作落在了我们的肩上。 这意味着Zabbix不再应该删除旧数据-我们将自己完成。 为了使Zabbix Server不会尝试清除数据本身，您需要转到Zabbix Web界面，在菜单中选择“管理”，然后选择“常规”子菜单，然后在右侧的下拉列表中选择“清除历史记录”。 在出现的页面上，取消选中“历史记录”组的所有复选框，然后单击“更新”按钮。 这将防止我们通过管家清理<code>history*</code>表。 <br><br> 在同一页面上注意“变化的动态”组。 这只是<code>trends</code>表，我们已承诺将返回该表。 如果对于您来说它也变得太大而需要分区，则也请取消选中该组，然后按照与<code>history*</code>表相同的方式处理该表。 <br><br><h3> 进一步的数据库维护 </h3><br> 如前所述，为了对分区表进行正常操作，必须及时创建分区。 您可以这样做： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> <span class="hljs-string"><span class="hljs-string">`history`</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> p20190307 <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> <span class="hljs-keyword"><span class="hljs-keyword">LESS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">THAN</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">UNIX_TIMESTAMP</span></span>(<span class="hljs-string"><span class="hljs-string">"2019-03-07 00:00:00"</span></span>)));</code> </pre> <br> 另外，由于我们创建了分区表并禁止Zabbix Server清理它们，因此删除旧数据现在是我们关注的问题。 幸运的是，根本没有问题。 只需删除不再需要其数据的分区即可完成。 <br><br> 例如： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> history <span class="hljs-keyword"><span class="hljs-keyword">DROP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> p20190201;</code> </pre> <br> 与具有日期范围的DELETE FROM语句不同，DROP PARTITION在几秒钟内执行，根本不会加载服务器，并且在MySQL中使用复制时也能顺利进行。 <br><br><h3> 结论 </h3><br> 所描述的解决方案是经过时间检验的。 数据量正在增长，但是性能没有明显下降。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN480082/">https://habr.com/ru/post/zh-CN480082/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN480070/index.html">反应收益：企业的福气？</a></li>
+<li><a href="../zh-CN480072/index.html">Kubernetes：为什么设置系统资源管理如此重要？</a></li>
+<li><a href="../zh-CN480076/index.html">对来自各种来源的数据进行多处理和核对</a></li>
+<li><a href="../zh-CN480078/index.html">React外设上的新前端库</a></li>
+<li><a href="../zh-CN480080/index.html">您在做笔记应用程序时需要什么？</a></li>
+<li><a href="../zh-CN480086/index.html">如何符合152-FZ的要求，保护客户的个人数据，而不是踩我们的耙子</a></li>
+<li><a href="../zh-CN480088/index.html">DevOps-好，但是该怎么办？ 如何减少体力劳动并取得理想的结果</a></li>
+<li><a href="../zh-CN480090/index.html">开源就是一切</a></li>
+<li><a href="../zh-CN480092/index.html">如何解决GO上的音频识别问题</a></li>
+<li><a href="../zh-CN480096/index.html">儿童期结束：人工智能（AI）创作的作品的版权</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

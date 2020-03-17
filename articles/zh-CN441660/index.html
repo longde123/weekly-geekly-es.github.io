@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⬜️ 🤡 🎅🏾 STM32F103C8T6作为具有FAT12文件系统的闪存驱动器 🤲🏻 🙅🏼 👨🏿‍🤝‍👨🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="开发设备时，通常需要将设置存储在工作程序外部。 无需使用特殊工具即可对其进行修改甚至更好。 
+
+ 考虑在最常见的STM F103微控制器中的存储选项。 著名的Blue Pill面包板也促进了流行。 
+
+
+ 内置的闪存不仅允许使用内部闪存中的FAT12文件系统存储和修改设置，而且还可以组织固件更新。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>STM32F103C8T6作为具有FAT12文件系统的闪存驱动器</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/441660/">开发设备时，通常需要将设置存储在工作程序外部。 无需使用特殊工具即可对其进行修改甚至更好。 <br><br> 考虑在最常见的STM F103微控制器中的存储选项。 著名的Blue Pill面包板也促进了流行。 <br><br><img src="https://habrastorage.org/webt/59/of/v3/59ofv3if6laponckzryro9ojnqa.jpeg" alt="图片"><br> 内置的闪存不仅允许使用内部闪存中的FAT12文件系统存储和修改设置，而且还可以组织固件更新。 <br><br> 根据文档，STM32F103C8T6具有64K闪存。 但是，几乎在所有STM32F103C8T6中都安装了128K。 各种来源也提到了这一点-他们通常会多出64K。 此“功能”使您可以将微控制器用作容量为128K-20K（系统需要FAT12）-固件大小的闪存驱动器。 <br><br> 许多尝试将此控制器用作闪存驱动器的发烧友都遇到了在FAT12文件系统模式下使用该控制器的问题。 用于删除/填充原来的磁盘映像。 但是，当与文件驱动器一起使用时，问题就开始了。 <br><a name="habracut"></a><br> 此问题在于访问扇区（块）的顺序不同。 加载磁盘映像后，会顺序进行记录，例如： <br><br>  -记录块号1 <br>  -记录块号2 <br>  -记录块号3。 <br><br> 写入FAT12数据时，可以任意进行记录： <br><br>  -记录第3块， <br>  -记录块号1 <br>  -记录块号2。 <br><br> 并且，由于写入闪存需要擦除整个1K页，因此，在驱动器中使用512字节的扇区时（并且您不能使用其他扇区），如果使用随机访问，则将擦除相邻扇区中的信息。 为了防止这种情况的发生，以上示例使用了一个512字节的数组来存储相邻扇区。 并记录如下： <br><br>  -确定页面开头的地址， <br>  -记住邻近的领域， <br>  -擦除页面， <br>  -写一个记忆的领域， <br>  -写入数据。 <br><br> 为了避免在没有需要的情况下进入铁的丛林，我在CubeMX中准备了该项目。 <br><br> 我将举一个通过HAL写入Flash的函数示例（usbd_storage_if.c） <br><br><pre><code class="plaintext hljs">//    flash void writeBuf (uint32_t page_addr, uint8_t *buf){ uint32_t erase_addr=get_erase_addr(page_addr); uint32_t buf_erase_addr; uint32_t buf32; if (page_addr != erase_addr) { buf_erase_addr=erase_addr; } else { buf_erase_addr=erase_addr+STORAGE_BLK_SIZ; } HAL_FLASH_Unlock(); //      set_buf_before_erase(buf_erase_addr); //       FLASH_EraseInitTypeDef EraseInitStruct; uint32_t PAGEError = 0; EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES; EraseInitStruct.PageAddress = erase_addr; EraseInitStruct.NbPages = 1; HAL_FLASHEx_Erase(&amp;EraseInitStruct,&amp;PAGEError); //    for (int i=0; i&lt;STORAGE_BLK_SIZ/4;i++) { HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD,buf_erase_addr,blk_buff[i]); buf_erase_addr+=4; } //   for (int i=0; i&lt;STORAGE_BLK_SIZ/4;i++) { buf32=*(uint32_t *)&amp;buf[i*4]; HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, page_addr,buf32); page_addr+=4; } HAL_FLASH_Lock(); }</code> </pre> <br> 我得到的二进制文件大小约为20K，因此我的数据存储页定义为0x08006000（24K）。 <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我们进行编译（示例的源代码可在此处获取）。</a> <br><br> 我们连接： <br><br><pre> <code class="plaintext hljs">[ 8193.499792] sd 4:0:0:0: Attached scsi generic sg2 type 0 [ 8193.502050] sd 4:0:0:0: [sdb] 128 512-byte logical blocks: (65.5 kB/64.0 KiB) [ 8193.502719] sd 4:0:0:0: [sdb] Write Protect is off [ 8193.502722] sd 4:0:0:0: [sdb] Mode Sense: 00 00 00 00 [ 8193.503439] sd 4:0:0:0: [sdb] Asking for cache data failed [ 8193.503445] sd 4:0:0:0: [sdb] Assuming drive cache: write through [ 8193.523812] sdb: [ 8193.526914] sd 4:0:0:0: [sdb] Attached SCSI removable disk</code> </pre> <br> 光盘确定了，一切都很好！ <br><br> 让我们开始形成分区并格式化磁盘。 <br><br> 在Linux上，从命令行非常简单： <br><br><pre> <code class="plaintext hljs">sudo fdisk /dev/sdb</code> </pre> <br><img src="https://habrastorage.org/webt/dz/hb/kw/dzhbkw8oy1iquunrkjjlm0lkg98.png"><br><br>  FAT12格式： <br><br><pre> <code class="plaintext hljs">sudo mkfs.fat /dev/sdb -F 12</code> </pre> <br> 复制文件以进行测试： <br><br><img src="https://habrastorage.org/webt/04/53/6a/04536a8w5yjlejtc92k_bykdumc.png"><br><br> 但是，请不要忘记，根据文档，闪存重写周期数 <br> 保证只在100,000之内。例如，格式化和写入单个30K文件将需要（根据此示例的调试日志）： <br><br><pre> <code class="plaintext hljs">00106 44 67 Write_FS blk_addr=003 0x08006600</code> </pre> <br>  106个重写周期。 <br><br> 问题仍然存在-如何通过直接访问FAT12文件读取数据？ <br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在下一篇文章</a>中有关此<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">内容。</a> <br> 感谢您的关注！ </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN441660/">https://habr.com/ru/post/zh-CN441660/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN441644/index.html">Tinkoff.ru如何使用Zeppelin自动化分析</a></li>
+<li><a href="../zh-CN441646/index.html">通用电气智能工厂如何运作</a></li>
+<li><a href="../zh-CN441648/index.html">Microsoft HoloLens 2简介</a></li>
+<li><a href="../zh-CN441650/index.html">网络研讨会Group-IB“关于在2019年保护CII对象的法医观点”</a></li>
+<li><a href="../zh-CN441654/index.html">如何去一家大型IT公司实习</a></li>
+<li><a href="../zh-CN441664/index.html">Linus Torvalds不相信ARM体系结构上的服务器会取代x86。 “出售64位模型-白痴”</a></li>
+<li><a href="../zh-CN441668/index.html">STM32。 减肥练习或控制者饮食</a></li>
+<li><a href="../zh-CN441674/index.html">测试布局？ 容易的</a></li>
+<li><a href="../zh-CN441676/index.html">如何结识PLUTO和HDSDR</a></li>
+<li><a href="../zh-CN441678/index.html">游戏龙卷风物理学：《正当防卫4》（交通）如何实现空气动力学</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

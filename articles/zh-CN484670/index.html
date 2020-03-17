@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕺🏻 ▪️ 🌷 PostgreSQL反模式：罕见的记录将达到JOIN的中间 🏪 👉🏿 📷</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="如果编写SQL查询时没有分析它们必须实现的算法 ，那么在性能方面通常不会带来任何好处。 
+
+ 这样的请求喜欢“消耗”处理器时间并几乎从头开始主动读取数据 。 而且，这不一定是某种复杂的查询，相反-编写的越简单，出现问题的机会就越大。 如果JOIN运算符起作用了... 
+
+
+ 就其本身而言，联接表既无...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL反模式：罕见的记录将达到JOIN的中间</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/484670/"> 如果编写<b>SQL查询时没有分析</b>它们必须实现<b>的算法</b> ，那么在性能方面通常不会带来任何好处。 <br><br> 这样的请求<b>喜欢“消耗”处理器时间并</b>几乎从头开始<b>主动读取数据</b> 。 而且，这不一定是某种复杂的查询，相反-编写的越简单，出现问题的机会就越大。 如果JOIN运算符起作用了... <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/oc/dt/ga/ocdtgatrtkdzckf0zqxd_03pd4i.png"></div><br> 就其本身而言，联接表既无害也无用-它只是一种工具，但是您必须能够使用它。 <br><a name="habracut"></a><br><h2> 监督分组 </h2><br> 首先，举一个非常简单的例子。 <br><br> 有100个条目的“词典”（例如，这些是俄罗斯联邦的地区）： <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_dict <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-number"><span class="hljs-number">100</span></span>) k; <span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_dict <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span>(k);</code> </pre> <br>  ...，并附有每10万个条目的相关“事实”表： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl_fact <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> (random() * <span class="hljs-number"><span class="hljs-number">100</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> k , (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">100000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> tbl_fact(k);</code> </pre><br> 现在，让我们尝试计算每个“区域”的值之和。 <br><br><h4> 如所听到的，它是书面的 </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> dk , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(fv) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl_fact f <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> tbl_dict d <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre><br> 读取数据本身仅花费了18％的时间，其余时间正在处理： <br><br><img src="https://habrastorage.org/webt/ly/wz/0c/lywz0cbrud70qpf5hxjwoswjtnm.png"><br>  <a href="https://explain.tensor.ru/archive/explain/f2dbfa8818913c7ca6a8a2e6c5137be4:0:2020-01-20" rel="nofollow">[看explain.tensor.ru]</a> <br><br> 所有这些都是因为Hash Join和Hash Aggregate必须处理10万条记录，这是因为我们希望<b>按链接表的字段</b>进行<b>分组</b> 。 <br><br><h4> 我们运用创造力 </h4><br> 但是此字段的值等于聚合表中该字段的值！ 也就是说，没有人打扰我们<b>首先将“事实”</b>归类<b>，然后才建立联系</b> ： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> dk , f.sum <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> k , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(v) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl_fact <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span> ) f <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> tbl_dict d;</code> </pre><br><img src="https://habrastorage.org/webt/je/i9/aj/jei9aj5rv4alb6ycdy77tfumuek.png"><br>  <a href="https://explain.tensor.ru/archive/explain/211c2a9e9bb2425fda450f90f1aa5d08:0:2020-01-20" rel="nofollow">[看explain.tensor.ru]</a> <br><br> 当然，该方法不是通用的，但是对于我们的“常规JOIN”情况<b>，时间增益是</b>请求的最小修改量的<b>2倍</b> -仅仅是由于“空”哈希联接，该联接仅接收100个条目而不是100K条目。 <br><br><h2> 不平等条件 </h2><br> 现在让任务复杂化：通过一个标识符连接3个表-主表和两个辅助表以及一些应用程序数据，我们将通过这些表进行过滤。 <br><br> 一个很小但很重要的说明：即使基于对目标任务的“应用”知识，我们已经知道， <b>第一个表（几乎是</b> （确定性：3：4），而<b>第二个</b> <b>表，几乎</b> <b>很少</b> （1：8）将满足条件。 ） <br><br> 我们要从主表和第一个辅助表中选择<b>100个ID</b>按偶数<b>且满足所有表条件的</b> <b>第一条记录</b> 。 表中的所有记录，让我们再次达到100K。 <br><br><div class="spoiler">  <b class="spoiler_title">脚本生成器</b> <div class="spoiler_text"><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> base( <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> , val <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> base <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> , (random() * <span class="hljs-number"><span class="hljs-number">1000</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">100000</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> ext1( <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> PRIMARY <span class="hljs-keyword"><span class="hljs-keyword">KEY</span></span> , conda <span class="hljs-built_in"><span class="hljs-built_in">boolean</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> ext1 <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> , (random() * <span class="hljs-number"><span class="hljs-number">4</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> &lt;&gt; <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-comment"><span class="hljs-comment">-- 3:4 FROM generate_series(1, 100000) id; CREATE TABLE ext2( id integer PRIMARY KEY , condb boolean ); INSERT INTO ext2 SELECT id , (random() * 8)::integer = 0 -- 1:8 FROM generate_series(1, 100000) id;</span></span></code> </pre></div></div><br><h4> 如所听到的，它是书面的 </h4><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> base.* , ext1.* <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> base <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> ext1 <span class="hljs-keyword"><span class="hljs-keyword">NATURAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> ext2 <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span> % <span class="hljs-number"><span class="hljs-number">2</span></span> = <span class="hljs-number"><span class="hljs-number">0</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> conda <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> condb <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> base.id <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">100</span></span>;</code> </pre><br><img src="https://habrastorage.org/webt/bx/mi/-t/bxmi-tyvohis60rn4eujozcty8i.png"><br>  <a href="https://explain.tensor.ru/archive/explain/11aff76b79f671a307edb86e3608ca98:0:2020-01-20" rel="nofollow">[看explain.tensor.ru]</a> <br><br><div class="spoiler">  <b class="spoiler_title">负数时间</b> <div class="spoiler_text"> 如此之多的循环经过了一些节点，以至于某些节点的舍入误差甚至被缩小。 关于计划中的类似文物，我将在<a href="https://pgconf.ru/2020/262963" rel="nofollow">PGConf.Russia</a>上进行<a href="https://pgconf.ru/2020/262963" rel="nofollow">讨论</a> 。 <br></div></div><br>  200毫秒及更多2GB数据被抽取-不能很好地记录100条记录！ <br><br><h4> 我们运用创造力 </h4><br> 我们使用以下方法来实现加速： <br><br><ol><li> 首先，我们了解到<b>只有在满足主表的条件</b> （偶数id） <b>的情况下，才</b>检查链接表的所有条件才有意义。 </li><li> 输出应按base.id排序，为此，此表的<b>主键</b>对我们来说是<b>完美</b>的！ </li><li> 我们不需要来自ext2的数据，仅用于验证条件。 这意味着可以将该表的所有工作<b>从JOIN到WHERE部分安全地删除</b> 。 并使用EXISTS进行检查，否则，如果根本没有这样的记录怎么办？ </li><li>  <b>仅当成功通过</b> base和ext2上<b>的其余检查时</b> ， <b>才</b>需要从ext1检索至少一些数据。 也就是说，与ext1的连接应该在使用base / ext2的所有操作之后进行，这可以使用LATERAL来实现。 </li><li> 这样，查询计划人员就不会尝试将ext2上的嵌套验证转换为JOIN（ <b>“隐藏在CASE下”</b>子查询）。 </li></ol><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> base.* , ext1.* <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> base , LATERAL( <span class="hljs-comment"><span class="hljs-comment">--       base SELECT * FROM ext1 WHERE id = base.id AND conda --   LIMIT 1 ) ext1 WHERE CASE WHEN base.id % 2 = 0 THEN EXISTS( --        SELECT NULL FROM ext2 WHERE id = base.id AND condb --   LIMIT 1 ) END ORDER BY base.id --     PK,       LIMIT 100;</span></span></code> </pre><br><img src="https://habrastorage.org/webt/wm/6i/y_/wm6iy_yamiw3cgby9ls6ui7f0pk.png"><br>  <a href="https://explain.tensor.ru/archive/explain/4a201a1ccbc44b066cb4a60c6a9f8b15:0:2020-01-20" rel="nofollow">[看explain.tensor.ru]</a> <br><br> 当然，请求变得更加复杂，但是值得<b>赢得13次时间和350次“暴饮暴食”是</b>值得的！ <br><br>  <i>让我再次提醒您，并非所有方法都被使用，并且并非总是如此，但是了解不会是多余的。</i> <br><br> 这也将很有趣： <br><br><ul><li>  <a href="https://habr.com/post/485398/">重磅加入字典</a> </li><li>  <a href="https://habr.com/post/479920/">sisyphus连接数组</a> </li><li>  <a href="https://habr.com/post/479508/">有害的JOIN和OR</a> </li><li>  <a href="https://habr.com/post/479298/">CTE加入CTE</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN484670/">https://habr.com/ru/post/zh-CN484670/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN484660/index.html">因果报应与作者身份疏远</a></li>
+<li><a href="../zh-CN484662/index.html">使用MCS服务处理高密度地震数据的试点项目</a></li>
+<li><a href="../zh-CN484664/index.html">另一个[几乎]无法删除的Android木马</a></li>
+<li><a href="../zh-CN484666/index.html">CES 2020上的新戴尔和Alienware：主要公告简介</a></li>
+<li><a href="../zh-CN484668/index.html">产品心态产品思维计划概述</a></li>
+<li><a href="../zh-CN484672/index.html">Hanipotans如何将黑客和在线诈骗者匿名化</a></li>
+<li><a href="../zh-CN484676/index.html">IB fakapy 2019-典型但不是很</a></li>
+<li><a href="../zh-CN484678/index.html">JetBrains研究实验室的公开讲座</a></li>
+<li><a href="../zh-CN484680/index.html">安德鲁·安（Andrew Un）的书《机器学习的激情》第33章的翻译</a></li>
+<li><a href="../zh-CN484686/index.html">为什么电阻用颜色表示？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

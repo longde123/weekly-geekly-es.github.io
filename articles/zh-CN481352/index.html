@@ -1,0 +1,125 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🥞 🏘️ 👈 DBA：从没有PK的表中清除克隆记录 📢 🆔 ☦️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在某些情况下， 在没有主键或其他唯一索引的表中，已经存在的记录的完整克隆会无意中掉落。 
+
+
+
+ 例如，将时间度量标准的值写入PostgreSQL COPY流，然后突然失败，并且部分完全相同的数据再次出现。 
+
+ 如何清除不必要的克隆数据库？ 
+
+ 当PK不是助手时 
+ 最简单的方法是完全避免这种情...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>DBA：从没有PK的表中清除克隆记录</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/481352/"> 在某些情况下， <b>在没有主键</b>或其他唯一索引的表中，已经存在的记录的完整克隆会无意中掉落。 <br><br><img src="https://habrastorage.org/webt/3z/gu/mn/3zgumnb2iyjc7s2oxvm23mgoqvs.png"><br><br> 例如，将时间度量标准的值写入PostgreSQL COPY流，然后突然失败，并且部分完全相同的数据再次出现。 <br><br> 如何清除不必要的克隆数据库？ <br><a name="habracut"></a><br><h2> 当PK不是助手时 </h2><br> 最简单的方法是完全避免这种情况的发生。 例如，滚动相同的PRIMARY KEY。 但这并不总是可能的，而不增加存储的数据量。 <br><br> 例如，如果原始系统的精度高于数据库中字段的精度： <br><br><pre><code class="plaintext hljs">metric | ts | data -------------------------------------------------- cpu.busy | 2019-12-20 00:00:00 | {"value" : 12.34} cpu.busy | 2019-12-20 00:00:01 | {"value" : 10} cpu.busy | 2019-12-20 00:00:01 | {"value" : 11.2} cpu.busy | 2019-12-20 00:00:03 | {"value" : 15.7}</code> </pre> <br> 你注意到了吗？ 倒数秒不是从00:00:02倒数秒开始写入ts的，而是从应用程序的角度来看仍然非常有效（毕竟，数据值是不同的！）。 <br><br> 当然，您可以设置<b><i>PK（公制，ts）</i></b> ，但是这样我们将获得有效数据的插入冲突。 <br><br> 您可以制作<b><i>PK（公制，ts，数据）</i></b> -但这将大大增加其体积，我们将不再使用。 <br><br> 因此，最正确的选择是制作一个常规的非唯一索引<b><i>（度量标准，ts），</i></b>并在出现问题后进行处理（如果确实存在）。 <br><br><h2>  “阵营战争已经开始” </h2><br> 发生了某种意外，现在我们必须从表中销毁克隆记录。 <br><br><img src="https://habrastorage.org/webt/zn/3e/l4/zn3el4t8lmhorjz4wo0zkzxydv0.png"><br><br> 让我们模拟源数据： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> (<span class="hljs-string"><span class="hljs-string">'a'</span></span>, <span class="hljs-number"><span class="hljs-number">1</span></span>) , (<span class="hljs-string"><span class="hljs-string">'a'</span></span>, <span class="hljs-number"><span class="hljs-number">3</span></span>) , (<span class="hljs-string"><span class="hljs-string">'b'</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>) , (<span class="hljs-string"><span class="hljs-string">'b'</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>) <span class="hljs-comment"><span class="hljs-comment">-- oops! , ('c', 3) , ('c', 3) -- oops!! , ('c', 3) -- oops!! , ('d', 4) , ('e', 5) ;</span></span></code> </pre> <br> 然后我们的手颤抖了三下，Ctrl + V卡住了，现在... <br><br> 首先，让我们了解一下我们的表可能非常大，因此，在找到所有克隆之后，建议我们从字面上“戳一下手指”删除<b>特定记录，而不必再次搜索它们</b> 。 <br><br> 有一种方法- <a href="https://postgrespro.ru/docs/postgresql/12/ddl-system-columns">通过ctid寻址</a> ，即特定记录的物理标识符。 <br><br> 也就是说，首先，我们需要在表行的全部内容的上下文中收集ctid记录。 最简单的选择是将整行都转换为文本： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> , array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre><br><pre> <code class="plaintext hljs">t | ctids --------------------------------- (e,5) | {"(0,9)"} (d,4) | {"(0,8)"} (c,3) | {"(0,5)","(0,6)","(0,7)"} (b,2) | {"(0,3)","(0,4)"} (a,3) | {"(0,2)"} (a,1) | {"(0,1)"}</code> </pre><br><div class="spoiler">  <b class="spoiler_title">是否可以不进行投射？</b> <div class="spoiler_text"> 原则上，在大多数情况下是可能的。 在开始使用此表中<b>没有类型运算符的类型</b>字段之前，请执行以下<b>操作</b> ： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>, x point); <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T; <span class="hljs-comment"><span class="hljs-comment">-- ERROR: could not identify an equality operator for type tbl</span></span></code> </pre></div></div><br> 是的，我们立即看到，如果阵列中有多个记录，那么就是所有克隆。 让我们只留下它们： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>(ctids[<span class="hljs-number"><span class="hljs-number">2</span></span>:]) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> ) T;</code> </pre> <br><pre> <code class="plaintext hljs">unnest ------ (0,6) (0,7) (0,4)</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">矮个情人</b> <div class="spoiler_text"> 您可以这样写： <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>((array_agg(ctid))[<span class="hljs-number"><span class="hljs-number">2</span></span>:]) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>;</code> </pre> </div></div><br> 由于序列化字符串本身的值对我们而言并不有趣，因此我们只需将其从子查询的返回列中扔出即可。 <br><br> 剩下的就是让DELETE使用我们收到的集合： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DELETE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> ctid = <span class="hljs-keyword"><span class="hljs-keyword">ANY</span></span>(<span class="hljs-built_in"><span class="hljs-built_in">ARRAY</span></span>( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">unnest</span></span>(ctids[<span class="hljs-number"><span class="hljs-number">2</span></span>:]) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> array_agg(ctid) ctids <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> T::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span> ) T )::tid[]);</code> </pre> <br> 检查一下自己： <br><br><img src="https://habrastorage.org/webt/pw/u_/ip/pwu_ipqwtdh7zs0bj7q2fjceqls.png"><br>  <a href="https://explain.tensor.ru/archive/explain/4f0d922638ebeba13538e5e62d4ba8a7:0:2019-12-20">[看explain.tensor.ru]</a> <br><br> 是的，没错：我们选择了3条记录作为整个表的唯一Seq扫描，并且Delete节点使用<b>一次遍历使用Tid Scan</b>搜索数据： <br><br><pre> <code class="plaintext hljs">-&gt; Tid Scan on tbl (actual time=0.050..0.051 rows=3 loops=1) TID Cond: (ctid = ANY ($0))</code> </pre> <br> 如果您清除了许多记录， <a href="https://habr.com/ru/post/479656/">请不要忘记驱动VACUUM ANALYZE</a> 。 <br><br> 让我们检查一张更大的桌子，花很多钱： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">TRUNCATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl; <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">chr</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">ascii</span></span>(<span class="hljs-string"><span class="hljs-string">'a'</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>) + (random() * <span class="hljs-number"><span class="hljs-number">26</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>) k <span class="hljs-comment"><span class="hljs-comment">-- a..z , (random() * 100)::integer v -- 0..99 FROM generate_series(1, 10000) i;</span></span></code> </pre> <br><img src="https://habrastorage.org/webt/lq/gq/en/lqgqenwrgbsh76eaqvwtre45gho.png"><br>  <a href="https://explain.tensor.ru/archive/explain/713828b2913c3ca66760181ad6f956d0:0:2019-12-20">[看explain.tensor.ru]</a> <br><br> 因此，该方法可以成功工作，但是必须谨慎使用。 因为对于每条删除的记录，在“ Tid扫描”中有一个数据页读数，在“删除”中有一个数据页读数。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN481352/">https://habr.com/ru/post/zh-CN481352/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN481342/index.html">星期五民意调查：谈论语言</a></li>
+<li><a href="../zh-CN481344/index.html">IntelliJ平台团队2020年计划</a></li>
+<li><a href="../zh-CN481346/index.html">汽车行业的5大变化</a></li>
+<li><a href="../zh-CN481348/index.html">Pentest活动目录。 第一部分</a></li>
+<li><a href="../zh-CN481350/index.html">谁在普列塞茨克国际机场工作</a></li>
+<li><a href="../zh-CN481354/index.html">TelegramBot。 基本功能。 分开飞，肉饼分开。 （第二部分）</a></li>
+<li><a href="../zh-CN481356/index.html">谢谢，2019</a></li>
+<li><a href="../zh-CN481358/index.html">C ++俄罗斯：过去的样子</a></li>
+<li><a href="../zh-CN481360/index.html">本周结果：Rambler和Twitch同意，将在俄罗斯联邦引入电子劳务，Facebook将创建自己的操作系统</a></li>
+<li><a href="../zh-CN481362/index.html">Docker Web应用程序的SSL证书</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

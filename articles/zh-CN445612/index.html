@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏼‍🎓 🏻 👨🏻‍🔬 基于drbd + ocfs2的小型Web集群的集群存储 🌏 🎍 👨🏾‍🤝‍👨🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我们将谈论的是： 
+ 如何基于drbd + ocfs2解决方案为两个服务器快速部署共享存储。 
+
+ 对谁有用： 
+ 本教程对系统管理员以及选择存储实现方法或想要尝试解决方案的任何人都是有用的。 
+
+ 我们拒绝了什么决定，为什么 
+ 通常，我们面临这样一种情况，我们需要在小型Web群集上实现具有良好读...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>基于drbd + ocfs2的小型Web集群的集群存储</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/445612/">  <b>我们将谈论的是：</b> <br> 如何基于drbd + ocfs2解决方案为两个服务器快速部署共享存储。 <br><br>  <b>对谁有用：</b> <br> 本教程对系统管理员以及选择存储实现方法或想要尝试解决方案的任何人都是有用的。 <br><br><h3> 我们拒绝了什么决定，为什么 </h3><br> 通常，我们面临这样一种情况，我们需要在小型Web群集上实现具有良好读写性能的通用存储。 我们尝试了各种方法来为我们的项目实施一个通用存储库，但是几乎没有几个指标能使我们满意。 现在让我们解释一下原因。 <br><br><ul><li> Glusterfs的读写性能不适合我们，同时读取大量文件存在问题，CPU负载很高。 可以通过直接在模块中申请文件来解决读取文件的问题，但这并不总是适用的，并且通常是不正确的。 </li></ul><br><ul><li>  Ceph不喜欢过多的复杂性，这对于具有2-4个服务器的项目可能是有害的，尤其是在随后为项目提供服务的情况下。 同样，还有严重的性能限制，迫使您像glusterfs一样构建单独的存储集群。 </li></ul><br><ul><li> 使用一台nfs服务器实现共享存储会引起容错问题。 </li></ul><br><ul><li>  s3是用于某些任务的极佳的流行解决方案，但它不是文件系统，因此缩小了范围。 </li></ul><a name="habracut"></a><br><ul><li>  lsyncd。 如果我们已经开始谈论“非文件系统”，那么值得尝试这种流行的解决方案。 它不仅不适合双向交换（但是如果您确实愿意，那么可以），它还不能在大量文件上稳定运行。 所有内容的一个不错的补充就是它是单线程的。 原因在于程序的体系结构：它使用inotify监视程序在启动和重新扫描期间挂起的工作对象。  Rsync用作传输介质。 </li></ul><br><h3> 教程：如何基于drbd + ocfs2部署共享存储 </h3><br> 对我们来说最方便的解决方案之一是一堆<b>ocfs2 + drbd</b> 。 现在，我们将向您展示如何基于解决方案数据库为两个服务器快速部署共享存储。 但首先，要了解一些组件： <br><br>  <b>DRBD</b>是标准的Linux存储系统，它允许在服务器块之间复制数据。 主要应用是构建容错存储。 <br><br>  <b>OCFS2</b>是一个文件系统，提供了多个系统共享使用同一存储的功能。  Linux发行版中包含一个内核模块和用于FS的用户空间工具。  OCFS2不仅可以在DRBD之上使用，而且可以在具有多个连接的iSCSI之上使用。 在我们的示例中，我们使用DRBD。 <br><br> 所有操作均以最小配置在ubuntu服务器18.04上执行。 <br><br>  <b>步骤1.配置DRBD：</b> <b><br></b> <br> 在文件/etc/drbd.d/drbd0.res中，我们描述了虚拟块设备/ dev / drbd0： <br><br><pre><code class="plaintext hljs">resource drbd0 { syncer { rate 1000M; } net { allow-two-primaries; after-sb-0pri discard-zero-changes; after-sb-1pri discard-secondary; after-sb-2pri disconnect; } startup { become-primary-on both; } on drbd1 { meta-disk internal; device /dev/drbd0; disk /dev/vdb1; address 10.10.10.192:7789; } on drbd2 { meta-disk internal; device /dev/drbd0; disk /dev/vdb1; address 10.10.10.193:7789; } }</code> </pre> <br>  <i>内部元磁盘</i> -使用相同的块设备存储元数据 <br>  <i>设备/ dev / drbd0-</i>使用/ dev / drbd0作为drbd卷的路径。 <br>  <i>磁盘/ dev / vdb1-</i>使用/ dev / vdb1 <br>  <i>同步器{速率1000M；</i>  <i>}</i> -使用千兆通道带宽 <br>  <i>allow-two-primaries-</i>一个重要的选项，允许接受两个主服务器上的更改 <br>  <i>after-sb-0pri，after-sb-1pri，after-sb-2pri-</i>当检测到裂脑时负责节点操作的选项。 有关更多详细信息，请参见文档。 <br>  <i>都成为primary-on-</i>将两个节点都设为primary。 <br><br> 在我们的案例中，我们有两个绝对相同的VM，专用的虚拟网络带宽为10吉比特。 <br><br> 在我们的示例中，两个群集节点的网络名称为drbd1和drbd2。 为了正确操作，必须映射/ etc / hosts中节点的名称和ip地址。 <br><br><pre> <code class="bash hljs">10.10.10.192 drbd1 10.10.10.193 drbd2</code> </pre> <br>  <b>步骤2.配置节点：</b> <br><br> 在两台服务器上，我们执行： <br><pre> <code class="bash hljs">drbdadm create-md drbd0</code> </pre> <br><img src="https://habrastorage.org/webt/8d/_s/cu/8d_scupzapinrfgfcfybxipxfbk.png" alt="图片"><br><br><pre> <code class="bash hljs">modprobe drbd drbdadm up drbd0 cat /proc/drbd</code> </pre> <br> 我们得到以下内容： <br><br><img src="https://habrastorage.org/webt/c4/zp/kx/c4zpkxvdupcfqbbmfccp3bbjqws.png" alt="图片"><br><br> 您可以开始同步。 在第一个节点上，您需要执行以下操作： <br><pre> <code class="bash hljs">drbdadm primary --force drbd0</code> </pre> <br> 我们来看一下状态： <br><pre> <code class="bash hljs">cat /proc/drbd</code> </pre> <br><img src="https://habrastorage.org/webt/vd/nn/xd/vdnnxdcrmmufhf7sdz_gxyzcezy.png" alt="图片"><br><br> 很好，同步已经开始。 我们正在等待结尾，看图片： <br><br><img src="https://habrastorage.org/webt/fx/j1/5k/fxj15krpylof_f5uok4zq8xfznq.png" alt="图片"><br><br>  <b>步骤3.在第二个音符上开始同步：</b> <br><br><pre> <code class="bash hljs">drbdadm primary --force drbd0</code> </pre><br> 我们得到以下内容： <br><br><img src="https://habrastorage.org/webt/zl/8f/_w/zl8f_ws9wacesr88mtoo9b_dxbm.png" alt="图片"><br><br> 现在我们可以从两台服务器写入drbd了。 <br><br>  <b>步骤4.安装并配置ocfs2。</b> <br><br> 我们将使用相当简单的配置： <br><br><pre> <code class="plaintext hljs">cluster: node_count = 2 name = ocfs2cluster node: number = 1 cluster = ocfs2cluster ip_port = 7777 ip_address = 10.10.10.192 name = drbd1 node: number = 2 cluster = ocfs2cluster ip_port = 7777 ip_address = 10.10.10.193 name = drbd2</code> </pre><br> 它需要在两个节点上的<i>/etc/ocfs2/cluster.conf中</i>编写。 <br><br> 在任何节点上的drbd0上创建FS： <br><pre> <code class="bash hljs">mkfs.ocfs2 -L <span class="hljs-string"><span class="hljs-string">"testVol"</span></span> /dev/drbd0</code> </pre><br> 在这里，我们使用默认设置在drbd0上创建了一个标记为testVol的文件系统。 <br><br><img src="https://habrastorage.org/webt/9l/sr/gl/9lsrgldfbco5qrzkjhkoh4oefly.png" alt="图片"><br><br> 必须在/ etc / default / o2cb中进行设置（如我们的配置文件中所示） <br><pre> <code class="bash hljs">O2CB_ENABLED=<span class="hljs-literal"><span class="hljs-literal">true</span></span> O2CB_BOOTCLUSTER=ocfs2cluster</code> </pre> <br> 并在每个节点上执行： <br><pre> <code class="bash hljs">o2cb register-cluster ocfs2cluster</code> </pre> <br> 在那之后，打开并将我们需要的所有单元添加到启动中： <br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> drbd o2cb ocfs2 systemctl start drbd o2cb ocfs2</code> </pre> <br> 在安装过程中，其中一部分已经运行。 <br><br>  <b>步骤5.将安装点添加到两个节点上的fstab中：</b> <br><br><pre> <code class="bash hljs">/dev/drbd0 /media/shared ocfs2 defaults,noauto,heartbeat=<span class="hljs-built_in"><span class="hljs-built_in">local</span></span> 0 0</code> </pre> <br> 必须预先创建<i>/ media / shared</i>目录。 <br><br> 在这里，我们使用noauto选项，这意味着将在启动时不挂载FS（我更喜欢通过systemd挂载网络FS），并且heartbeat = local，这意味着在每个节点上使用心跳服务。 还有一个全局心跳，它更适合大型集群。 <br><br> 接下来，您可以挂载<i>/ media / shared</i>并检查内容的同步。 <br><br>  <b>做完了！</b> 结果，我们获得了或多或少的容错存储，并具有可扩展性和良好的性能。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN445612/">https://habr.com/ru/post/zh-CN445612/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN445594/index.html">用于创建响应型网站而无需访问该网站的工具</a></li>
+<li><a href="../zh-CN445596/index.html">Kubernetes提示和技巧：NGINX Ingress中的个性化错误页面</a></li>
+<li><a href="../zh-CN445600/index.html">[民意测验]主持人，他们错了吗</a></li>
+<li><a href="../zh-CN445602/index.html">PHP Russia 2019：第一个联赛语言的“舞台”</a></li>
+<li><a href="../zh-CN445608/index.html">游戏结束：分析人士报告，游戏领域的DDoS攻击数量有所增加</a></li>
+<li><a href="../zh-CN445618/index.html">我们在Rust上编写一个操作系统。 实现页面内存（新）</a></li>
+<li><a href="../zh-CN445620/index.html">UX编写器做什么？</a></li>
+<li><a href="../zh-CN445622/index.html">Java 12的新功能：Teeing收集器</a></li>
+<li><a href="../zh-CN445626/index.html">兔子洞有多深？ CLRium＃5：垃圾收集器</a></li>
+<li><a href="../zh-CN445632/index.html">从Python剧院海报的解析器到Telegram机器人。 第二部分</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

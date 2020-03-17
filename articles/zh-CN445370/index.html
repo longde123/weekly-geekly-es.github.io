@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍿 🔈 🖐🏽 Prometheus 2中的TSDB分析 👨🏿‍🚒 🐦 🤚🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Prometheus 2中的时间序列数据库（TSDB）是工程解决方案的一个很好的例子，它在数据存储和查询执行的速度以及资源效率方面对Prometheus 1中的v2存储进行了重大改进。 我们在Percona监视和管理（PMM）中实施了Prometheus 2，我有机会了解了Prometheus 2 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Prometheus 2中的TSDB分析</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/funcorp/blog/445370/"><img src="https://habrastorage.org/webt/vd/66/kh/vd66khzvg2fd68xtdpwyq462zm0.png"><br><br>  Prometheus 2中的时间序列数据库（TSDB）是工程解决方案的一个很好的例子，它在数据存储和查询执行的速度以及资源效率方面对Prometheus 1中的v2存储进行了重大改进。 我们在Percona监视和管理（PMM）中实施了Prometheus 2，我有机会了解了Prometheus 2 TSDB的性能。 在本文中，我将讨论这些观察结果。 <br><a name="habracut"></a><br><h3> 普罗米修斯的平均工作量 </h3><br> 对于那些习惯于处理主数据库的人，Prometheus的常规工作量非常好奇。 数据积累的速度趋于达到一个稳定的值：通常，您监视的服务发送大约相同数量的指标，并且基础结构的变化相对较慢。 <br><br> 信息请求可能来自不同的来源。 其中一些警报（例如警报）也努力争取稳定和可预测的价值。 其他问题（例如用户查询）可能会导致峰值，尽管这在大多数负载中并不常见。 <br><br><h3> 负载测试 </h3><br> 在测试期间，我专注于累积数据的能力。 我使用以下脚本在Linode服务上部署了用Go 1.10.1（作为PMM 1.14的一部分）编译的Prometheus 2.3.2。 为了最实际地生成负载<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">，</a>我使用此<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">StackScript</a>启动了几个具有实际负载的MySQL节点（Sysbench TPC-C测试），每个节点都模拟了10个Linux / MySQL节点。 <br><br> 以下所有测试均在具有八个虚拟核心和32 GB内存的Linode服务器上执行，在该服务器上启动了监视200个MySQL实例的20个负载模拟。 或者，以普罗米修斯的术语来说，有800个目标，每秒440次刮擦，每秒38万个样本和170万个活动时间序列。 <br><br><h3> 设计方案 </h3><br> 包括Prometheus 1.x在内的传统数据库的常用方法是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">内存限制</a> 。 如果不足以承受负载，您将遇到很大的延迟，并且某些请求将无法满足。 <br> 使用<code>storage.tsdb.min-block-duration</code>键配置Prometheus 2中的内存使用情况，该键确定在刷新到磁盘之前记录将在内存中存储多长时间（默认为2小时）。 所需的内存量将取决于时间序列，标签的数量以及净输入流中数据收集（抓取）的强度。 在磁盘空间方面，Prometheus的目标是每条记录（样本）使用3个字节。 另一方面，内存要求更高。 <br><br> 尽管可以配置块大小，但不建议手动对其进行配置，因此您将面临为Prometheus提供所需存储量的需求。 <br><br> 如果没有足够的内存来支持传入的度量标准流，则Prometheus将从内存不足中跌落，或者OOM杀手将到达内存。 <br><br> 当Prometheus内存不足时，添加交换以延迟崩溃并没有真正的帮助，因为使用此功能会导致爆炸性的内存消耗。 我认为事情就是Go，它的垃圾收集器以及它如何与swap一起工作。 <br><br> 另一种有趣的方法是将磁头块设置为在特定时间重置为磁盘，而不是从过程开始就对其进行计数。 <br><br><img src="https://habrastorage.org/webt/bl/pi/qv/blpiqvwimzifjmfyzbrplkagkcg.png"><br><br> 从图中可以看到，磁盘刷新每两小时发生一次。 如果将min-block-duration参数更改为一小时，则这些放电将在每小时开始的半小时内发生。 <br><br>  <i>如果要在Prometheus安装中使用此图形和其他图形，则可以使用此<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">仪表板</a> 。</i>  <i>它是专为PMM开发的，但稍作修改后即可适用于Prometheus的任何安装。</i> <br><br> 我们有一个称为头块的活动块，该块存储在内存中。 具有较旧数据的块可通过<code>mmap()</code>访问。 这样就无需分别配置高速缓存，也意味着如果要请求比head块更早的数据，则需要为操作系统高速缓存保留足够的空间。 <br><br> 这也意味着Prometheus虚拟内存的使用量看起来会很高，这不值得担心。 <br><br><img src="https://habrastorage.org/webt/ls/sl/qp/lsslqpxvg2lgzvpvbnupee0qbik.png"><br><br> 另一个有趣的设计点是使用WAL（预写日志）。 从存储文档中可以看到，Prometheus使用WAL以避免由于跌落而造成的损失。 不幸的是，确保数据可生存性的特定机制没有得到很好的记录。  Prometheus版本2.3.2每10秒将WAL刷新到磁盘上，并且该参数不是用户可配置的。 <br><br><h3> 密封件 </h3><br>  Prometheus TSDB是在LSM存储库（日志结构合并-具有合并的日志结构树）的映像中设计的：头块定期刷新到磁盘，而压缩机制将几个块组合在一起，以防止在请求期间扫描太多的块。 在这里，您可以看到一天工作后在测试系统上观察到的块数。 <br><br><img src="https://habrastorage.org/webt/4o/96/oy/4o96oyaps3brdaqea7n1qyerpgw.png"><br><br> 如果您想进一步了解存储库，可以研究meta.json文件，该文件包含有关可用块及其显示方式的信息。 <br><br><pre> <code class="json hljs">{       <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPZDPD1D9R019JS87TPV5MPE"</span></span>,       <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536472800000</span></span>,       <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536494400000</span></span>,       <span class="hljs-attr"><span class="hljs-attr">"stats"</span></span>: {               <span class="hljs-attr"><span class="hljs-attr">"numSamples"</span></span>: <span class="hljs-number"><span class="hljs-number">8292128378</span></span>,               <span class="hljs-attr"><span class="hljs-attr">"numSeries"</span></span>: <span class="hljs-number"><span class="hljs-number">1673622</span></span>,               <span class="hljs-attr"><span class="hljs-attr">"numChunks"</span></span>: <span class="hljs-number"><span class="hljs-number">69528220</span></span>       },       <span class="hljs-attr"><span class="hljs-attr">"compaction"</span></span>: {               <span class="hljs-attr"><span class="hljs-attr">"level"</span></span>: <span class="hljs-number"><span class="hljs-number">2</span></span>,               <span class="hljs-attr"><span class="hljs-attr">"sources"</span></span>: [                       <span class="hljs-string"><span class="hljs-string">"01CPYRY9MS465Y5ETM3SXFBV7X"</span></span>,                       <span class="hljs-string"><span class="hljs-string">"01CPYZT0WRJ1JB1P0DP80VY5KJ"</span></span>,                       <span class="hljs-string"><span class="hljs-string">"01CPZ6NR4Q3PDP3E57HEH760XS"</span></span>               ],               <span class="hljs-attr"><span class="hljs-attr">"parents"</span></span>: [                       {                               <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPYRY9MS465Y5ETM3SXFBV7X"</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536472800000</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536480000000</span></span>                       },                       {                               <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPYZT0WRJ1JB1P0DP80VY5KJ"</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536480000000</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536487200000</span></span>                       },                       {                               <span class="hljs-attr"><span class="hljs-attr">"ulid"</span></span>: <span class="hljs-string"><span class="hljs-string">"01CPZ6NR4Q3PDP3E57HEH760XS"</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"minTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536487200000</span></span>,                               <span class="hljs-attr"><span class="hljs-attr">"maxTime"</span></span>: <span class="hljs-number"><span class="hljs-number">1536494400000</span></span>                       }               ]       },       <span class="hljs-attr"><span class="hljs-attr">"version"</span></span>: <span class="hljs-number"><span class="hljs-number">1</span></span> }</code> </pre> <br>  Prometheus中的密封圈与将磁头冲洗到磁盘的时间有关。 此时，可以执行几个这样的操作。 <br><br><img src="https://habrastorage.org/webt/ux/a4/85/uxa485qrm1zltefalsn54euc0ei.png"><br><br> 显然，密封在任何方面都是不受限制的，并且可能在运行时导致大的磁盘I / O跳转。 <br><br><img src="https://habrastorage.org/webt/kw/bt/ty/kwbttykmjwhoopodhlsl5mbm0-i.png"><br><br>  CPU下载高峰 <br><br><img src="https://habrastorage.org/webt/zk/ls/x2/zklsx2x0txpjym_defuhn0qkoqi.png"><br><br> 当然，这对系统的速度有相当负面的影响，对于LSM存储来说也是一个严峻的挑战：如何制作密封以支持高查询速度而又不会造成过多开销？ <br><br> 在压缩过程中使用内存看起来也很有趣。 <br><br><img src="https://habrastorage.org/webt/vb/bn/ei/vbbneip1p05brkhxasvmglr6-ts.png"><br><br> 我们可以看到压缩之后，大多数内存如何从“已缓存”状态变为“空闲”状态：这意味着从那里删除了潜在有价值的信息。 奇怪的是，是否在这里使用<code>fadvice()</code>或其他最小化技术，还是由缓存中的数据从压缩期间破坏的块中释放出来引起的？ <br><br><h3> 崩溃恢复 </h3><br> 灾难恢复需要时间，这是合理的。 对于每秒一百万条记录的传入流，在考虑到SSD驱动器的情况下执行恢复时，我不得不等待大约25分钟。 <br><br><pre> <code class="plaintext hljs">level=info ts=2018-09-13T13:38:14.09650965Z caller=main.go:222 msg="Starting Prometheus" version="(version=2.3.2, branch=v2.3.2, revision=71af5e29e815795e9dd14742ee7725682fa14b7b)" level=info ts=2018-09-13T13:38:14.096599879Z caller=main.go:223 build_context="(go=go1.10.1, user=Jenkins, date=20180725-08:58:13OURCE)" level=info ts=2018-09-13T13:38:14.096624109Z caller=main.go:224 host_details="(Linux 4.15.0-32-generic #35-Ubuntu SMP Fri Aug 10 17:58:07 UTC 2018 x86_64 1bee9e9b78cf (none))" level=info ts=2018-09-13T13:38:14.096641396Z caller=main.go:225 fd_limits="(soft=1048576, hard=1048576)" level=info ts=2018-09-13T13:38:14.097715256Z caller=web.go:415 component=web msg="Start listening for connections" address=:9090 level=info ts=2018-09-13T13:38:14.097400393Z caller=main.go:533 msg="Starting TSDB ..." level=info ts=2018-09-13T13:38:14.098718401Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536530400000 maxt=1536537600000 ulid=01CQ0FW3ME8Q5W2AN5F9CB7R0R level=info ts=2018-09-13T13:38:14.100315658Z caller=web.go:467 component=web msg="router prefix" prefix=/prometheus level=info ts=2018-09-13T13:38:14.101793727Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536732000000 maxt=1536753600000 ulid=01CQ78486TNX5QZTBF049PQHSM level=info ts=2018-09-13T13:38:14.102267346Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536537600000 maxt=1536732000000 ulid=01CQ78DE7HSQK0C0F5AZ46YGF0 level=info ts=2018-09-13T13:38:14.102660295Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536775200000 maxt=1536782400000 ulid=01CQ7SAT4RM21Y0PT5GNSS146Q level=info ts=2018-09-13T13:38:14.103075885Z caller=repair.go:39 component=tsdb msg="found healthy block" mint=1536753600000 maxt=1536775200000 ulid=01CQ7SV8WJ3C2W5S3RTAHC2GHB level=error ts=2018-09-13T14:05:18.208469169Z caller=wal.go:275 component=tsdb msg="WAL corruption detected; truncating" err="unexpected CRC32 checksum d0465484, want 0" file=/opt/prometheus/data/.prom2-data/wal/007357 pos=15504363 level=info ts=2018-09-13T14:05:19.471459777Z caller=main.go:543 msg="TSDB started" level=info ts=2018-09-13T14:05:19.471604598Z caller=main.go:603 msg="Loading configuration file" filename=/etc/prometheus.yml level=info ts=2018-09-13T14:05:19.499156711Z caller=main.go:629 msg="Completed loading of configuration file" filename=/etc/prometheus.yml level=info ts=2018-09-13T14:05:19.499228186Z caller=main.go:502 msg="Server is ready to receive web requests."</code> </pre> <br> 恢复过程的主要问题是高内存消耗。 尽管在正常情况下服务器可以在相同的内存量下稳定运行，但当服务器崩溃时，由于OOM可能不会使服务器上升。 我发现的唯一解决方案是禁用数据收集，提升服务器，允许其恢复并在已启用收集的情况下重新启动。 <br><br><h3> 热身 </h3><br> 在预热期间应记住的另一行为是刚启动后生产率低下和资源消耗高的比率。 在某些（但不是全部）启动过程中，我观察到CPU和内存上的负担很重。 <br><br><img src="https://habrastorage.org/webt/kj/lr/2d/kjlr2dlj8mqn0od1dvwlu5sxxdu.png"><br><br><img src="https://habrastorage.org/webt/k_/ua/-y/k_ua-yqqzwh9elxbcoceu6tsrry.png"><br><br> 内存不足表明Prometheus从一开始就无法配置所有费用，并且某些信息会丢失。 <br><br> 我没有找到造成处理器和内存高负载的确切原因。 我怀疑这是由于在高频头中创建了新的时间序列。 <br><br><h3>  CPU负载峰值 </h3><br> 除了会产生较高I / O负载的密封之外，我还注意到每两分钟处理器上的负载会急剧增加。 突发持续时间较长，且传入流很高，这看起来像是Go垃圾回收器引起的，至少某些内核已完全加载。 <br><br><img src="https://habrastorage.org/webt/uv/jp/os/uvjposyjmeulwwpvafsdqw_dn20.png"><br><br><img src="https://habrastorage.org/webt/rd/pp/se/rdppsepllvvc85uijh14zwzbsqc.png"><br><br> 这些飞跃并不是那么微不足道。 看起来，当它们发生时，内部入口点和Prometheus度量标准将变得不可访问，从而在相同的时间间隔内导致数据缺口。 <br><br><img src="https://habrastorage.org/webt/_h/aw/cn/_hawcnvkbwin1kzi8opatkmgbku.png"><br><br> 您还可以注意到Prometheus导出器关闭了一秒钟。 <br><br><img src="https://habrastorage.org/webt/i7/5s/3g/i75s3g5_1bemugg59bgcuiiv-xq.png"><br><br> 我们可以看到与垃圾回收（GC）的相关性。 <br><br><img src="https://habrastorage.org/webt/vx/sn/_y/vxsn_ykevsbir37pexcvjunszn8.png"><br><br><h3> 结论 </h3><br>  Prometheus 2中的TSDB速度很快，能够使用相当适度的硬件处理数百万个时间序列，同时每秒处理数千个记录。  CPU和磁盘I / O的利用率也令人印象深刻。 我的示例显示了每个使用的内核每秒高达200,000个指标。 <br><br> 要计划扩展，您需要记住足够的内存量，这应该是实际内存。 我观察到的已使用内存量约为传入流的每秒每100,000个条目5 GB，再加上操作系统缓存约8 GB的占用内存。 <br><br> 当然，仍然需要大量工作来控制CPU和磁盘I / O的爆发，鉴于TSDB Prometheus 2与InnoDB，TokuDB，RocksDB，WiredTiger相比还很年轻，这不足为奇，但是它们在生命周期开始时都有类似的问题。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN445370/">https://habr.com/ru/post/zh-CN445370/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN445358/index.html">在Unity中组织事件系统-通过游戏设计师的眼光</a></li>
+<li><a href="../zh-CN445360/index.html">JavaScript采访的5个典型任务：解析和解决方案</a></li>
+<li><a href="../zh-CN445362/index.html">《分布式系统》一书。 设计模式</a></li>
+<li><a href="../zh-CN445366/index.html">由于SIMD块，如何根据Baikal-T1处理器上的GOST 28147-89加快加密速度</a></li>
+<li><a href="../zh-CN445368/index.html">使用成千上万的虚拟用户对游戏进行负载测试</a></li>
+<li><a href="../zh-CN445372/index.html">机器视觉与人类直觉：破坏对象识别程序操作的算法</a></li>
+<li><a href="../zh-CN445378/index.html">迷宫：分类，生成，寻找解决方案</a></li>
+<li><a href="../zh-CN445380/index.html">现代PHP美丽而高效</a></li>
+<li><a href="../zh-CN445384/index.html">e娥四号任务-着陆模块和中继卫星上的科学设备</a></li>
+<li><a href="../zh-CN445390/index.html">普通人的IDE或我们为什么选择摩纳哥</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

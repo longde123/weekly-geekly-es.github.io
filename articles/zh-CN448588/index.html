@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>❔ 👩🏾‍⚕️ 🏂 Yandex.Cloud中的网络负载均衡器的体系结构 👌🏿 👨🏽‍💼 👨🏾‍💼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="嗨，我是Sergey Elantsev，我正在用Yandex.Cloud开发网络负载平衡器 。 以前，我领导了Yandex门户L7平衡器的开发-我的同事开玩笑说，不管我做什么，我都会得到一个平衡器。 我将告诉Habr的读者如何管理云平台中的负载，如何看到实现该目标的理想工具以及如何朝着构建此工具的方...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Yandex.Cloud中的网络负载均衡器的体系结构</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/448588/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/8p/s5/_f/8ps5_f3kanb-pmkeuze4rdd971i.png" width="430"></div><br> 嗨，我是Sergey Elantsev，我正在用Yandex.Cloud开发<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">网络负载平衡器</a> 。 以前，我领导了Yandex门户L7平衡器的开发-我的同事开玩笑说，不管我做什么，我都会得到一个平衡器。 我将告诉Habr的读者如何管理云平台中的负载，如何看到实现该目标的理想工具以及如何朝着构建此工具的方向发展。 <a name="habracut"></a><br><br> 首先，我们介绍一些术语： <br><br><ul><li>  VIP（虚拟IP）-平衡器IP地址 </li><li> 服务器，后端，实例-运行了应用程序的虚拟机 </li><li>  RIP（真实IP）-服务器IP地址 </li><li> 运行状况检查-服务器可用性检查 </li><li> 亚利桑那州可用区-数据中心中的隔离基础架构 </li><li> 区域-不同AZ的结合 </li></ul><br> 负载平衡器解决了三个主要任务：它们自己执行平衡，提高服务的容错能力并简化其扩展。 通过自动流量控制确保容错能力：平衡器监视应用程序的状态，并从平衡中排除未通过活动性测试的实例。 通过在各个实例之间均匀地分配负载以及动态更新实例列表，可以确保扩展。 如果平衡不够均匀，那么某些实例的负载将超过其工作容量限制，并且服务的可靠性将降低。 <br><br> 负载均衡器通常根据其运行的OSI模型按协议级别进行分类。  Cloud Balancer在TCP级别（对应于第四级别L4）上运行。 <br><br> 让我们继续看一下Cloud Balancer架构。 我们将逐步提高详细程度。 我们将平衡器组件分为三类。 配置平面类负责用户交互，并存储系统的目标状态。 控制平面存储系统的当前状态并管理数据平面类中的系统，这些数据平面类直接负责将流量从客户端传递到您的实例。 <br><br><h3> 数据平面 </h3><br> 流量落在称为边界路由器的昂贵设备上。 为了提高容错能力，几个这样的设备在一个数据中心中同时工作。 然后，流量进入平衡器，平衡器通过BGP向客户端通告所有AZ的任意播IP地址。 <br><br><img src="https://habrastorage.org/webt/pc/jl/-n/pcjl-nh1bq9egjh1d0iv3o4u9bc.jpeg"><br><br> 流量是通过ECMP传输的-这是一种路由策略，根据该策略，可能有多个同样好的到达目的地的路由（在我们的示例中，目的地将是目的地IP地址），并且可以将数据包发送到其中的任何一个。 我们还根据以下方案支持多个访问区域中的工作：我们宣布每个区域中的地址，流量属于最近的区域，并且尚未超出该范围。 在后面的文章中，我们将更详细地研究流量发生了什么。 <br><br><h3> 配置平面 </h3><br> 配置平面的关键组件是API，通过该API执行平衡器的基本操作：创建，删除，更改实例的组成，获取运行状况检查结果等。一方面，这是REST API；另一方面，我们经常使用云中的框架gRPC，因此我们将REST“转换”为gRPC，然后仅使用gRPC。 任何请求都会导致创建一系列在Yandex.Cloud worker共享池上执行的异步幂等任务。 任务以可以随时挂起然后重新启动的方式编写。 这提供了可伸缩性，可重复性和日志记录操作。 <br><br><img src="https://habrastorage.org/webt/yb/ru/-c/ybru-c8q6hucu-tdqfybedsjrcu.jpeg"><br><br> 结果，来自API的任务将向平衡器服务控制器发出请求，该请求用Go编写。 他可以添加和删除平衡器，更改后端和设置的组成。 <br><br><img src="https://habrastorage.org/webt/wr/v3/v7/wrv3v7dfm1_k48ztxc9wfzvvq48.jpeg"><br><br> 该服务将其状态存储在Yandex数据库中-这是一个分布式托管数据库，您也将很快可以使用。 正如我们已经<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">说过的</a>那样，在Yandex.Cloud中，狗食的概念有效：如果我们自己使用我们的服务，那么我们的客户也将很高兴使用它们。  Yandex数据库是实现此概念的一个示例。 我们将所有数据存储在YDB中，而不必考虑维护和扩展数据库：这些问题已为我们解决，我们将数据库用作服务。 <br><br> 我们回到平衡器控制器。 它的任务是保存有关平衡器的信息，将检查虚拟机是否准备就绪的任务发送给运行状况检查控制器。 <br><br><h3> 健康检查控制器 </h3><br> 它接收更改检查规则的请求，将其保存在YDB中，将任务分发到healtcheck节点并汇总结果，然后将结果保存到数据库并发送到负载均衡器控制器。 然后，他将请求更改数据平面中群集的组成的请求发送到loadbalancer-node，我将在下面进行讨论。 <br><br><img src="https://habrastorage.org/webt/qx/p2/ll/qxp2llhomz9slemwamgsylotd4k.jpeg" width="600"><br><br> 让我们更多地讨论健康检查。 它们可以分为几类。 审核具有不同的成功标准。  TCP检查需要在固定时间内成功建立连接。  HTTP检查需要成功连接和状态码为200的响应。 <br><br> 同样，检查在动作类别上也有所不同-它们是主动的还是被动的。 被动检查只是监视流量发生了什么，而无需采取任何特殊措施。 这在L4上效果不佳，因为它取决于更高级别协议的逻辑：在L4上，没有有关操作花费了多长时间以及连接是否好坏的信息。 主动检查要求平衡器将请求发送到每个服务器实例。 <br><br> 大多数负载均衡器自行执行活动性检查。 我们Cloud决定将系统的这些部分分开以提高可伸缩性。 这种方法将使我们能够增加平衡器的数量，同时保持对服务的运行状况检查请求的数量。 检查由单独的运行状况检查节点执行，这些节点用于分片和复制测试目标。 无法从一台主机进行检查，因为它可能会失败。 然后，我们将无法获得他检查的实例的状态。 我们对至少三个运行状况检查节点上的任何实例执行检查。 我们使用一致的哈希算法在节点之间分片的检查目标。 <br><br><img src="https://habrastorage.org/webt/6u/r4/pp/6ur4pp9sk-nqulkepwvqhvb-kdg.jpeg"><br><br> 平衡与健康检查的分离会导致问题。 如果运行状况检查节点绕过平衡器（当前不为流量提供服务）向实例发出请求，则会出现一种奇怪的情况：资源似乎仍处于活动状态，但流量无法到达。 我们通过以下方式解决此问题：我们保证通过平衡器获得运行状况检查流量。 换句话说，使用来自客户端和运行状况检查的流量来移动数据包的方案几乎没有什么不同：在两种情况下，数据包都将到达平衡器，平衡器会将它们传递到目标资源。 <br><br> 不同之处在于，客户端会请求VIP，而健康检查会参考每个单独的RIP。 这里出现一个有趣的问题：我们为用户提供了在灰色IP网络中创建资源的机会。 想象一下，有两个不同的云所有者为平衡器隐藏了他们的服务。 此外，它们每个都在10.0.0.1/24子网中具有相同地址的资源。 您需要能够以某种方式区分它们，在这里您需要深入研究Yandex.Cloud虚拟网络的设备。 有关更多详细信息，请参阅<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">about：cloud事件中</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">视频</a> ，由于网络是多层的并且具有可通过子网ID区分的隧道，对我们来说很重要。 <br><br>  Healthcheck节点使用所谓的准IPv6地址访问平衡器。 准地址是在其中保护IPv4地址和用户子网ID的IPv6地址。 流量落在平衡器上，从平衡器中提取资源的IPv4地址，将IPv6替换为IPv4，然后将数据包发送到用户的网络。 <br><br> 反向流量的处理方式相同：平衡器从运行状况检查器中看到目标是灰色网络，并将IPv4转换为IPv6。 <br><br><h3>  VPP-数据平面的核心 </h3><br> 平衡器是基于矢量数据包处理（VPP）技术实现的，矢量数据包处理（VPP）技术是Cisco的一种用于网络流量数据包处理的框架。 在我们的案例中，该框架在网络设备的用户空间管理库-数据平面开发套件（DPDK）上运行。 这提供了很高的数据包处理性能：内核中的中断少得多，内核空间和用户空间之间没有上下文切换。 <br><br> 通过将软件包组合成批处理，VPP可以走得更远，并从系统中挤出更多性能。 生产率的提高归因于积极使用现代处理器的缓存。 使用两个数据高速缓存（数据包由“向量”处理，数据彼此接近）和指令高速缓存：在VPP中，数据包处理遵循一个图，在该图的节点中有执行一项任务的功能。 <br><br> 例如，VPP中IP数据包的处理按以下顺序进行：首先，在解析节点中解析数据包头，然后将其发送到根据路由表进一步转发数据包的节点。 <br><br> 有点硬派。  VPP的作者并没有妥协使用处理器缓存，因此典型的程序包矢量处理代码包含手动矢量化处理：存在一个处理周期，在这种处理周期中，会处理“我们队列中有四个数据包”之类的情况，然后处理两个相同的情况，然后-一。 通常使用预取指令将数据加载到高速缓存中，以在随后的迭代中加快对其的访问速度。 <br><br><pre><code class="cpp hljs">n_left_from = frame-&gt;n_vectors; <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (n_left_from &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>) { vlib_get_next_frame (vm, node, next_index, to_next, n_left_to_next); <span class="hljs-comment"><span class="hljs-comment">// ... while (n_left_from &gt;= 4 &amp;&amp; n_left_to_next &gt;= 2) { // processing multiple packets at once u32 next0 = SAMPLE_NEXT_INTERFACE_OUTPUT; u32 next1 = SAMPLE_NEXT_INTERFACE_OUTPUT; // ... /* Prefetch next iteration. */ { vlib_buffer_t *p2, *p3; p2 = vlib_get_buffer (vm, from[2]); p3 = vlib_get_buffer (vm, from[3]); vlib_prefetch_buffer_header (p2, LOAD); vlib_prefetch_buffer_header (p3, LOAD); CLIB_PREFETCH (p2-&gt;data, CLIB_CACHE_LINE_BYTES, STORE); CLIB_PREFETCH (p3-&gt;data, CLIB_CACHE_LINE_BYTES, STORE); } // actually process data /* verify speculative enqueues, maybe switch current next frame */ vlib_validate_buffer_enqueue_x2 (vm, node, next_index, to_next, n_left_to_next, bi0, bi1, next0, next1); } while (n_left_from &gt; 0 &amp;&amp; n_left_to_next &gt; 0) { // processing packets by one } // processed batch vlib_put_next_frame (vm, node, next_index, n_left_to_next); }</span></span></code> </pre> <br> 因此，运行状况检查将IPv6转换为VPP，从而将其转换为IPv4。 这是由图节点完成的，我们称为算法NAT。 对于反向流量（以及从IPv6到IPv4的转换），存在算法NAT的相同节点。 <br><br><img src="https://habrastorage.org/webt/ug/ju/n4/ugjun48y3qurodsxpuia5lfbhn0.jpeg" width="400"><br><br> 来自平衡器客户端的直接流量通过图的节点，这些图本身执行平衡。 <br><br><img src="https://habrastorage.org/webt/p4/eq/uv/p4equvplkheuowkh-ddthjgxeou.jpeg"><br><br> 第一个节点是粘性会话。 它为已建立的会话存储<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">5元组</a>哈希。  5元组包括从其发送信息的客户端的地址和端口，可用于接收流量的资源的地址和端口以及网络协议。 <br><br>  5元组哈希有助于我们在后续的一致哈希节点中执行较少的计算，还可以更好地处理平衡器后面的资源列表中的更改。 当数据包到达没有会话的平衡器时，它将被发送到一致的哈希节点。 这是使用一致的散列进行平衡的地方：我们从可用的“实时”资源列表中选择一种资源。 然后，将数据包发送到NAT节点，该节点实际上将替换目标地址并重新计算校验和。 如您所见，我们遵循VPP规则-与相似的计算相似，对相似的计算进行分组以提高处理器缓存的效率。 <br><br><h3> 一致的散列 </h3><br> 我们为什么选择他，这是怎么回事？ 首先，请考虑上一个任务-从列表中选择资源。 <br><br><img src="https://habrastorage.org/webt/ab/ez/jl/abezjle6p5u8g54jthaylj5duhi.jpeg"><br><br> 对于非一致性哈希，将计算来自传入数据包的哈希，然后通过将该哈希除以资源数的余数从列表中选择资源。 只要列表保持不变，这种方案就行得通：我们总是将具有相同5元组的数据包发送到相同实例。 例如，如果某些资源停止响应运行状况检查，则对于哈希的很大一部分，选择将更改。  TCP连接将在客户端断开：以前到达实例A的数据包可能会开始落入实例B，而实例B对此数据包的会话并不熟悉。 <br><br> 一致的哈希解决了上述问题。 解释此概念的最简单方法如下：假设您有一个环，可以通过散列（例如，通过IP：端口）在其中分配资源。 资源的选择是轮子旋转一个角度，该角度由数据包中的哈希值确定。 <br><br><img src="https://habrastorage.org/webt/qg/rt/yq/qgrtyq_obonzlczzouq4tcshaqq.jpeg"><br><br> 在更改资源组成时，这可以最大程度地减少流量的重新分配。 删除资源只会影响给定资源所在的一致性哈希环的那一部分。 添加资源也会改变分布，但是我们有一个粘性会话节点，该节点使我们不必将已建立的会话切换到新资源。 <br><br> 我们研究了如何在平衡器和资源之间引导流量。 现在让我们处理反向流量。 它遵循与验证流量相同的模式-通过算法NAT，即通过反向NAT 44（用于客户端流量）和通过NAT 46（用于运行状况检查流量）。 我们坚持自己的计划：我们将健康检查流量和实际用户流量统一起来。 <br><br><h3> 负载均衡器节点和组件组装 </h3><br>  VPP中平衡器和资源的组成由本地服务-负载平衡器节点报告。 他订阅了来自负载平衡器-控制器的事件流，从而能够建立VPP的当前状态与从控制器接收到的目标状态之间的差异。 我们得到了一个封闭的系统：来自API的事件到达平衡器控制器，该控制器设置了healthcheck-controller任务来检查资源的“活动性”。 依次在健康检查节点中设置任务并汇总结果，然后将其发送回平衡器控制器。 负载平衡器节点订阅来自控制器的事件并更改VPP的状态。 在这样的系统中，每个服务仅知道其对相邻服务的需求。 连接的数量有限，我们有机会独立开发和扩展各个细分市场。 <br><br><img src="https://habrastorage.org/webt/rk/a0/vi/rka0viu8dbcd7irrdx5m0quwfpw.jpeg"><br><br><h3> 避免了什么问题 </h3><br> 我们在控制平面上的所有服务都是用Go编写的，并具有良好的缩放和可靠性功能。  Go有许多用于构建分布式系统的开源库。 我们积极使用GRPC，所有组件都包含服务发现的开源实现-我们的服务监视彼此的性能，可以动态更改其组成，并将其与GRPC平衡联系在一起。 对于指标，我们还使用开源解决方案。 在数据平面上，我们获得了不错的性能和大量的资源储备：事实证明，组装一个可以依靠VPP而不是铁网卡的性能的支架非常困难。 <br><br><h3> 问题与解决方案 </h3><br> 什么不是很好？ 在Go中，内存管理是自动的，但是确实会发生内存泄漏。 处理它们的最简单方法是启动goroutine，不要忘记完成它们。 结论：监视Go程序的内存消耗。 通常，一个很好的指标是goroutine的数量。 这个故事有一个优点：Go可以轻松地在运行时获取数据-内存消耗，正在运行的goroutine的数量以及许多其他参数。 <br><br> 此外，Go可能不是功能测试的最佳选择。 它们非常冗长，标准的“以CI包运行所有内容”方法不太适合它们。 事实是，功能测试对资源的要求更高，因为它们存在真正的超时。 因此，由于CPU忙于单元测试，因此测试可能会失败。 结论：如果可能，请与单元测试分开执行“大量”测试。 <br><br> 微服务事件架构比整体架构更复杂：在数十台不同的计算机上获取日志不是很方便。 结论：如果您在进行微服务，请立即考虑进行跟踪。 <br><br><h3> 我们的计划 </h3><br> 我们将启动内部平衡器IPv6-balancer，添加对Kubernetes脚本的支持，继续分片我们的服务（现在仅对healthcheck-node和healthcheck-ctrl进行了阴影处理），添加新的Healthchecks，并实现智能检查聚合。 我们正在考虑使我们的服务更加独立的可能性-使其不彼此直接通信，而是使用消息队列。 兼容SQS的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Yandex Message Queue</a>服务最近出现在云中。 <br><br> 最近，Yandex负载平衡器已公开发布。 学习服务的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文档</a> ，以对您方便的方式管理平衡器，并提高项目的容错能力！ </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN448588/">https://habr.com/ru/post/zh-CN448588/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN448574/index.html">SEO例程的一项任务：三步解决方案</a></li>
+<li><a href="../zh-CN448576/index.html">晶体管故事第二部分：来自战争的坩埚</a></li>
+<li><a href="../zh-CN448580/index.html">CQ CQ CQ节日快乐，业余无线电！ #WorldAmateurRadioDay</a></li>
+<li><a href="../zh-CN448582/index.html">在Kotlin上创建提示计算器：它如何工作？</a></li>
+<li><a href="../zh-CN448584/index.html">使用英语介词时的7个常见错误以及如何避免它们</a></li>
+<li><a href="../zh-CN448590/index.html">熟悉的陌生人或再次关于使用设计模式</a></li>
+<li><a href="../zh-CN448594/index.html">Sophos提供免费的防病毒和防火墙（UTM，NGFW）</a></li>
+<li><a href="../zh-CN448596/index.html">跑步机上的平板电脑支架或搜索自由步</a></li>
+<li><a href="../zh-CN448600/index.html">Windows 10如何探索DHCP严重漏洞检测另外两个安全错误</a></li>
+<li><a href="../zh-CN448602/index.html">监控死了吗？ -实时监控</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

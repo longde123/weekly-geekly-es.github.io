@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😏 🕵🏿 🛡️ 高负载系统中的数据库扩展 👋🏿 🚆 👨🏾‍⚖️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在Pyrus的上一次内部集会上，我们谈到了现代分布式存储，Pyrus的首席执行官兼创始人Maxim Nalsky分享了他对FoundationDB的第一印象。 在本文中，我们讨论了在选择一种用于扩展结构化数据存储的技术时所面临的技术细微差别。 
+
+ 当用户一段时间无法使用该服务时，它会令人不愉快，但...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>高负载系统中的数据库扩展</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/440306/">在Pyrus的上一次内部集会上，我们谈到了现代分布式存储，Pyrus的首席执行官兼创始人Maxim Nalsky分享了他对FoundationDB的第一印象。 在本文中，我们讨论了在选择一种用于扩展结构化数据存储的技术时所面临的技术细微差别。 <br><br> 当用户一段时间无法使用该服务时，它会令人不愉快，但仍不会致命。 但是丢失客户数据绝对是不可接受的。 因此，我们会严格评估任何通过两到三个参数来存储数据的技术。 <a name="habracut"></a> 其中一些指示了服务的当前负载。 <br><br><img src="https://habrastorage.org/webt/1c/p2/gm/1cp2gmh6pjentlkkocm1k2msgay.png">  <font color="#777777">当前负载。</font>  <font color="#777777">我们选择技术时要考虑这些指标的增长。</font> <br><br><h2> 客户端服务器架构 </h2><br> 经典的客户端-服务器模型是分布式系统的最简单示例。 服务器是同步点；它允许多个客户端以协调的方式一起做某事。 <br><br><img src="https://habrastorage.org/webt/jq/hy/ee/jqhyeeqxfebgrvhzvkwsrz58jhy.png">  <font color="#777777">客户端-服务器交互的非常简化的方案。</font> <br><br> 客户端-服务器体系结构中不可靠的是什么？ 显然，服务器可能会崩溃。 当服务器崩溃时，所有客户端都无法工作。 为了避免这种情况，人们提出了主从关系（在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">政治</a>上现在是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">正确的，称为领导者跟随者</a> ）。 最重要的是有两台服务器，所有客户端都与主服务器通信，第二台服务器上的所有数据都被简单地复制。 <br><br><img src="https://habrastorage.org/webt/tk/bo/vu/tkbovuwxni03qjfpkx7m5iwmfie.png">  <font color="#777777">具有将数据复制到关注者的客户端-服务器体系结构。</font> <br><br> 显然，这是一个更可靠的系统：如果主服务器崩溃，则所有数据的副本都在从机上，并且可以快速将其复制。 <br><br> 了解复制的工作原理非常重要。 如果它是同步的，那么事务必须同时存储在领导者和跟随者上，这可能会很慢。 如果复制是异步的，则故障转移后您可能会丢失一些数据。 <br><br> 如果领导者在每个人都睡觉的夜晚掉下来，会发生什么？ 有关于追随者的数据，但没有人告诉他他现在是领导者，客户也没有与他建立联系。 好吧，让我们赋予跟随者一种逻辑，即当与领导者失去联系时，他开始以自己为主要对象。 然后，我们可以轻松地分裂大脑-领导者和跟随者之间的连接断开时发生冲突，并且双方都认为他们是主要的。 这确实发生在许多系统上， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">例如RabbitMQ</a> ，这是当今最流行的排队技术。 <br><br> 要解决这些问题，请组织自动故障转移-添加第三个服务器（见证人，见证人）。 它确保我们只有一位领导者。 而且，如果领导者下车，则跟随者会自动以最小的停机时间开启，该停机时间可以减少到几秒钟。 当然，采用这种方案的客户必须事先知道领导者和跟随者的地址，并实现他们之间自动重新连接的逻辑。 <br><br><img src="https://habrastorage.org/webt/n1/ve/aq/n1veaqz67xiw-ozn0cnsudwx7cw.png">  <font color="#777777">证人保证只有一名领导人。</font>  <font color="#777777">如果领导者掉下，那么跟随者会自动打开。</font> <br><br> 这样的系统现在可以与我们一起使用。 有一个主数据库，一个备用数据库，有一个见证人，是的-有时我们是早上来的，看到切换发生在晚上。 <br><br> 但是这种方案也有缺点。 假设您正在安装Service Pack或在领导服务器上更新OS。 在此之前，您手动切换了从动装置上的负载，然后...掉落了！ 灾难，您的服务不可用。 如何保护自己免受此伤害？ 添加第三个备份服务器-另一个关注者。 三是一种幻数。 如果希望系统可靠地运行，那么两台服务器是不够的，则需要三台。 一个用于维护，第二个跌倒，第三个遗留。 <br><br><img src="https://habrastorage.org/webt/57/et/ao/57etao8c03-skbgh4_evsna3vwu.png">  <font color="#777777">如果前两个服务器不可用，则第三台服务器将提供可靠的操作。</font> <br><br> 总而言之，冗余度应等于2。 一个冗余是不够的。 因此，在磁盘阵列中，人们开始使用RAID6方案而不是RAID5，一次幸免了两个磁盘的损坏。 <br><br><h2> 交易次数 </h2><br> 事务的四个基本要求是众所周知的：原子性，一致性，隔离性和持久性（原子性，一致性，隔离性，耐久性-ACID）。 <br><br> 当我们谈论分布式数据库时，我们的意思是必须缩放数据。 读取范围非常好-数千个事务可以并行读取数据而没有任何问题。 但是，当其他事务在读取的同时写入数据时，可能会产生各种不良影响。 很容易出现一个事务将读取相同记录的不同值的情况。 这里有一些例子。 <br><br>  <b>脏读。</b> 在第一个事务中，我们两次发送相同的请求：接收所有ID = 1的用户。如果第二个事务更改了该行然后回滚，则数据库一方面看不到任何更改，但另一方面第一笔交易将读取Joe的不同年龄值。 <br><br><img src="https://habrastorage.org/webt/qj/zl/d6/qjzld6frtj0ogu9lpfoss5wva2k.png"><br><br>  <b>不可重复读取。</b> 另一种情况是，写入事务成功完成，并且读取事务在执行同一请求期间接收到不同的数据。 <br><br><img src="https://habrastorage.org/webt/85/wd/ug/85wdugy_ypmk0cfxpxl1hy5pf-s.png"><br><br> 在第一种情况下，客户端读取数据库中通常不存在的数据。 在第二种情况下，客户端两次都从数据库读取数据，但是它们是不同的，尽管读取是在同一事务中进行的。 <br><br>  <b>幻像读取是</b>当我们重新读取同一事务中的范围并获得不同的行集时。 在中间的某个地方，另一个事务进入并插入或删除了记录。 <br><br><img src="https://habrastorage.org/webt/k4/65/yq/k465yqehsgbjd0ertvg7poziaie.png"><br><br> 为了避免这些不良影响，现代DBMS实施了锁定机制（一个事务将访问它当前正在使用的数据限制到其他事务）或多版本版本控制， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">MVCC</a> （一个事务从不更改以前记录的数据并始终创建一个新版本）。 <br><br>  ANSI / ISO SQL标准为影响其相互阻塞程度的事务定义了4个隔离级别。 隔离级别越高，不良影响越小。 这样做的代价是减慢了应用程序的速度（因为事务更多地等待解锁所需的数据）并增加了出现死锁的可能性。 <br><br><img src="https://habrastorage.org/webt/0-/iy/4h/0-iy4hwem9b4-mkupvpetxgc9so.png"><br><br> 对于应用程序程序员而言，最可取的是可序列化级别-不会产生不良影响，并且确保数据完整性的整个复杂性都将转移到DBMS。 <br><br> 让我们考虑一下可序列化级别的天真的实现-对于每个事务，我们只是阻止其他所有人。 理论上，每个写入事务都可以在50 µs（在现代SSD磁盘上执行一次写入操作的时间）内执行。 我们想将数据保存到三台计算机上，还记得吗？ 如果它们位于同一数据中心，则记录将花费1-3毫秒。 而且，如果出于可靠性考虑，它们位于不同的城市，则记录可能很容易花费10到12毫秒（从莫斯科到圣彼得堡，反之亦然，网络数据包的传输时间）。 也就是说，通过序列记录的天真的实现可序列化级别，我们每秒可以执行不超过100个事务。 虽然单独的SSD可以让您每秒执行约20,000个写入操作！ <br><br> 结论：写事务必须并行执行，并且要扩展它们，您需要一个良好的冲突解决机制。 <br><br><h2> 分片 </h2><br> 当数据停止在一台服务器上时该怎么办？ 有两种标准的缩放机制： <br><br><ul><li> 当我们仅向该服务器添加内存和磁盘时<b>直立</b> 。 这有其局限性-就每个处理器的内核数，处理器数和内存量而言。 <br></li><li>  <b>水平，</b>当我们使用许多机器并在它们之间分配数据时。 这种机器的集合称为集群。 要将数据放入群集，需要将它们分片-也就是说，对于每条记录，确定数据将位于哪台服务器上。 <br></li></ul><br> 分片密钥是用于在服务器之间分配数据的参数，例如，客户端或组织标识符。 <br><br> 想象一下，您需要记录有关集群中地球上所有居民的数据。 作为分键，可以使用例如该人的出生年份。 届时，将有116台服务器就足够了（每年都需要添加一台新服务器）。 或者，您可以将人员居住的国家/地区作为关键，那么您将需要大约250台服务器。 不过，第一种方法还是可取的，因为该人的出生日期不会改变，并且您将永远不需要在服务器之间传输有关他的数据。 <br><br><img src="https://habrastorage.org/webt/zr/8h/sz/zr8hszqcct-xf5q07gcow3cf7lu.png"><br><br> 在Pyrus中，您可以将组织作为分片密钥。 但是它们的规模却大不相同：既有庞大的Sovcombank（拥有超过1.5万用户），又有数千家小型公司。 当您为组织分配特定的服务器时，您不会事先知道它将如何增长。 如果组织规模较大并积极使用该服务，则迟早其数据将不再放置在一台服务器上，您将不得不重新分片。 如果数据为TB，这并不容易。 想象一下：一个加载的系统，事务每秒进行一次，在这种情况下，您需要将数据从一个地方移到另一个地方。 您无法停止系统，这样的容量可以抽几个小时，而业务客户将无法承受如此长的停机时间。 <br><br> 作为分片键，最好选择很少更改的数据。 但是，应用任务远非总是那么容易做到。 <br><br><h2> 集群共识 </h2><br> 当群集中有很多计算机，而其中一些与其他计算机失去联系时，那么如何确定谁存储了最新版本的数据呢？ 仅分配见证服务器是不够的，因为它还会失去与整个集群的联系。 此外，在大脑裂开的情况下，多台机器可以记录同一数据的不同版本-您需要以某种方式确定哪个是最相关的。 为了解决这个问题，人们提出了共识算法。 他们允许通过投票将几台相同的机器针对任何问题得出单个结果。  1989年，第一个这样的算法<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Paxos</a>出版了，2014年，斯坦福大学的人们想出了一个更简单的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Raft</a>来实现。 严格来说，为了使（2N +1）个服务器群集达成共识，同时出现不超过N个故障就足够了。 要承受2个故障，群集必须至少具有5台服务器。 <br><br><h2> 关系DBMS缩放 </h2><br> 开发人员习惯于使用支持关系代数的大多数数据库。 数据存储在表中，有时您需要使用JOIN操作来连接来自不同表的数据。 考虑一个数据库示例和一个简单查询。 <br><br><img src="https://habrastorage.org/webt/hv/fo/d-/hvfod-guiaz4-52ji4epjhizpaq.png"><br><br> 假定A.id是具有聚集索引的主键。 然后优化器将制定一个计划，该计划最有可能首先从表A中选择必要的记录，然后从适当的索引（A，B）中获得与表B中的记录的适当链接。此查询的执行时间从表中的记录数起对数增长。 <br><br> 现在，假设数据分布在集群中的四台服务器上，您需要执行相同的查询： <br><br><img src="https://habrastorage.org/webt/kr/yw/45/kryw45daubuflf-r14zqswson_o.png"><br><br> 如果DBMS不想查看整个集群的所有记录，则它可能会尝试查找A.id等于128、129或130的记录，并从表B中找到适合它们的记录。但是如果A.id不是分片键，则DBMS会提前无法知道表A的数据在哪台服务器上。无论如何，我都必须联系所有服务器以查找是否有适合我们条件的A.id记录。 然后，每个服务器都可以在其内部进行JOIN操作，但这还不够。 您会看到，我们需要样本中节点2上的记录，但是没有A.id = 128的记录？ 如果节点1和2将独立执行JOIN，则查询结果将不完整-我们将不会收到部分数据。 <br><br> 因此，为了满足此请求，每个服务器都必须转向其他所有人。 运行时间随着服务器数量的增加而平方增长。  （如果您可以使用相同的密钥对所有表进行分片，那么很幸运，那么您就不必遍历所有服务器。但是，实际上这是不现实的-总是存在一些查询不是基于分片密钥进行的查询。） <br><br> 因此，JOIN操作从根本上扩展性很差，这是关系方法的一个基本问题。 <br><br><h2>  NoSQL方法 </h2><br> 扩展经典DBMS的困难导致人们提出了没有JOIN操作的NoSQL数据库。 没有加入-没问题。 但是没有ACID属性，但是他们没有在营销材料中提到这一点。 快速<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">找到的工匠</a>将测试各种分布式系统的强度<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">并将结果公开发​​布</a> 。 事实证明，在某些情况下， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Redis群集丢失了45％的存储数据，</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">RabbitMQ群集-</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">丢失了</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">35％的消息</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">MongoDB-</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">丢失了</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">9％的记录</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Cassandra</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">丢失</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">了5％</a> 。 我们正在谈论<b>集群通知客户成功保存后的损失。</b> 通常，您期望所选技术具有更高的可靠性。 <br><br>  Google开发了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Spanner</a>数据库，该数据库在全球范围内运作。  Spanner保证ACID属性，可序列化性以及更多。 它们在数据中心中具有原子钟，可提供准确的时间，这使您可以建立全局事务顺序，而不必在各大洲之间转发网络数据包。  Spanner的想法是，对于程序员来说，处理大量事务引起的性能问题要比围绕缺乏事务的拐杖更好。 但是，Spanner是封闭式技术，如果由于某些原因您不想依赖某个供应商，则它不适合您。 <br><br>  Google的本地人开发了Spanner的开源类似物，并将其命名为CockroachDB（英文为“ cockroach”的“ cockroach”，应象征数据库的生存能力）。 在Habré上<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">已经写过</a>有关产品无法投入生产的信息，因为集群正在丢失数据。 我们决定查看较新的2.0版，并得出了类似的结论。 我们没有丢失数据，但是一些最简单的查询的执行时间不合理。 <br><br><hr><br> 结果，今天有关系数据库只能在垂直方向很好地扩展，这是昂贵的。 还有NoSQL解决方案，没有事务且没有ACID保证（如果您需要ACID，请写拐杖）。 <br><br> 如何制作数据不能在一台服务器上存储的任务关键型应用程序？ 新解决方案出现在市场上，其中一个解决方案-FoundationDB-我们将在下一篇文章中向您详细介绍。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN440306/">https://habr.com/ru/post/zh-CN440306/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN440296/index.html">6工业物联网的应用</a></li>
+<li><a href="../zh-CN440298/index.html">Libgdx上的情人节申请</a></li>
+<li><a href="../zh-CN440300/index.html">10个控制台命令可帮助像PRO一样辩论JavaScript代码</a></li>
+<li><a href="../zh-CN440302/index.html">CRM-成功成本，错误成本，拥有成本</a></li>
+<li><a href="../zh-CN440304/index.html">来自x86系统中的外部设备的中断。 第3部分。使用coreboot示例在芯片组中配置中断路由</a></li>
+<li><a href="../zh-CN440308/index.html">分而治之，或慢慢写-快速阅读</a></li>
+<li><a href="../zh-CN440310/index.html">如何教机器理解发票并从中提取数据</a></li>
+<li><a href="../zh-CN440312/index.html">Hackquest2018。结果与写作。 第4-7天</a></li>
+<li><a href="../zh-CN440314/index.html">JDK 12发行候选：Shenandoah，G1，JMH，Arm64。 Swing中的错误会反击</a></li>
+<li><a href="../zh-CN440316/index.html">三角形中点的均匀分布</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

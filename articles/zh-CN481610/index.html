@@ -1,0 +1,124 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐍 🚇 👉 PostgreSQL反模式：在负载下更新大表 ☂️ 👣 🏂🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="如果您需要更新 “成百万个”活跃使用的PostgreSQL表中的大量记录 ，该怎么做（绝对不是）—初始化新字段的值或更正现有记录中的错误？ 同时节省您的时间，不会因停机而损失公司资金。 
+
+
+
+ 准备测试数据： 
+
+
+
+CREATE TABLE tbl(k text, v integer); INS...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL反模式：在负载下更新大表</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/481610/"> 如果您需要<b>更新</b> “成百万个”活跃使用的PostgreSQL表中<b>的大量记录</b> ，该怎么做（绝对不是）—初始化新字段的值或更正现有记录中的错误？ 同时节省您的时间，不会因停机而损失公司资金。 <br><br><img src="https://habrastorage.org/webt/vw/8_/jj/vw8_jjubp0owqcielxtg6gjufng.png"><br><a name="habracut"></a><br> 准备测试数据： <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl(k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, v <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">chr</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">ascii</span></span>(<span class="hljs-string"><span class="hljs-string">'a'</span></span>::<span class="hljs-built_in"><span class="hljs-built_in">text</span></span>) + (random() * <span class="hljs-number"><span class="hljs-number">26</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>) k , (random() * <span class="hljs-number"><span class="hljs-number">100</span></span>)::<span class="hljs-built_in"><span class="hljs-built_in">integer</span></span> v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> generate_series(<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">1000000</span></span>) i; <span class="hljs-comment"><span class="hljs-comment">--  ,   ! CREATE INDEX ON tbl(k, v);</span></span></code> </pre> <br> 假设我们只想对k在'q'..'z'范围内的所有记录将v的值增加1。 <br><br> 但是，在开始实验之前，我们将保存原始数据集，以便每次都能获得“干净”的结果： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> _tbl <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl;</code> </pre> <br><h2> 更新：一劳永逸，一劳永逸 </h2><br> 立即想到的最简单的选择是“一次更新”进行所有操作： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> v = v + <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> k <span class="hljs-keyword"><span class="hljs-keyword">BETWEEN</span></span> <span class="hljs-string"><span class="hljs-string">'q'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-string"><span class="hljs-string">'z'</span></span>;</code> </pre> <br><img src="https://habrastorage.org/webt/zs/0h/nb/zs0hnbsdmvjrctxn_wkia0wr6oy.png"><br>  <a href="https://explain.tensor.ru/archive/explain/197f26d0cedf3abba51a15d4650c897e:0:2019-12-23">[看explain.tensor.ru]</a> <br><br> 看起来，在完全“短”线上的操作相当简单，耗时超过2.5秒。 而且，如果您的表达方式更加复杂，则该行会更真实，记录更多，甚至会有一些触发器介入-时间可能不会增加到几分钟，而会增加到几个小时。 假设您准备好等待，并且系统的其余部分是否已连接到该基础（如果它具有活动的OLTP负载）？ <br><br> 问题在于，一旦UPDATE到达特定记录，它将立即<b>阻止它直到执行结束</b> 。 如果他希望与同一记录同时进行并行启动的“现场”更新，则他仍将<b>“挂在钩子上”等待</b>更新请求<b>的块</b> ，并将下垂直到工作结束。 <br><br><img src="https://habrastorage.org/webt/p7/gx/qu/p7gxqutnt9o8zuwiwjlbmrf4fk8.png"><br>  © <a href="http://wumo.com/wumo">wumo.com/wumo</a> <br><br> 最糟糕的情况是Web系统，其中需要根据需要创建与数据库的连接-毕竟，这种“悬而未决的”连接会累积起来，如果您不为此建立单独的防御机制，则会吞噬数据库和客户端的资源。 <br><br><h2> 分割交易 </h2><br> 通常，如果所有事情都在一个请求中完成，那么一切都不是很好。 是的，即使我们将一个大的UPDATE分成几个小的UPDATE，但让它们全部<b>在一个事务中</b>工作，但锁定的问题将保持不变，因为可变记录将被锁定直到整个事务结束。 <br><br> 因此，我们需要将一项大交易分成几笔。 为此，我们既可以使用外部手段，编写某种脚本来生成单独的事务，也可以利用数据库本身可以为我们提供的机会。 <br><br><h4> 通话和交易管理 </h4><br> 从PostgreSQL 11开始， <a href="https://postgrespro.ru/docs/postgresql/11/plpgsql-transactions">可以</a>在程序代码内<a href="https://postgrespro.ru/docs/postgresql/11/plpgsql-transactions">直接管理事务</a> ： <br><blockquote> 在CALL命令调用的过程以及匿名代码块（在DO命令中）中，您可以通过执行COMMIT和ROLLBACK来完成事务。 通过这些命令完成事务后，将自动启动新的事务。 </blockquote> 但是此版本并不是所有人都可以使用，因此使用CALL有其局限性。 因此，我们将尝试在没有外部手段的情况下解决问题，从而使其能够在所有当前版本上运行，甚至只需对服务器本身进行最少的更改即可-从而无需编译和重新启动任何程序。 <br><br> 出于同样的原因，我们将不考虑<a href="https://blog.dalibo.com/2016/08/19/Autonoumous_transactions_support_in_PostgreSQL.html">通过pg_background</a>组织<a href="https://blog.dalibo.com/2016/08/19/Autonoumous_transactions_support_in_PostgreSQL.html">自主交易的选择</a> 。 <br><br><h4> 在“内部”管理连接 </h4><br>  PostgreSQL过去一直使用不同的方法来<a href="https://www.cybertec-postgresql.com/en/implementing-autonomous-transactions-in-postgres/">模拟自主事务</a> ，并通过其他过程语言或标准<a href="https://postgrespro.ru/docs/postgresql/12/dblink">dblink模块</a>生成单独的其他连接。 后者的优点是，默认情况下，它包含在大多数发行版中，并且只需一个命令即可在数据库中激活它： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> EXTENSION dblink;</code> </pre> <br><h2>  “ ...带来了许多很多令人恶心的孩子” </h2><br> 但是，在创建dblink绑定之前，我们首先要弄清楚“常规开发人员”如何将需要更新的大型数据集分解为小的数据集。 <br><br><h3> 天真LIMIT ... OFFSET </h3><br> 第一个想法是进行“分页”搜索：通过在每个新请求中增加OFFSET， <i>“让我们每次都选择<b>下一个千条记录</b> ”</i> ： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> v = Tv + <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> k , v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> k <span class="hljs-keyword"><span class="hljs-keyword">BETWEEN</span></span> <span class="hljs-string"><span class="hljs-string">'q'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-string"><span class="hljs-string">'z'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-comment"><span class="hljs-comment">--       k, v --     ! LIMIT $1 OFFSET $2 * $1 ) S WHERE (Tk, Tv) = (Sk, Sv);</span></span></code> </pre> <br> 在测试此解决方案的性能之前，我们将还原数据集： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">TRUNCATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl; <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> _tbl;</code> </pre> <br> 正如我们在上述计划中所看到的，我们将需要更新大约38.4万条记录。 因此，让我们立即看看如何在末尾进行更新- <b>在1000个条目的第300次迭代区域</b> ： <br><br><img src="https://habrastorage.org/webt/j8/h3/ju/j8h3juddfyiwgyg6nxe4yjmp5w4.png"><br>  <a href="https://explain.tensor.ru/archive/explain/922c49ce866d7c879d15c7d144efff86:0:2019-12-23">[看explain.tensor.ru]</a> <br><br> 哦……在<b>整个1K记录</b>的末尾更新样本将花费我们几乎与<b>整个原始版本</b>一样的时间！ <br><br> 这不是我们的选择。 如果迭代次数少且偏移值较小，仍然可以使用它。 因为数据库的<b>LIMIT X OFFSET Y</b>等效于“ <i>减去/选择/形成第一个X + Y记录，然后将第一个Y扔到垃圾箱</i> ”，这对于大的Y值看起来是悲惨的。 <br><br> 实际上，这种方法<b>根本不能应用</b> ！ 我们不仅要依赖更新的值来进行选择，而且还冒着跳过部分记录的风险，如果具有相同键的块到达页面边界，则有可能更新另一部分两次： <br><br><img src="https://habrastorage.org/webt/v0/kh/mn/v0khmnh_afkafan4fvvf4sfgq34.png"><br> 在此示例中，我们更新了绿色记录两次，而从未更新红色记录。 仅仅因为排序键的值相同，在这样的块中记录本身的顺序就不固定。 <br><br><h3> 可悲的ORDER BY ... LIMIT </h3><br> 让我们稍微修改一下任务-添加一个新字段，将值v + 1写入其中： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COLUMN</span></span> x <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>;</code> </pre> <br> 请注意，这种设计几乎可以立即生效，而无需重写整个表格。 但是，如果您添加DEFAULT值，则-仅从<a href="https://www.depesz.com/2018/04/04/waiting-for-postgresql-11-fast-alter-table-add-column-with-a-non-null-default/">第11版开始</a> 。 <br><br> 已经经历了痛苦的经历，让我们立即创建一个索引，其中仅保留未初始化的条目： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> CONCURRENTLY <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> tbl(k, v) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> x <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>;</code> </pre> <br>  CONCURRENTLY索引不会阻止对表的读写工作，尽管它甚至会缓慢滚动到庞大的数据集上。 <br><br> 现在的想法是<i>“让我们每次<b>都只</b>从头<b>几千条记录中</b>选择索引”</i> ： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> x = Tv + <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> k, v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> k <span class="hljs-keyword"><span class="hljs-keyword">BETWEEN</span></span> <span class="hljs-string"><span class="hljs-string">'q'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-string"><span class="hljs-string">'z'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> x <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> k, v <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">1000</span></span> <span class="hljs-comment"><span class="hljs-comment">--   OFFSET! ) S WHERE (Tk, Tv) = (Sk, Sv) AND Tx IS NULL;</span></span></code> </pre> <br><img src="https://habrastorage.org/webt/ne/dp/ck/nedpck-lvoeexx1ffpb63v8nd1w.png"><br>  <a href="https://explain.tensor.ru/archive/explain/9a152e5f94595f995599c9c558fc6f37:0:2019-12-23">[看explain.tensor.ru]</a> <br><br> 现在已经好多了-每笔交易的持续时间现在缩短了大约6倍。 <br><br> 但是，让我们再次看看第200次迭代的计划将变成什么： <br><br><pre> <code class="plaintext hljs">Update on tbl t (actual time=530.591..530.591 rows=0 loops=1) Buffers: shared hit=789337 read=1 dirtied=1</code> </pre> <br> 时间再次恶化（尽管只有25％），缓冲区增加了-但是为什么呢？ <br> 事实是， <a href="https://habr.com/ru/company/postgrespro/blog/445820/">PostgreSQL</a>中的<a href="https://habr.com/ru/company/postgrespro/blog/445820/">MVCC在</a>索引中留下了“死灵”-已经更新的记录的版本，现在不再适合该索引。 也就是说，在第200次迭代中仅获取前1000条记录，我们<b>仍然会扫描</b> ，即使稍后，我们也会丢弃之前已更改的199K版本的元组。 <br><br> 如果我们需要的迭代次数不是数百次，而是数十万次，那么每次执行后续查询时，降级都会更加明显。 <br><br><h2> 按细分更新 </h2><br> 实际上，为什么我们如此重视“ 1000条记录”的值？ 毕竟，我们<b>没有理由选择正好1000</b>或其他特定数字。 我们只是想将整个数据集“切”为一些（不一定相等） <b>不相交的部分</b> -因此，让我们将现有索引用于其预期目的。 <br><br>  <b>索引对（k，v）</b>非常适合我们的任务。 让我们构建一个查询，以便它可以基于最后处理的对： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> kv <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> k, v <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> (k, v) &gt; ($<span class="hljs-number"><span class="hljs-number">1</span></span>, $<span class="hljs-number"><span class="hljs-number">2</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> k <span class="hljs-keyword"><span class="hljs-keyword">BETWEEN</span></span> <span class="hljs-string"><span class="hljs-string">'q'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-string"><span class="hljs-string">'z'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> x <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> k, v <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span> ) , upd <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> x = Tv + <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> (Tk, Tv) = (<span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> kv) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> Tx <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-literal"><span class="hljs-literal">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">RETURNING</span></span> k, v ) <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> upd <span class="hljs-keyword"><span class="hljs-keyword">LIMIT</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>;</code> </pre> <br> 在第一次迭代中，将查询参数设置为<b>“零”值（''，0）</b>就足够了，对于下一次迭代，我们将获取<b>上一个查询</b>的<b>结果</b> 。 <br><br><img src="https://habrastorage.org/webt/ok/ea/fg/okeafgsqia7iejthcmz2wuvsnm0.png"><br>  <a href="https://explain.tensor.ru/archive/explain/2e6ac5867caa6be474c3845dcb7eebcb:0:2019-12-23">[看explain.tensor.ru]</a> <br><br> 事务/锁定时间小于一毫秒，迭代次数不会降低性能，不需要对表中的所有数据进行全面的初步扫描。 太好了！ <br><br><div class="spoiler">  <b class="spoiler_title">使用dblink放置最终版本</b> <div class="spoiler_text"><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DO</span></span> $$ <span class="hljs-keyword"><span class="hljs-keyword">DECLARE</span></span> k <span class="hljs-built_in"><span class="hljs-built_in">text</span></span> = <span class="hljs-string"><span class="hljs-string">''</span></span>; v integer = 0; <span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span> PERFORM dblink_connect(<span class="hljs-string"><span class="hljs-string">'dbname='</span></span> || current_database() || <span class="hljs-string"><span class="hljs-string">' port='</span></span> || current_setting(<span class="hljs-string"><span class="hljs-string">'port'</span></span>)); <span class="hljs-comment"><span class="hljs-comment">--  PREPARED STATEMENT,      PERFORM dblink($q$ PREPARE _q(text, integer) AS WITH kv AS ( SELECT k, v FROM tbl WHERE (k, v) &gt; ($1, $2) AND k BETWEEN 'q' AND 'z' AND x IS NULL ORDER BY k, v LIMIT 1 ) , upd AS ( UPDATE tbl T SET x = Tv + 1 WHERE (Tk, Tv) = (TABLE kv) AND Tx IS NULL RETURNING k, v ) TABLE upd LIMIT 1; $q$); -- ,    LOOP SELECT * INTO k, v FROM dblink($p$EXECUTE _q('$p$ || k || $p$',$p$ || v || $p$)$p$) T(k text, v integer); RAISE NOTICE '(k,v) = (''%'',%)', k, v; --   ,     EXIT WHEN (k, v) IS NULL; END LOOP; PERFORM dblink_disconnect(); END; $$ LANGUAGE plpgsql;</span></span></code> </pre> <br></div></div><br> 此方法的另一个优点是可以随时中断该脚本的执行，然后从所需位置恢复执行。 <br><br><h2>  UPDATE中的复杂计算 </h2><br> 当您需要从链接表中计算出一些值时，我将单独提到这种情况，即分配值的计算很困难。 <br><br> 花在计算上的时间也增加了交易的持续时间。 因此，最好的选择是在UPDATE之外<b>进行计算这些值的过程</b> 。 <br><br> 例如，我们要用具有相同值（k，v）的记录数填充新字段x。 让我们创建一个“临时”表，该表的生成没有施加其他锁： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tmp <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> k, v, <span class="hljs-keyword"><span class="hljs-keyword">count</span></span>(*) x <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> tmp(k, v);</code> </pre> <br> 现在，我们可以根据此表根据上述模型进行迭代，以更新目标： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">UPDATE</span></span> tbl T <span class="hljs-keyword"><span class="hljs-keyword">SET</span></span> x = Sx <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tmp S <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> (Tk, Tv) = (Sk, Sv) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> (Sk, Sv) = ($<span class="hljs-number"><span class="hljs-number">1</span></span>, $<span class="hljs-number"><span class="hljs-number">2</span></span>);</code> </pre> <br> 如您所见，不需要复杂的计算。 <br><br> 只记得稍后删除辅助表。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN481610/">https://habr.com/ru/post/zh-CN481610/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN481596/index.html">解析ELK 7.5设置以进行Mikrotik日志分析</a></li>
+<li><a href="../zh-CN481598/index.html">对对抗Avalonia UI动物园平台的贡献很小</a></li>
+<li><a href="../zh-CN481600/index.html">盆景家族Wiki引擎：2019年结果</a></li>
+<li><a href="../zh-CN481604/index.html">车里雅宾斯克苛刻的开发人员如何为Google Play和社交网络制作游戏</a></li>
+<li><a href="../zh-CN481606/index.html">使用带C ++和Cortex M4微控制器的Observer模板进行静态订阅</a></li>
+<li><a href="../zh-CN481612/index.html">我们对Avalonia UI争取更少平台的贡献</a></li>
+<li><a href="../zh-CN481616/index.html">测地线圆顶。 关于设备和我的计算经验</a></li>
+<li><a href="../zh-CN481618/index.html">Unity MVP或如何简化生活</a></li>
+<li><a href="../zh-CN481620/index.html">瞻博网络SRX和Cisco ASA：下一个系列</a></li>
+<li><a href="../zh-CN481624/index.html">与Redux一起在Flutter上编写应用程序</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

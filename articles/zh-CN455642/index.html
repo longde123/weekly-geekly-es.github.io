@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😺 🛵 🙏🏻 Yandex.Cloud中的分布式消息队列服务的体系结构 👩🏽‍🤝‍👨🏾 📪 🧕🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="嗨，我叫Vasily Bogonatov。 我是全力以赴，全心投入Yandex Message Queue分布式持久消息队列服务的人之一。 该服务于五月下旬公开，但是在Yandex内部，它早已被各种产品积极使用。 
+
+ 今天，我想向Habr的读者介绍一般的消息队列，尤其是有关Yandex消息队列的消...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Yandex.Cloud中的分布式消息队列服务的体系结构</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/455642/">嗨，我叫Vasily Bogonatov。 我是全力以赴，全心投入Yandex Message Queue分布式持久消息队列服务的人之一。 该服务于五月下旬公开，但是在Yandex内部，它早已被各种产品积极使用。 <br><br> 今天，我想向Habr的读者介绍一般的消息队列，尤其是有关Yandex消息队列的消息。 首先，我想解释一下“分布式持久消息队列”是什么以及为什么需要它。 展示其实用价值，使用消息的机制，谈论API和可用性。 在本文的后半部分，我们将探讨技术方面：如何在队列中使用Yandex数据库（这是我们服务的可靠基础），如何简单幼稚地改进构建体系结构的外观，由分布引起的问题以及如何解决这些问题。 <br><br><img src="https://habrastorage.org/webt/xy/ht/eb/xyhtebqslkofciotlmohtwlopb4.png"><br><a name="habracut"></a><br><h3> 什么是分布式持久消息队列？ </h3><br> 维基百科将<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">消息队列</a>定义为“用于在一个进程内进行进程间或线程间交互的软件工程组件”。 实际上，这个概念范围更广：使用队列进行交互的进程可以位于不同的服务器上，甚至可以位于不同的数据中心中。 <br><br> 我们将澄清一些术语。 <br><br>  <b>消息队列</b>是一个存储库，它以特定顺序提供数据的放置和读取。 <br><br> 通常有两种类型的实体与队列交互： <br><br><ul><li>  <b>编写者（生产者）</b> -将消息发送到队列； </li><li>  <b>读者（消费者）</b> -从队列中接收（阅读）消息。 </li></ul><br> 使用队列时，读取器和写入器彼此独立。 它们可以具有不同的性能，可靠性，可用性，甚至可以用不同的编程语言编写。 <br><br> 队列的主要场景：可靠且快速地将消息从编写器传输到读取器。 与数据库不同，该队列不适用于消息的长期存储。 在许多流行的实现中，有一个相应的参数-“消息保留期”。 它确定了消息被永久删除之前存储的时间。 <br><br> 我们弄清了排队的概念，转到“分配”和“持久性”。 <br><br><ul><li> 在我们的案例中， <b>分布</b>意味着存在一个集群，该集群存储和处理数据以及队列元数据，并使用计算机网络将其所有节点组合为一个整体。 </li><li>  <b>持久性</b>意味着将队列中的所有消息都写入磁盘，并且写入器仅在成功记录后才会收到发送确认。 </li></ul><br> 分布和持久性不影响队列的主要功能，它们提供了容错能力和数据存储的可靠性。 我们的系统中可能发生什么类型的故障，我们稍后再考虑。 但是，我不能否认自己的愉悦并稍微打开一下卡片：在服务存在的整个历史中，我们没有丢失来自客户端的一条已保存的消息。 <br><br><h3> 消息队列的用途是什么？ </h3><br> 队列使您可以将服务的逻辑上独立的部分彼此分离，也就是说，它提供了<b>去耦</b> ，这在当今流行的微服务中是非常需要的。 这增加了可伸缩性和可靠性：您总是可以增加队列中的记录流并添加更多阅读器-消息处理程序，而阅读器的故障不会影响编写器的工作。 <br><br> 队列可以消除峰值负载：它们充当读取器的缓冲区。 如果当前的阅读器容量不足以立即处理所有传入消息，则当负载减少时，将在稍后处理排队的消息。 缓冲对于负载不稳定，不需要即时传入事件的服务很有用。 <br><br> 让我们用一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">搜索机器人</a>的例子（毕竟，Yandex从搜索开始！）开始，看看它是如何工作的，该<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">机器人</a>将网页下载，处理并将其放入数据库中。 让我们采用这样的架构。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/zo/oe/dh/zooedh0t0qs4uu1lhpdc0psa2qi.png" width="600" height="778"></div><br><br> 消息队列在这里解决了以下问题： <br><br><ol><li> 该机器人的工作速度比负责解析页面并将其加载到数据库的工作人员快得多。 脱节，链接将累积并填满可用的内存或磁盘。 如果工人暂时不可用，也会发生同样的事情。 </li><li> 在没有队列的情况下，机器人需要“知道”工人的工作界面才能为他们分配任务。 随着产品的发展，界面可能会发生变化。 </li><li> 单个工人的可靠性相当低，因此无法保证所传输的链接将完全由他处理。 </li></ol><br> 队列通过缩放提供可靠的数据存储，使您可以延迟链接的处理。 如果一个工作程序失败，则经过一定时间后，原始链接将返回到队列中，由另一工作程序处理。 队列具有自己的接口，该接口已经过测试和说明，因此搜索机器人和工作人员系统可以使用不同的编程语言来开发不同的团队。 这不会影响整体性能。 <br><br><h3>  Yandex Message Queue如何处理邮件 </h3><br> 这里可以分为三个主要阶段： <br><br><ul><li>  <b>将</b>消息<b>写到</b>队列中； </li><li> 从队列中<b>读取</b>消息； </li><li> 从队列中<b>删除一条</b>消息。 </li></ul><br> 如果消息已安全存储，则记录被认为是成功的，并且不久将可供读者使用。 可以进行重复数据删除记录：如果忽略重复尝试记录已发送消息的尝试。 <br><br> 在阅读时，该消息在队列中隐藏了一段时间，称为“可见性超时”，其他读者无法访问。 如果可见性超时到期，消息将返回到队列，并且可以再次用于处理。 消息的读取顺序由队列而不是读取器确定。 <br><br> 阅读器本身以及与之的网络连接可能不可靠。 为了使阅读器崩溃或连接断开时能够将消息返回到队列，可见性超时是必需的。 否则，很可能永远不会正确处理单个消息。 <br><br> 成功读取后，该消息将使用标识符ReceiptHandle发送到客户端。 标识符指示应从消息队列中删除的特定数据。 <br><br><h3>  Yandex Message Queue中的队列类型 </h3><br> 第一种也是最常用的类型是“标准队列”。 它的特点是吞吐量高（每秒数千条消息），出色的性能以及基本操作的执行时间短。 标准队列由逻辑碎片组成，并支持几乎线性的带宽扩展。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/wy/p0/jp/wyp0jpi_pmhorpq2mikwm_mgl-u.png"></div><br> 标准队列在写入队列时不支持消息重复数据删除，也不保证读取顺序。 由于使用了分片，即使它们在队列中，读取请求也可能不会返回单个消息。 当读取来自一个随机选择的分片时，通常会在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">短轮询</a>模式下发生。 <br><br> 第二种类型<abbr title="先进先出">-FIFO-</abbr>与标准队列相反。 它提供了严格的读取顺序，在写入时支持重复数据删除以及重复尝试读取消息。 性能和可伸缩性低于标准。  FIFO队列性能限于每秒30个请求。 当您需要尝试确保“恰好一次”的传送语义时，建议使用FIFO。 通常，“队列”一词表示FIFO。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/yr/jy/l5/yrjyl5kbyfzqzkruqhaoqdrsxzs.png" width="421" height="801"></div><br><h3>  Yandex Message Queue API </h3><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">API</a>是任何产品中极其重要的组成部分。 良好的软件界面应该简单明了，需要对文档的最少了解才能有效使用。 不应允许采取奇怪或不必要的行动并防止愚蠢的错误，及时报告违反“合同”的情况。 <br><br> 如果系统具有这样的API，它将迅速吸引忠实的用户，并为不同的平台和编程语言提供方便的“包装器”。 <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Amazon Simple Queue Service API（AWS SQS API）</a>是这种接口的示例，它经过时间和大量客户端的测试。 因此，我们决定不为Yandex Message Queue发明唯一的接口，而是非常谨慎地实现对AWS SQS API的支持。 <br><br> 在大多数情况下，对于SQS用户而言，更改端点（服务地址），区域（当前我们仅使用“ ru-central1”）并在Yandex.Cloud中获取新凭据就足够了。 其他一切，例如使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">AWS命令行</a>的脚本，使用AWS SDK的代码或<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Celery</a>或<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">boto</a>上的现成服务，很可能不会被触及。 队列服务的逻辑和功能将保持不变。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/_r/td/kn/_rtdknyixiytyqo63khne5gz4uq.png"></div><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">服务文档</a>中对Yandex Message Queue API方法进行了详细说明。 <br><br><h3> 关于便利的一点 </h3><br>  Yandex Message Queue是一项托管服务，即Yandex.Cloud负责服务器和软件的操作。 服务团队监视队列的运行状况，快速更换故障磁盘，消除网络中断并推出更新。 更新不会停止该服务：当我们在一组服务器上安装新版本的YMQ时，负载平衡器会小心地将流量重定向到其他服务器。 因此用户不会注意到任何东西。 <br><br> 为了使您更方便地控制队列的操作，我们在YMQ中添加了大量视觉图，此处仅显示一小部分。 图表位于Yandex.Cloud控制台的“统计”部分中。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/bi/cp/nn/bicpnn5tjwzqustzy9ye5abnrho.png"></div><br> 我们将告诉您四个最有用的图形： <br><br><ul><li>  <b>“已排队的消息”</b>图可帮助您监视队列中数据的累积。 图中的增长可能意味着处理程序未在管理负载或处理已停止。 </li><li> 图形<b>“队列中最旧消息的年龄”</b> ：大值表示消息处理存在问题。 如果一切正常，则消息不应长时间处于队列中。 </li><li> 图表<b>“读取消息的尝试次数”</b>显示了何时开始多次读取消息。 这可能意味着处理程序在收到某些消息时会崩溃。 </li><li> 图表<b>“排队时间”</b>表示从消息发送到队列到处理程序收到消息为止所经过的时间。 </li></ul><br> 图形有助于立即评估队列的动态和故障的存在，而无需查看日志。 <br><br> 我们讨论了或多或少的一般要点，现在让我们继续讲细节。 <br><br><h3>  Yandex数据库队列如何使用Yandex数据库 </h3><br>  Yandex Message Queue服务建立在地理分布的容错<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Yandex数据库（YDB）数据库</a>之上，该<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">数据库</a>提供了严格的一致性并支持ACID事务。 我们现在不会分解其设备和特性，而将我们局限于总体方案。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/uq/5m/o3/uq5mo3fm83hovqxkgt7no-yjevg.png" width="742" height="860"></div><br>  YMQ中的队列由逻辑分片组成，由一组固定的YDB表表示。 每个表都存储自己的信息。 例如，有一个称为State的通用状态表，该表存储关闭和消息的实际数量。 有一个包含数据和消息元数据的表。 有一个带有相关属性的表。 <br><br> 队列的所有主要操作（使用消息，更改属性，创建和删除）都在处理表和YDB目录的层次结构，或对队列中一个或多个表的事务查询。 队列表中的数据是绝对真相的来源。 因此，除了数据库的正确和稳定的操作之外，还必须确保可靠的存储和高数据可用性。 <br><br> 我们的信息存储在多个副本中：三个Yandex数据中心中的每个副本中都有一个副本。 如果其中一个数据中心不可用，则其余数据中心中的副本数将增加一倍。 因此，恢复了所需的可靠性水平。 即使整个数据中心和另一个服务台中的一个服务台出现故障，也可以完全访问数据。 <br><br><h3>  Yandex Message Queue体系结构的第一个版本 </h3><br>  YMQ体系结构的第一个版本（我们自己称为朴素）看起来像这样。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/aj/qc/eu/ajqceuaoisynocw4u3ffek3epjo.png"></div><br> 该图显示了从YMQ客户端到YDB存储库的HTTPS请求的路径。 让我们看一下主要组件： <br><br><ol><li>  L3平衡器向距离用户最近的Yandex数据中心发送请求。 尽管负载分布不均，但这可以减少网络延迟。 </li><li>  Yandex.Cloud虚拟机上的Nginx终止HTTPS连接，提供针对网络攻击的保护，并将请求进一步代理到已经使用HTTP的YMQ服务器。 </li><li>  YMQ HTTP服务器实现SQS HTTP API逻辑，验证请求并将其转换为强类型的protobuf格式。 </li><li>  YMQ Actor系统-Actor <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">系统</a> 。 它同时启动了数千个不同的参与者来交换信息。 每个主机的参与者系统是集群的一部分。 集群中的所有参与者都生活和行动为一个整体。  YMQ业务逻辑在涉及向YDB的交易请求中涉及的各种参与者中实现。 </li><li>  YDB平板电脑（“平板电脑”）-核心YDB的一部分，负责处理查询和事务中的表。 平板电脑本身不存储数据。 这些是内存中的控制结构，可以在发生硬件故障时恢复状态。 </li><li> 存储是可靠的，分布式的，容错的存储。 </li></ol><br> 这种体系结构有一个缺点：集群中的所有服务器都独立地使用同一队列的表。 这会对性能产生负面影响，并阻止组织隐藏和可读消息的可靠缓存。 限制请求流很困难，这对于任何高负载的服务都非常重要。 <br><br><h3> 具有队列主控器的Yandex Message Queue体系结构 </h3><br> 负载触发表明，该体系结构的第一个版本使用一个分片，每个队列每秒可接收约450条消息。 它很小。 <br> 主要问题是争用查询。 大量逻辑上冲突的事务迅速将隐藏的消息高速缓存置于不一致状态。 为了解决该问题，我们引入了一个特殊的实体-队列主机。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/gc/b4/om/gcb4omkmhk28uhwe2hrlewhzsig.png"></div><br>  <b>队列主机</b>是一种参与者，通常情况下，它在单个实例中的群集中存在并通过与特定队列相关联的所有请求。 如果对队列的请求到达缺少所需主服务器的服务器，则特殊代理角色会重定向该请求，然后将从主服务器收到的响应转换回去。 <br><br> 使用队列向导时，正确的未锁定消息缓存可以减少使用表时的争用。 例如，通过<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Leaky bucket</a>简化了请求流限制的实现。 提供了快速而准确的队列指标：消息数，总流量等。 您可以将类似的请求分组。 <br><br> 从理论上讲，这样的体系结构具有集中化的某些缺点： <br><br><ol><li> 降低容错能力：如果具有主服务器的虚拟机发生故障，则其上具有主服务器的所有队列将不可用。 但是，YDB的特殊机制使您可以在几秒钟内在集群中提升新的主服务器。 这在很大程度上解决了问题。 </li><li> 扩展性有限：所有请求都通过一台主机。 缺点是YDB平板电脑水平。 他们对数据进行所有艰苦的工作。 并且主服务器异步发送请求并处理接收到的结果。 这使其成为“轻量级”实体，在压力测试期间不会产生“瓶颈”效应。 </li></ol><br><h3> 查询向导排队 </h3><br> 具有数据库表的分布式事务会导致某些额外费用，因此减少查询数量的想法对我们来说似乎是合乎逻辑的。 一次记录一个消息的一百个事务最好变成一次记录一百个消息的一个事务。 使用队列主控器，实现这种批处理（批处理）要容易得多。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/yc/rn/0j/ycrn0j7obrbg0_cimvkyzj5izr4.png"></div><br> 批处理会稍微增加操作期间的延迟。 相反，带宽显着增加。 使用批处理，单碎片队列每秒可以处理多达30,000个请求。 <br><br> 通常，队列加载可能非常不同：每秒数千条消息，每天几条消息。 我们需要使用灵活的算法优化队列的工作。 缓冲区中的消息积累达到阈值数或计时器重置的前端选项不适合我们。 因此，我们为YMQ开发了一种自适应批处理算法，在两种情况下均能很好地工作。 他的工作以时间表格式显示。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/qm/g2/rx/qmg2rx2e8pllaxuajav0gyxe2kg.png"></div><br> 在这里，当收到新消息时，可能出现以下三种情况之一： <br><br><ol><li> 如果没有其他此类事务正在运行，则事务将立即开始。 </li><li> 如果已经有正在运行的事务，则将消息添加到缓冲区并等待事务完成。 </li><li> 如果缓冲区大小超过阈值，则会启动另一个并行事务。 并发事务的数量是有限的。 </li></ol><br> 自适应批处理的想法类似于用于TCP / IP <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的Nagle算法</a> 。    :      ,      latency .    ,        .               . <br><br><h3>        </h3><br>  Yandex Message Queue,      ,    .  ,  ,      -. <br><br>    YDB               .   YMQ     . <br><br>           ,   ,     ,      . <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ol/yb/ay/olybayeljh8jcdbcmod9dpylopw.png" width="808" height="712"></div><br>  YMQ   .                    .   «»        . <br><br><h3>        </h3><br>  YDB           .    ,  ,     ,   «».             ,       .          . <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/eg/em/eg/egemegamvnhmv-c5t8pw4im73u0.png" width="661" height="685"></div><br>   :              .    ,    «»      .  -,   «»  ,   «»,    . <br><br>     «  »               .    ,  ,     . <br><br><h3>   Yandex Message Queue     </h3><br> Yandex Message Queue –  - .      .       ,  .     . <br><br><ul><li> <b>-</b>    ,  ,   .      . </li><li> <b> </b>       API   ,    .  ,        . </li><li> <b> </b>  ,     :    ,           . ,       .          .     boto,    24/7,     -    . </li><li> <b> </b>    ,   ,         .        . </li></ul><br>        .       -         .   .       . <br><br>     : <br><br><ul><li>     5,       ; </li><li>    YDB; </li><li>  , , ,   ; </li><li>      ,    ; </li><li>    .       . </li></ul><br>                  . <br><br><h3> 总结 </h3><br>      –    ,    ,          ,    .              ., ., ., .   . <br><br>      .            .       <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="> </a>  ,   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="></a> Yandex Message Queue  . </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN455642/">https://habr.com/ru/post/zh-CN455642/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN455632/index.html">注意！ C ++实现std ::映射:: merge :: std :: set :: Visual Studio 2017中的合并::危险错误</a></li>
+<li><a href="../zh-CN455634/index.html">数学和游戏“ Set”</a></li>
+<li><a href="../zh-CN455636/index.html">第一波受Exim漏洞影响。 治疗脚本</a></li>
+<li><a href="../zh-CN455638/index.html">艾伦·凯（Alan Kay）没有发明物体</a></li>
+<li><a href="../zh-CN455640/index.html">马文·明斯基（Marvin Minsky）的“情感机器”：第4章。“我们如何认识意识”</a></li>
+<li><a href="../zh-CN455644/index.html">我们在实践中使用数据</a></li>
+<li><a href="../zh-CN455646/index.html">安全周24：Android智能手机上的工厂后门</a></li>
+<li><a href="../zh-CN455648/index.html">生命周期ML</a></li>
+<li><a href="../zh-CN455650/index.html">我们如何训练神经网络对螺丝进行分类</a></li>
+<li><a href="../zh-CN455652/index.html">深度学习与常识：开发聊天机器人</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

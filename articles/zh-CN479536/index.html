@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✍🏾 📭 🃏 具有HAProxy的Zimbra开源版中的负载平衡 😙 🙌🏽 🌹</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="构建大型Zimbra OSE基础架构的主要任务之一是有效的负载平衡。 除了增加服务的容错能力外，如果没有负载平衡，就不可能为所有用户提供相同的服务响应能力。 为了解决此问题，使用了负载平衡器-在服务器之间重新分配请求的软件和硬件解决方案。 其中有一些相当原始的请求，例如RoundRobin，它仅将每...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>具有HAProxy的Zimbra开源版中的负载平衡</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/zimbra/blog/479536/"> 构建大型Zimbra OSE基础架构的主要任务之一是有效的负载平衡。 除了增加服务的容错能力外，如果没有负载平衡，就不可能为所有用户提供相同的服务响应能力。 为了解决此问题，使用了负载平衡器-在服务器之间重新分配请求的软件和硬件解决方案。 其中有一些相当原始的请求，例如RoundRobin，它仅将每个下一个请求发送到列表中的下一个服务器，还有更高级的请求，例如HAProxy，由于具有许多显着的优势而广泛用于高负载的计算基础架构中。 让我们看一下HAProxy和Zimbra OSE负载平衡器如何协同工作。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/e98/93d/7d9/e9893d7d9f995c2a24dce02df7fa5d51.png" alt="图片"><a name="habracut"></a><br><br> 因此，根据任务的条件，我们获得了Zimbra OSE基础结构，其中有两个Zimbra代理，两个LDAP和LDAP副本服务器，四个邮件存储库（每个存储有1000个邮箱）和三个MTA。 考虑到我们正在处理电子邮件服务器，它将收到需要平衡的三种流量：用于下载Web客户端的HTTP，以及用于发送电子邮件的POP和SMTP。 同时，HTTP流量将流向IP地址为192.168.0.57和192.168.0.58的Zimbra代理服务器，而SMTP流量将流向IP地址为192.168.0.77和192.168.0.78的MTA服务器。 <br><br> 如前所述，为了确保服务器之间请求的均匀分配，我们将使用HAProxy负载平衡器，该负载平衡器将在运行Ubuntu 18.04的Zimbra基础结构的输入节点上运行。 使用<b>sudo apt-get install haproxy命令</b>在此操作系统上<b>安装haproxy</b> 。 之后，在<b>/ etc / default / haproxy文件中，</b>将<b>ENABLED = 0</b>参数更改为<b>ENABLED = 1</b> 。 现在，要确保haproxy正常运行，只需输入<b>service haproxy命令</b> 。 如果该服务有效，则将在命令输出中将其清除。 <br><br>  HAProxy的主要缺点之一是，默认情况下，它不传输连接的客户端的IP地址，而是用自己的IP地址代替它。 这可能导致无法通过IP地址识别攻击者发送的信件并将其添加到黑名单的情况。 但是，此问题可以解决。 为此，请在具有Postfix的服务器上编辑文件<b>/opt/zimbra/common/conf/master.cf.in</b>并向其中添加以下行： <br><br><pre><code class="plaintext hljs">26 inet n - n - 1 postscreen -o postscreen_upstream_proxy_protocol=haproxy 466 inet n - n - - smtpd %%uncomment SERVICE:opendkim%% -o content_filter=scan:[%%zimbraLocalBindAddress%%]:10030 -o smtpd_tls_wrappermode=yes -o smtpd_sasl_auth_enable=yes -o smtpd_client_restrictions= -o smtpd_data_restrictions= -o smtpd_helo_restrictions= -o smtpd_recipient_restrictions= -o smtpd_relay_restrictions=permit_sasl_authenticated,reject -o syslog_name=postfix/smtps -o milter_macro_daemon_name=ORIGINATING -o smtpd_upstream_proxy_protocol=haproxy %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_filter=[%%zimbraLocalBindAddress%%]:10027 %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_options=speed_adjust 588 inet n - n - - smtpd %%uncomment SERVICE:opendkim%% -o content_filter=scan:[%%zimbraLocalBindAddress%%]:10030 -o smtpd_etrn_restrictions=reject -o smtpd_sasl_auth_enable=%%zimbraMtaSaslAuthEnable%% -o smtpd_tls_security_level=%%zimbraMtaTlsSecurityLevel%% -o smtpd_client_restrictions=permit_sasl_authenticated,reject -o smtpd_data_restrictions= -o smtpd_helo_restrictions= -o smtpd_recipient_restrictions= -o smtpd_relay_restrictions=permit_sasl_authenticated,reject -o syslog_name=postfix/submission -o milter_macro_daemon_name=ORIGINATING -o smtpd_upstream_proxy_protocol=haproxy %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_filter=[%%zimbraLocalBindAddress%%]:10027 %%uncomment LOCAL:postjournal_enabled%% -o smtpd_proxy_options=speed_adjust</code> </pre> <br> 因此，我们将打开端口26、466和588，这些端口将接收来自HAProxy的传入流量。 保存文件后，应使用zmmtactl restart命令在所有服务器上重新启动Postfix。 <br><br> 之后，让我们开始设置HAProxy。 为此，请首先使用<b>cp /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.bak</b>设置创建文件的备份副本。 然后，在文本编辑器中打开源文件<b>/etc/haproxy/haproxy.cfg</b> ，并开始逐步向其中添加必要的设置。 第一个步骤是添加一个删除日志的服务器，设置允许的最大同时连接数，并指定可执行进程所属的用户的名称和组。 <br><br><pre> <code class="plaintext hljs">global user daemon group daemon daemon log 127.0.0.1 daemon maxconn 5000 chroot /var/lib/haproxy</code> </pre> <br> 出现5000个同时连接的数字是有原因的。 由于我们的基础结构中有4000个邮箱，因此有必要预见所有邮箱将同时进入其工作邮件的可能性。 另外，如果它们的数量增加，您需要留一点余量。 <br><br> 现在添加具有默认设置的块： <br><br><pre> <code class="plaintext hljs">defaults timeout client 1m log global mode tcp timeout server 1m timeout connect 5s</code> </pre> <br> 在此块中，为客户端和服务器设置了最大超时，以便在连接过期时断开连接，并且还设置了HAProxy操作模式。 在我们的例子中，负载均衡器以TCP模式工作，也就是说，它只是传输TCP数据包而不分析其内容。 <br><br> 接下来，我们将为不同端口上的连接添加规则。 例如，如果将端口25用于SMTP连接和邮件传输，则将与该端口的连接重定向到我们基础结构中可用的MTA是有意义的。 如果连接在端口80上，则这是一个HTTP请求，必须将其转发到Zimbra Proxy。 <br><br>  <b>端口25的规则：</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-25 bind *:27 default_backend backend-smtp-25 backend backend-smtp-25 server mta1 192.168.0.77:26 send-proxy server mta2 192.168.0.78:26 send-proxy</code> </pre> <br>  <b>端口465的规则：</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-465 bind *:467 default_backend backend-smtp-465 backend backend-smtp-465 server mta1 192.168.0.77:466 send-proxy server mta2 192.168.0.78:466 send-proxy</code> </pre> <br>  <b>端口587的规则：</b> <br><br><pre> <code class="plaintext hljs">frontend smtp-587 bind *:589 default_backend backend-smtp-587 backend backend-smtp-587 server mail1 192.168.0.77:588 send-proxy server mail2 192.168.0.78:588 send-proxy</code> </pre> <br>  <b>端口80的规则：</b> <br><br><pre> <code class="plaintext hljs">frontend http-80 bind *:80 default_backend http-80 backend http-80 mode tcp server zproxy1 192.168.0.57:80 check server zproxy2 192.168.0.58:80 check</code> </pre> <br>  <b>端口443的规则：</b> <br><br><pre> <code class="plaintext hljs">frontend https bind *:443 default_backend https-443 backend https-443 mode tcp server zproxy1 192.168.0.57:80 check server zproxy2 192.168.0.58:80 check</code> </pre> <br> 请注意，在将TCP数据包发送到MTA的规则中， <b>send-proxy</b>参数位于其地址旁边。 这是必要的，以便根据我们之前对Postfix设置所做的更改，将发送方的原始IP地址与TCP数据包一起发送。 <br><br> 现在，已经对HAProxy进行了所有必要的更改，您可以使用<b>service haproxy restart命令重新启动服务</b>并开始使用它。 <br><br> 有关Zextras Suite的所有问题，您可以通过电子邮件katerina@zextras.com与Zextras代表联系，Ekaterina Triandafilidi。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN479536/">https://habr.com/ru/post/zh-CN479536/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN479518/index.html">远程团队之间的交流是我们的经验</a></li>
+<li><a href="../zh-CN479522/index.html">出版者彼得。 冬季特卖</a></li>
+<li><a href="../zh-CN479524/index.html">主动恢复服务或Innopolis一项工业项目的历史</a></li>
+<li><a href="../zh-CN479530/index.html">超声波坐标系2.0</a></li>
+<li><a href="../zh-CN479534/index.html">Kubernetes 1.17-如何升级而不花费整个错误预算</a></li>
+<li><a href="../zh-CN479538/index.html">技术正在使人类走向衰落。 是时候改变一些东西了</a></li>
+<li><a href="../zh-CN479540/index.html">使用passwordstore.org-KISS风格的密码管理器</a></li>
+<li><a href="../zh-CN479542/index.html">如何编写自己的音译器</a></li>
+<li><a href="../zh-CN479548/index.html">从实习到HighLoad 2019表演的道路</a></li>
+<li><a href="../zh-CN479550/index.html">带有可脚本编写对象的Unity中的MVC。 第三部分</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

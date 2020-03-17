@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>↔️ 🏴‍☠️ 🤘🏽 使用Async，Swoole和Parallel加速Tarantool的PHP连接器 🥘 🐫 🧝🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在PHP生态系统中，目前有两个用于Tarantool服务器的连接器：官方PECL扩展用C编写的tarantool / tarantool-php和用PHP编写的tarantool-php / client 。 我是后者的作者。 
+
+ 在本文中，我想分享这两个库的性能测试结果，并展示如何在代码中进行最...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>使用Async，Swoole和Parallel加速Tarantool的PHP连接器</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/480032/"><img src="https://habrastorage.org/webt/5r/bm/wi/5rbmwilvinacbni2aggejp0n7sk.jpeg"><br><br> 在PHP生态系统中，目前有两个用于Tarantool服务器的连接器：官方PECL扩展用C编写的<a href="https://github.com/tarantool/tarantool-php">tarantool / tarantool-php和</a>用<a href="https://github.com/tarantool/tarantool-php">PHP</a>编写的<a href="https://github.com/tarantool-php/client">tarantool-php / client</a> 。 我是后者的作者。 <br><br> 在本文中，我想分享这两个库的性能测试结果，并展示如何在代码中进行最少的更改就可以实现3到5倍的性能改进（ <i>在综合测试中！</i> ）。 <br><a name="habracut"></a><br><h2> 我们要测试什么？ </h2><br> 我们将测试异步，并行和异步异步启动的上述同步连接器。 另外，我们不希望更改连接器的源代码。 目前，有几个扩展可以完成这项工作： <br><br><ul><li>  <a href="https://github.com/swoole/swoole-src">Swoole</a> ，PHP的高性能异步框架。 已被阿里巴巴和百度等互联网巨头使用。 从版本4.1.0开始，惊人的运行时挂钩<i>Swoole \ Runtime :: enableCoroutine（）</i>出现了，它允许“使用单行代码将同步PHP网络库转换为协同例程库”。 </li><li> 异步，直到最近，PHP才是异步工作中非常有前途的扩展。 为什么直到最近？ 不幸的是，由于我不知道的原因，作者删除了存储库，该项目的前途令人怀疑。 我将使用<a href="https://github.com/dreamsxin/ext-async">其中一个</a>叉子。 像Swoole一样，此扩展通过将PHP的默认流实现替换为它们的异步对应项，可以轻松激活异步模式。 这可以通过选项“ <i>async.tcp = 1</i> ”完成。 </li><li>  <a href="https://github.com/krakjoe/parallel">Parallel</a>是著名的Joe Watkins的新扩展，Joe Watkins是phpdbg，apcu，pthreads，pcov，uopz等库的作者。 该扩展为PHP提供了一个多线程API，并且可以替代pthread。 该库的一个重要限制是它只能与PHP的ZTS（Zend线程安全）版本一起使用。 </li></ul><br><h2> 我们要如何测试？ </h2><br> 我们将运行一个禁用了预写日志记录（ <i>wal_mode = none</i> ）和扩展的网络缓冲区（ <i>readahead = 1 * 1024 * 1024</i> ）的Tarantool实例。 第一个选项将阻止对磁盘驱动器的IO操作，第二个选项将允许从操作系统缓冲区读取更多请求，从而最大程度地减少系统调用次数。 <br><br> 对于使用数据（插入，删除，读取等）的基准，将在基准开始之前（重新）创建memtx空间，并且该空间的初始索引值将由序列生成器创建。 <br><br>  DDL的空间如下： <br><br><pre><code class="lua hljs">space = box.schema.space.<span class="hljs-built_in"><span class="hljs-built_in">create</span></span>(<span class="hljs-built_in"><span class="hljs-built_in">config</span></span>.space_name, { id = <span class="hljs-built_in"><span class="hljs-built_in">config</span></span>.space_id, temporary = <span class="hljs-literal"><span class="hljs-literal">true</span></span> }) space:create_index(<span class="hljs-string"><span class="hljs-string">'primary'</span></span>, { <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> = <span class="hljs-string"><span class="hljs-string">'tree'</span></span>, parts = {<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-string"><span class="hljs-string">'unsigned'</span></span>}, sequence = <span class="hljs-literal"><span class="hljs-literal">true</span></span> }) space:<span class="hljs-built_in"><span class="hljs-built_in">format</span></span>({ {name = <span class="hljs-string"><span class="hljs-string">'id'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> = <span class="hljs-string"><span class="hljs-string">'unsigned'</span></span>}, {name = <span class="hljs-string"><span class="hljs-string">'name'</span></span>, <span class="hljs-built_in"><span class="hljs-built_in">type</span></span> = <span class="hljs-string"><span class="hljs-string">'string'</span></span>, is_nullable = <span class="hljs-literal"><span class="hljs-literal">false</span></span>} })</code> </pre> <br> 如有必要，在启动基准测试之前，该空间将填充10,000个以下形式的元组： <br><br><pre> <code class="lua hljs">{id, <span class="hljs-string"><span class="hljs-string">'tuple_'</span></span> .. id}</code> </pre> <br> 使用随机键值访问元组。 <br><br> 基准测试是对服务器的单个请求，执行了10,000次（转），然后又以迭代方式执行。 重复迭代，直到5次迭代中的所有时间偏差都在3％误差范围*之内。 之后，取平均结果。 在两次迭代之间，有1秒的暂停以防止CPU节流。  Lua垃圾收集器在每次迭代之前被禁用，并在迭代完成后被强制启动。 仅使用基准测试所需的扩展启动PHP进程，并启用输出缓冲和禁用垃圾收集器。 <br><br>  <i>*转数，迭代次数和错误阈值可以在基准设置中更改。</i> <br><br><h2> 测试环境 </h2><br> 以下发布的结果是在MacBookPro（2015年中）和Fedora 30（内核版本5.3.8-200.fc30.x86_64）上完成的。  Tarantool是在docker中使用“ <i>--network host</i> ”设置启动的。 <br><br>  <b>套件版本：</b> <br><br>  Tarantool：2.3.0-115-g5ba5ed37e <br> 码头工人：03/19/3，建立a872fc2f86 <br>  PHP：7.3.11（CLI）（建立：2019年10月22日08:11:04） <br>  tarantool /客户端：0.6.0 <br>  rybakit / msgpack：0.6.1 <br>  ext-tarantool：0.3.2（已修补）* <br>  ext-msgpack：2.0.3 <br> 外部异步：0.3.0-8c1da46 <br>  ext-swoole：4.4.12 <br> 外部并行：1.1.3 <br><br>  <i>*不幸的是，官方连接器不适用于PHP&gt; 7.2。</i>  <i>要在PHP 7.3上编译和运行扩展，我必须使用<a href="https://github.com/tarantool/tarantool-php/pull/148/files">patch</a> 。</i> <br><br><h2> 结果 </h2><br><h4> 同步（默认） </h4><br>  Tarantool协议使用<a href="https://msgpack.org/">MessagePack</a>二进制格式来序列化消息。 在PECL连接器中，序列化隐藏在库的深处，因此<a href="https://github.com/tarantool/tarantool-php/issues/89">似乎不可能</a>影响用户区代码的编码过程。 相反，通过扩展标准编码器之一或使用您自己的实现，纯PHP连接器提供了自定义编码过程的功能。 现成的编码器有两种：一种基于<a href="https://github.com/msgpack/msgpack-php/">msgpack / msgpack-php</a> （官方MessagePack PECL扩展），另一种基于<a href="https://github.com/rybakit/msgpack.php">rybakit / msgpack</a> （纯PHP）。 <br><br> 在继续比较连接器之前，让我们测量一下PHP连接器的MessagePack编码器的性能，以便在测试中进一步使用性能最佳的连接器： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/d72/e70/645/d72e70645fb9c1ec359eb6ac25ec5b57.png"></div><br> 虽然PHP版本（Pure）的速度不如PECL扩展快，但我仍建议在实际项目中使用<a href="https://github.com/rybakit/msgpack.php">rybakit / msgpack</a> ，因为正式的PECL扩展仅部分实现了MessagePack规范（例如，不支持自定义数据类型，如果没有它，您将无法使用Decimal-Tarantool 2.3中引入的新数据类型），并且还有许多其他<a href="https://github.com/msgpack/msgpack-php/issues">问题</a> （包括与PHP 7.4的兼容性问题）。 而且该项目看起来总体上被放弃了。 <br><br> 因此，让我们在同步模式下测量连接器的性能： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/051/bb3/ed3/051bb3ed3341d0c19788325ea624f7c6.png"></div><br> 从图中可以看出，PECL连接器（Tarantool）的性能优于PHP连接器（Client）。 考虑到后者除了以较慢的语言实现之外，实际上还可以做更多的工作，这不足为奇：每个请求都创建一个新的<i>Request</i> and <i>Response</i>对象（在Select的情况下，还有<i>Criteria</i> ，在在Update / Upsert的情况下，有<i>Operations</i> ）， <i>Connection</i> ， <i>Packer</i>和<i>Handler</i>也增加了一些开销。 不用说，更高的灵活性是有代价的。 但是，PHP解释器通常显示出良好的性能。 尽管有所不同，但微不足道，并且在PHP 7.4中使用预加载可能会变得更少，更不用说PHP 8中的JIT了。 <br><br> 现在继续前进。  Tarantool 2.0引入了SQL支持。 让我们尝试使用SQL协议执行Select，Insert，Update和Delete操作，并将结果与​​noSQL（二进制）等效项进行比较： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/8d0/4e5/308/8d04e5308574fb007c8fa1480987a92e.png"></div><br>  SQL结果并不是那么令人印象深刻（让我提醒您，我们仍在测试同步模式）。 但是，在此之前，我不会感到沮丧：SQL支持仍在积极开发中（例如，不久前就添加了对<a href="https://github.com/tarantool/tarantool/commit/ff2091e09b5a7e9b7aa3f3e996dc7a06189889f3">预处理语句的</a>支持），并且根据<a href="https://github.com/tarantool/tarantool/issues%3Fq%3Dis%253Aissue%2Bis%253Aopen%2Bsql%2Blabel%253Aperformance">问题</a>列表，SQL引擎将在将来获得许多优化。 <br><br><h4> 异步 </h4><br> 好了，现在让我们看看异步扩展如何能够帮助我们改善上述结果。 对于异步编程，该扩展提供了一个基于协程的API，我们将在这里使用它。 首先，通过测试我们发现，针对我们的环境，协程的最佳数量为25： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/578/89f/32d/57889f32d5370c1074ca1ff637807acf.png"></div><br> 然后，我们对25个协程进行了10,000次操作，并检查了结果： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/53e/e14/337/53ee143371549b9f11c70b1305901e7e.png"></div><br> 对于PHP连接器，每秒的操作数量已增长了3倍以上！ 可悲的是，PECL连接器无法通过ext-async启动。 <br><br> 那SQL呢？ <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/4bc/e45/cad/4bce45caddc5079eb38ac26498aa0dfc.png"></div><br> 如您所见，在异步模式下，二进制协议和SQL之间的差异落在误差范围之内。 <br><br><h4> 旋风 </h4><br> 再次，让我们确定针对Swoole的最佳协同程序数量： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/452/d71/3b2/452d713b2d513c9cd97a1fbce3f706ef.png"></div><br> 让我们以25为例。现在，重复与Async扩展相同的技巧：在25个协程之间分配10,000个操作。 除此之外，让我们再添加一个测试，将整个过程分为两个过程（即，每个过程将在25个协程中执行5,000个操作）。 这些过程将在<i>Swoole \ Process</i>的帮助下创建。 <br><br> 结果： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/763/606/55c/76360655ca3480a8e57aff8cd55ad53c.png"></div><br> 与Async相比，Swoole在一个进程中运行时的性能略低，但是在2个进程中，画面发生了巨大变化（不是偶然选择了2个，在我的机器上，此确切数目的进程显示了最佳结果）。 <br><br>  <i>顺便说一句，异步扩展中也有一个用于处理进程的API，但是我注意到在单个进程或多个进程中启动基准测试之间没有区别（尽管我犯了一些错误）。</i> <i><br></i> <br>  SQL与二进制协议： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/f1b/0c6/ed1/f1b0c6ed18c9a2dd153d2307564937ab.png"></div><br> 与异步一样，在异步模式下，二进制操作和SQL操作之间的差异也被消除了。 <br><br><h4> 平行的 </h4><br> 由于Parallel扩展是关于线程而不是协程的，因此我们要测量并行线程的最佳数量： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/f44/7a6/c2f/f447a6c2f9bc50be507bfd56c70f5b2c.png"></div><br> 我的机器上是16。 现在让我们对16个并行线程上的连接器进行基准测试： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/6db/5f7/489/6db5f7489dcb97871993cdb7476a764a.png"></div><br> 如您所见，结果甚至比异步扩展更好（除了Swoole带有2个进程启动）。 请注意，对于PECL连接器，Update和Upsert操作没有任何限制。 这是因为这些操作因错误而崩溃，并且我不确定应该归咎于什么：ext-parallel或ext-tarantool或两者。 <br><br> 现在让我们将SQL性能添加到比较中： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/d86/59c/8c2/d8659c8c25b466fc5cc538b08e6d2441.png"></div><br> 您是否注意到同步启动的连接器与图表的相似之处？ <br><br><h4> 多合一 </h4><br> 最后，让我们将所有结果组合在一张图中，以查看测试中的扩展的整个图片。 我们将只向图中添加一个新测试，但尚未完成：使用Parallel *并行启动Async协程。 作者已经<a href="https://github.com/krakjoe/parallel/issues/25">讨论</a>了集成上述扩展的想法，但尚未达成共识，因此我们必须自己做。 <br><br>  <i>*我无法使用Parallel启动Swoole协程；</i>  <i>这些扩展似乎不兼容。</i> <br><br> 现在，最终结果为： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/15a/23e/81c/15a23e81c9d330223990c6e60f127369.png"></div><br><h2> 结论 </h2><br> 在我看来，结果是相当不错的，但是有些事情让我相信我们还没有到那！ 如果您有关于如何提高基准的任何想法，我将很乐意审查您的请求请求。 所有带有启动说明和结果的代码都发布在专用的<a href="https://github.com/tarantool-php/benchmarks">存储库中</a> 。 <br><br> 由您自己决定是否在实际项目中需要它，我只想说这是一个令人兴奋的实验，它使我能够以最小的努力估算出一个同步TCP连接器可以产生多少。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN480032/">https://habr.com/ru/post/zh-CN480032/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN480018/index.html">使用Python进行移动应用开发。 KivyMD库</a></li>
+<li><a href="../zh-CN480022/index.html">Python实例化</a></li>
+<li><a href="../zh-CN480024/index.html">长春：单指令处理器</a></li>
+<li><a href="../zh-CN480026/index.html">宣布Azure Spot虚拟机的预览</a></li>
+<li><a href="../zh-CN480028/index.html">最和平的革命</a></li>
+<li><a href="../zh-CN480034/index.html">Habraiting 2019：2019年作者的统计数据和排名</a></li>
+<li><a href="../zh-CN480038/index.html">Xamarin.Forms 4.4助您一臂之力</a></li>
+<li><a href="../zh-CN480040/index.html">Rambler Group对Nginx和创始人的冲击是什么，以及它将如何影响在线行业</a></li>
+<li><a href="../zh-CN480042/index.html">个体经营和自己的项目。 正在关注Nginx</a></li>
+<li><a href="../zh-CN480044/index.html">Q＃的第二年</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

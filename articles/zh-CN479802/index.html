@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐕 🎖️ ☘️ C ++ vtables。 第1部分（基础知识+多重继承） 🏢 🦋 ☝🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="大家好！ 本文的翻译是专门为“ C ++开发人员”课程的学生准备的。 朝这个方向发展是否有趣？ 12月13日在莫斯科时间20:00上线。 到“使用Google测试框架的实践”大师班！ 
+
+
+
+
+
+ 在本文中，我们将研究clang如何实现vtable（虚拟方法表）和RTTI（运行时类型标识）。 在第一...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>C ++ vtables。 第1部分（基础知识+多重继承）</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/479802/"><p>  <em>大家好！</em>  <em>本文的翻译是专门为<a href="https://otus.pw/d2qJ/">“ C ++开发人员”</a>课程的学生准备的。</em>  <em>朝这个方向发展是否有趣？</em>  <em>12月13日在莫斯科时间20:00上线。</em>  <em>到<a href="https://otus.pw/x79M/">“使用Google测试框架的实践”</a>大师班！</em> </p><br><p><img src="https://habrastorage.org/webt/eh/lh/ox/ehlhoxzs1sz7v7xtni9lizjefxq.png"></p><br><p> 在本文中，我们将研究clang如何实现vtable（虚拟方法表）和RTTI（运行时类型标识）。 在第一部分中，我们从基类开始，然后研究多重和虚拟继承。 <a name="habracut"></a></p><br><p> 请注意，在本文中，我们必须深入研究使用gdb为代码的各个部分生成的二进制表示形式。 这是一个很低的水平，但是我会为您做所有的努力工作。 我认为将来的大多数职位都不会描述如此低水平的细节。 </p><br><blockquote>  <em>免责声明</em> ：此处编写的所有内容均取决于实现，在将来的任何版本中都可能会更改，因此您不应依赖它。 我们仅出于教育目的考虑。 </blockquote><p><img src="https://habrastorage.org/webt/40/po/du/40podustjhxkcl7_keexd9uea2e.png"></p><br><p> 太好了，那就开始吧。 </p><br><h2 id="chast-1---vtables---osnovy"> 第1部分-vtables-基础 </h2><br><p> 让我们看下面的代码： </p><br><pre><code class="plaintext hljs">#include &lt;iostream&gt; using namespace std; class NonVirtualClass { public: void foo() {} }; class VirtualClass { public: virtual void foo() {} }; int main() { cout &lt;&lt; "Size of NonVirtualClass: " &lt;&lt; sizeof(NonVirtualClass) &lt;&lt; endl; cout &lt;&lt; "Size of VirtualClass: " &lt;&lt; sizeof(VirtualClass) &lt;&lt; endl; }</code> </pre> <br><pre> <code class="plaintext hljs">$ #    main.cpp $ clang++ main.cpp &amp;&amp; ./a.out Size of NonVirtualClass: 1 Size of VirtualClass: 8</code> </pre> <br><p>  <code>NonVirtualClass</code>的大小为1个字节，因为在C ++中，类的大小不能为零。 但是，这现在并不重要。 </p><br><p> 在64位计算机上， <code>VirtualClass</code>是8个字节。 怎么了 因为里面有一个指向vtable的隐藏指针。  vtable是为每个虚拟类创建的静态转换表。 本文讨论了它们的内容以及如何使用它们。 </p><br><p> 为了更深入地了解vtable的外观，让我们用gdb查看以下代码，以了解如何分配内存： </p><br><pre> <code class="plaintext hljs">#include &lt;iostream&gt; class Parent { public: virtual void Foo() {} virtual void FooNotOverridden() {} }; class Derived : public Parent { public: void Foo() override {} }; int main() { Parent p1, p2; Derived d1, d2; std::cout &lt;&lt; "done" &lt;&lt; std::endl; }</code> </pre> <br><pre> <code class="plaintext hljs">$ #         ,  gdb $ clang++ -std=c++14 -stdlib=libc++ -g main.cpp &amp;&amp; gdb ./a.out ... (gdb) #  gdb  -  C++ (gdb) set print asm-demangle on (gdb) set print demangle on (gdb) #     main (gdb) b main Breakpoint 1 at 0x4009ac: file main.cpp, line 15. (gdb) run Starting program: /home/shmike/cpp/a.out Breakpoint 1, main () at main.cpp:15 15 Parent p1, p2; (gdb) #     (gdb) n 16 Derived d1, d2; (gdb) #     (gdb) n 18 std::cout &lt;&lt; "done" &lt;&lt; std::endl; (gdb) #  p1, p2, d1, d2 -     ,    (gdb) p p1 $1 = {_vptr$Parent = 0x400bb8 &lt;vtable for Parent+16&gt;} (gdb) p p2 $2 = {_vptr$Parent = 0x400bb8 &lt;vtable for Parent+16&gt;} (gdb) p d1 $3 = {&lt;Parent&gt; = {_vptr$Parent = 0x400b50 &lt;vtable for Derived+16&gt;}, &lt;No data fields&gt;} (gdb) p d2 $4 = {&lt;Parent&gt; = {_vptr$Parent = 0x400b50 &lt;vtable for Derived+16&gt;}, &lt;No data fields&gt;}</code> </pre> <br><p> 这是我们从上面中学到的内容： <br>  -尽管类没有数据成员，但存在指向vtable的隐藏指针； <br>  -p1和p2的vtable相同。  vtable是每种类型的静态数据； <br>  -d1和d2继承了Parent的vtable-pointer，该指针指向vtable Derived； <br>  -所有vtable指示该vtable中有16（0x10）个字节的偏移量。 我们稍后还将讨论。 </p><br><p> 让我们继续我们的gdb会话以查看vtables的内容。 我将使用x命令，该命令在屏幕上显示内存。 我们将从0x400b40开始以十六进制输出300个字节。 为什么要这个地址呢？ 因为我们在上面看到vtable指针指向0x400b50，并且该地址的符号<code>vtable for Derived+16 (16 == 0x10)</code>是<code>vtable for Derived+16 (16 == 0x10)</code> 。 </p><br><pre> <code class="plaintext hljs">(gdb) x/300xb 0x400b40 0x400b40 &lt;vtable for Derived&gt;: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x400b48 &lt;vtable for Derived+8&gt;: 0x90 0x0b 0x40 0x00 0x00 0x00 0x00 0x00 0x400b50 &lt;vtable for Derived+16&gt;: 0x80 0x0a 0x40 0x00 0x00 0x00 0x00 0x00 0x400b58 &lt;vtable for Derived+24&gt;: 0x90 0x0a 0x40 0x00 0x00 0x00 0x00 0x00 0x400b60 &lt;typeinfo name for Derived&gt;: 0x37 0x44 0x65 0x72 0x69 0x76 0x65 0x64 0x400b68 &lt;typeinfo name for Derived+8&gt;: 0x00 0x36 0x50 0x61 0x72 0x65 0x6e 0x74 0x400b70 &lt;typeinfo name for Parent+7&gt;: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x400b78 &lt;typeinfo for Parent&gt;: 0x90 0x20 0x60 0x00 0x00 0x00 0x00 0x00 0x400b80 &lt;typeinfo for Parent+8&gt;: 0x69 0x0b 0x40 0x00 0x00 0x00 0x00 0x00 0x400b88: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x400b90 &lt;typeinfo for Derived&gt;: 0x10 0x22 0x60 0x00 0x00 0x00 0x00 0x00 0x400b98 &lt;typeinfo for Derived+8&gt;: 0x60 0x0b 0x40 0x00 0x00 0x00 0x00 0x00 0x400ba0 &lt;typeinfo for Derived+16&gt;: 0x78 0x0b 0x40 0x00 0x00 0x00 0x00 0x00 0x400ba8 &lt;vtable for Parent&gt;: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x400bb0 &lt;vtable for Parent+8&gt;: 0x78 0x0b 0x40 0x00 0x00 0x00 0x00 0x00 0x400bb8 &lt;vtable for Parent+16&gt;: 0xa0 0x0a 0x40 0x00 0x00 0x00 0x00 0x00 0x400bc0 &lt;vtable for Parent+24&gt;: 0x90 0x0a 0x40 0x00 0x00 0x00 0x00 0x00 ...</code> </pre> <br><blockquote> 注意：我们看一下经过修饰的字符。 如果您真的很感兴趣，则_ZTV是vtable的前缀，_ZTS是类型字符串（名称）的前缀，而_ZTI是typeinfo的前缀。 </blockquote><br><hr><br><p> 这是<code>vtable Parent</code>结构： </p><br><div class="scrollable-table"><table><thead><tr><th> 地址 </th><th> 价值 </th><th> 目录内容 </th></tr></thead><tbody><tr><td>  0x400ba8 </td><td>  0x0 </td><td>  top_offset（稍后会详细介绍） </td></tr><tr><td>  0x400bb0 </td><td>  0x400b78 </td><td> 指向Parent的typeinfo的指针（也是上述内存转储的一部分） </td></tr><tr><td>  0x400bb8 </td><td>  0x400aa0 </td><td> 指向父级的指针:: Foo（） <em>（1）</em> 。  _vptr父项指向此处。 </td></tr><tr><td>  0x400bc0 </td><td>  0x400a90 </td><td> 指向父级的指针:: FooNotOverridden（） <em>（2）</em> </td></tr></tbody></table></div><br><p> 这是<code>vtable Derived</code>结构： </p><br><div class="scrollable-table"><table><thead><tr><th> 地址 </th><th> 价值 </th><th> 目录内容 </th></tr></thead><tbody><tr><td>  0x400b40 </td><td>  0x0 </td><td>  top_offset（稍后会详细介绍） </td></tr><tr><td>  0x400b48 </td><td>  0x400b90 </td><td> 指向派生的typeinfo的指针（也是上述内存转储的一部分） </td></tr><tr><td>  0x400b50 </td><td>  0x400a80 </td><td> 指向派生指针:: Foo（） <em>（3）</em> 。，_ Vptr派生指向此处。 </td></tr><tr><td>  0x400b58 </td><td>  0x400a90 </td><td> 指向父级的指针:: FooNotOverridden（）（与父级相同） </td></tr></tbody></table></div><br><p>  1： </p><br><pre> <code class="plaintext hljs">(gdb) # ,        0x400aa0 (gdb) info symbol 0x400aa0 Parent::Foo() in section .text of a.out</code> </pre> <br><p>  2： </p><br><pre> <code class="plaintext hljs">(gdb) info symbol 0x400a90 Parent::FooNotOverridden() in section .text of a.out</code> </pre> <br><p>  3： </p><br><pre> <code class="plaintext hljs">(gdb) info symbol 0x400a80 Derived::Foo() in section .text of a.out</code> </pre> <br><p> 还记得Derived中的vtable指针指向vtable中+16字节的偏移吗？ 第三个指针是第一种方法的指针的地址。 想要第三种方法？ 没问题-向vtable指针添加2 <em>sizeof（void</em> ）。 需要typeinfo记录吗？ 转到它前面的指针。 </p><br><p> 继续-typeinfo记录结构如何？ </p><br><p>  <code>Parent</code> ： </p><br><div class="scrollable-table"><table><thead><tr><th> 地址 </th><th> 价值 </th><th> 目录内容 </th></tr></thead><tbody><tr><td>  0x400b78 </td><td>  0x602090 </td><td>  type_info <em>（1）</em>方法的帮助程序类 </td></tr><tr><td>  0x400b80 </td><td>  0x400b69 </td><td> 代表类型名称的字符串<em>（2）</em> </td></tr><tr><td>  0x400b88 </td><td>  0x0 </td><td>  0表示没有父类型信息条目 </td></tr></tbody></table></div><br><p> 这是<code>typeinfo Derived</code>条目： </p><br><div class="scrollable-table"><table><thead><tr><th> 地址 </th><th> 价值 </th><th> 目录内容 </th></tr></thead><tbody><tr><td>  0x400b90 </td><td>  0x602210 </td><td>  type_info <em>（3）</em>方法的帮助程序类 </td></tr><tr><td>  0x400b98 </td><td>  0x400b60 </td><td> 代表类型名称的字符串<em>（4）</em> </td></tr><tr><td>  0x400ba0 </td><td>  0x400b78 </td><td> 指向typeinfo父项的指针 </td></tr></tbody></table></div><br><p>  1： </p><br><pre> <code class="plaintext hljs">(gdb) info symbol 0x602090 vtable for __cxxabiv1::__class_type_info@@CXXABI_1.3 + 16 in section .bss of a.out</code> </pre> <br><p>  2： </p><br><pre> <code class="plaintext hljs">(gdb) x/s 0x400b69 0x400b69 &lt;typeinfo name for Parent&gt;: "6Parent"</code> </pre> <br><p>  3： </p><br><pre> <code class="plaintext hljs">(gdb) info symbol 0x602210 vtable for __cxxabiv1::__si_class_type_info@@CXXABI_1.3 + 16 in section .bss of a.out</code> </pre> <br><p>  4： </p><br><pre> <code class="plaintext hljs">(gdb) x/s 0x400b60 0x400b60 &lt;typeinfo name for Derived&gt;: "7Derived"</code> </pre> <br><p> 如果您想了解有关__si_class_type_info的更多信息，可以<a href="https://refspecs.linuxfoundation.org/LSB_4.0.0/LSB-CXX-generic/LSB-CXX-generic/baselib.html">在此处</a>和<a href="https://gcc.gnu.org/onlinedocs/gcc-4.6.2/libstdc%2B%2B/api/a01094_source.html">此处</a>找到一些信息。 </p><br><p> 这用尽了我在gdb上的技能，并且还完成了这一部分。 我建议有些人认为这太低了，或者根本就没有实用价值。 如果是这样，我建议跳过第2部分和第3 <a href="https://shaharmike.com/cpp/vtable-part4/">部分</a> ，直接进入<a href="https://shaharmike.com/cpp/vtable-part4/">第4部分</a> 。 </p><br><h2 id="chast-2---mnozhestvennoe-nasledovanie"> 第2部分-多重继承 </h2><br><p> 单一继承层次结构的世界对于编译器来说更容易。 正如我们在第一部分中看到的，每个子类通过为每个新的虚拟方法添加条目来扩展父vtable。 </p><br><p> 让我们看一下多重继承，它使情况变得复杂，即使仅从接口实现继承也是如此。 </p><br><p> 让我们看下面的代码片段： </p><br><pre> <code class="plaintext hljs">class Mother { public: virtual void MotherMethod() {} int mother_data; }; class Father { public: virtual void FatherMethod() {} int father_data; }; class Child : public Mother, public Father { public: virtual void ChildMethod() {} int child_data; };</code> </pre> <br><div class="scrollable-table"><table><thead><tr><th> 子结构 </th></tr></thead><tbody><tr><td>  _vptr $母亲 </td></tr><tr><td>  mother_data（+填充） </td></tr><tr><td>  _vptr $父亲 </td></tr><tr><td> 父亲数据 </td></tr><tr><td>  child_data <em>（1）</em> </td></tr></tbody></table></div><br><p> 请注意，有2个vtable指针。 凭直觉，我期望1或3个指针（母亲，父亲和孩子）。 实际上，不可能有一个指针（稍后会详细介绍），并且编译器足够聪明，可以将子级vtable Child的条目组合为vtable Mother的扩展，从而节省了1个指针。 </p><br><p> 为什么孩子不能为所有三种类型使用一个vtable指针？ 请记住，可以将Child指针传递给接受母亲或父亲指针的函数，并且两者都希望this指针在正确的偏移量处包含正确的数据。 这些功能不需要了解Child，因此您绝对不应假定Child确实是它们所依据的“母亲/父亲”指针下的内容。 </p><br><p>  <em>（1）与本主题无关，但是，有趣的是，将child_data实际上放置在父亲的填充物中。</em>  <em>这称为尾巴填充，可能是将来发布的主题。</em> </p><br><p> 这是<code>vtable</code>结构： </p><br><div class="scrollable-table"><table><thead><tr><th> 地址 </th><th> 价值 </th><th> 目录内容 </th></tr></thead><tbody><tr><td>  0x4008b8 </td><td>  0 </td><td>  top_offset（稍后会详细介绍） </td></tr><tr><td>  0x4008c0 </td><td>  0x400930 </td><td> 指向Child的typeinfo的指针 </td></tr><tr><td>  0x4008c8 </td><td>  0x400800 </td><td> 母亲:: MotherMethod（）。  _vptr $妈妈点在这里。 </td></tr><tr><td>  0x4008d0 </td><td>  0x400810 </td><td> 子:: ChildMethod（） </td></tr><tr><td>  0x4008d8 </td><td>  -16 </td><td>  top_offset（稍后会详细介绍） </td></tr><tr><td>  0x4008e0 </td><td>  0x400930 </td><td> 指向Child的typeinfo的指针 </td></tr><tr><td>  0x4008e8 </td><td>  0x400820 </td><td> 父亲::父亲方法（）。  _vptr $父亲在这里指向。 </td></tr></tbody></table></div><br><p> 在此示例中，Child实例在转换为Mother指针时将具有相同的指针。 但是，当转换为父亲指针时，编译器将计算this指针的偏移量，以指向Child的_vptr $父亲部分（Child结构中的第3个字段，请参见上表）。 </p><br><p> 换句话说，对于给定的子代c; ::（void <em>）＆c！=（Void</em> ）static_cast &lt;父亲*&gt;（＆c）。 某些人并不期望这样做，也许有一天这些信息将为您节省一些调试时间。 </p><br><p> 我发现此功能不止一次。 但是，等等，还不是全部。 </p><br><p> 如果孩子决定替代父亲的方法之一怎么办？ 考虑以下代码： </p><br><pre> <code class="plaintext hljs">class Mother { public: virtual void MotherFoo() {} }; class Father { public: virtual void FatherFoo() {} }; class Child : public Mother, public Father { public: void FatherFoo() override {} };</code> </pre> <br><p> 情况越来越难了。 该函数可以接受参数Father *，并为其调用FatherFoo（）。 但是，如果传递Child实例，则应该使用正确的this指针调用重写的Child方法。 但是，呼叫者不知道他确实包含Child。 它具有一个指向“子代数”偏移量的指针，即父代的位置。 有人必须偏移此指针，但是该怎么做呢？ 编译器执行此魔术有什么作用？ </p><br><p>  <em>在我们回答这个问题之前，请注意，覆盖此Mother方法之一并不是很棘手，因为this指针是相同的。</em>  <em>Child知道vtable Mother之后要阅读的内容，并希望Child方法紧随其后。</em> </p><br><p> 解决方法是：编译器创建一个thunk方法来纠正this指针，然后调用“ real”方法。 适配器方法的地址将在vtable父目录下，而“真实”方法的地址将在vtable子目录下。 </p><br><p> 这是<code>vtable Child</code> ： </p><br><pre> <code class="plaintext hljs">0x4008e8 &lt;vtable for Child&gt;: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x4008f0 &lt;vtable for Child+8&gt;: 0x60 0x09 0x40 0x00 0x00 0x00 0x00 0x00 0x4008f8 &lt;vtable for Child+16&gt;: 0x00 0x08 0x40 0x00 0x00 0x00 0x00 0x00 0x400900 &lt;vtable for Child+24&gt;: 0x10 0x08 0x40 0x00 0x00 0x00 0x00 0x00 0x400908 &lt;vtable for Child+32&gt;: 0xf8 0xff 0xff 0xff 0xff 0xff 0xff 0xff 0x400910 &lt;vtable for Child+40&gt;: 0x60 0x09 0x40 0x00 0x00 0x00 0x00 0x00 0x400918 &lt;vtable for Child+48&gt;: 0x20 0x08 0x40 0x00 0x00 0x00 0x00 0x00</code> </pre> <br><p> 这是什么意思： </p><br><div class="scrollable-table"><table><thead><tr><th> 地址 </th><th> 价值 </th><th> 目录内容 </th></tr></thead><tbody><tr><td>  0x4008e8 </td><td>  0 </td><td>  top_offset（即将推出！） </td></tr><tr><td>  0x4008f0 </td><td>  0x400960 </td><td> 儿童的typeinfo </td></tr><tr><td>  0x4008f8 </td><td>  0x400800 </td><td> 母亲:: MotherFoo（） </td></tr><tr><td>  0x400900 </td><td>  0x400810 </td><td> 孩子::父亲之父（） </td></tr><tr><td>  0x400908 </td><td>  -8 </td><td>  top_offset </td></tr><tr><td>  0x400910 </td><td>  0x400960 </td><td> 儿童的typeinfo </td></tr><tr><td>  0x400918 </td><td>  0x400820 </td><td> 不是虚拟适配器的子级：:: FatherFoo（） </td></tr></tbody></table></div><br><p> 说明：如我们先前所见，Child有2个vtable-一个用于母亲和孩子，另一个用于父亲。 在vtable父亲中，FatherFoo（）指向“适配器”，而在vtable中，Child直接指向Child :: FatherFoo（）。 </p><br><p> 您问这个“适配器”是什么？ </p><br><pre> <code class="plaintext hljs">(gdb) disas /m 0x400820, 0x400850 Dump of assembler code from 0x400820 to 0x400850: 15 void FatherFoo() override {} 0x0000000000400820 &lt;non-virtual thunk to Child::FatherFoo()+0&gt;: push %rbp 0x0000000000400821 &lt;non-virtual thunk to Child::FatherFoo()+1&gt;: mov %rsp,%rbp 0x0000000000400824 &lt;non-virtual thunk to Child::FatherFoo()+4&gt;: sub $0x10,%rsp 0x0000000000400828 &lt;non-virtual thunk to Child::FatherFoo()+8&gt;: mov %rdi,-0x8(%rbp) 0x000000000040082c &lt;non-virtual thunk to Child::FatherFoo()+12&gt;: mov -0x8(%rbp),%rdi 0x0000000000400830 &lt;non-virtual thunk to Child::FatherFoo()+16&gt;: add $0xfffffffffffffff8,%rdi 0x0000000000400837 &lt;non-virtual thunk to Child::FatherFoo()+23&gt;: callq 0x400810 &lt;Child::FatherFoo()&gt; 0x000000000040083c &lt;non-virtual thunk to Child::FatherFoo()+28&gt;: add $0x10,%rsp 0x0000000000400840 &lt;non-virtual thunk to Child::FatherFoo()+32&gt;: pop %rbp 0x0000000000400841 &lt;non-virtual thunk to Child::FatherFoo()+33&gt;: retq 0x0000000000400842: nopw %cs:0x0(%rax,%rax,1) 0x000000000040084c: nopl 0x0(%rax)</code> </pre> <br><p> 正如我们已经讨论的那样，这是偏移量，并且调用了FatherFoo（）。 我们应该改变多少才能让孩子得到？  top_offset！ </p><br><p>  <em>请注意，我个人认为非虚拟thunk名称非常令人困惑，因为它是虚拟函数的虚拟表条目。</em>  <em>我不确定它不是虚拟的，但这只是我的看法。</em> </p><br><hr><br><p>  <em>目前仅此而已，在不久的将来，我们将翻译3和4部分。</em>  <em>关注新闻！</em> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN479802/">https://habr.com/ru/post/zh-CN479802/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN479780/index.html">DevOps Moscow Meetup 17/12：加入广播</a></li>
+<li><a href="../zh-CN479790/index.html">三个孵化器为第一批学生进行了原型设计课程</a></li>
+<li><a href="../zh-CN479794/index.html">我们结合了“儿童”微控制器和棋盘游戏</a></li>
+<li><a href="../zh-CN479796/index.html">金士顿的萨诺斯级威胁</a></li>
+<li><a href="../zh-CN479800/index.html">我正在用C＃编写，以便前端更容易</a></li>
+<li><a href="../zh-CN479810/index.html">我如何在《自然》杂志上发表科学文章</a></li>
+<li><a href="../zh-CN479814/index.html">Active Directory数据隐私问题</a></li>
+<li><a href="../zh-CN479816/index.html">Python组合学</a></li>
+<li><a href="../zh-CN479818/index.html">如何评估英语水平</a></li>
+<li><a href="../zh-CN479820/index.html">在IT树下放置什么？ 二进制时钟</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐰 👨‍👧 🚆 深入研究Linux名称空间 👍🏽 🤱🏾 📪</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在本系列文章中，我们将仔细考虑容器中的主要成分之一-名称空间。 在此过程中，我们将创建一个更简单的docker run克隆-我们自己的程序，该程序将在命令输入处接收命令（及其参数，如果有的话），并扩展其执行容器，使其与系统的其余部分隔离，类似于您将执行的方式docker run 从图像运行。 
+ 什...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>深入研究Linux名称空间</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/458462/"><p>在本系列文章中，我们将仔细考虑<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">容器</a>中的主要成分之一-名称空间。 在此过程中，我们将创建一个更简单的<code>docker run</code>克隆-我们自己的程序，该程序将在命令输入处接收命令（及其参数，如果有的话），并扩展其执行容器，使其与系统的其余部分隔离，类似于您将执行的方式<code>docker run</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">从图像</a>运行。 <a name="habracut"></a></p><br><h2 id="chto-takoe-namespace"> 什么是名称空间？ </h2><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Linux名称空间</a>是操作系统中资源的抽象。 我们可以将名称空间视为一个盒子。 此框包含取决于框类型（名称空间）的系统资源。 当前有七种名称空间：Cgroups，IPC，Network，Mount，PID，User，UTS。 </p><br><p> 例如，网络名称空间包括与网络相关的系统资源，例如网络接口（例如<code>wlan0</code> ， <code>eth0</code> ），路由表等；安装名称空间包括系统中的文件和目录，PID包含进程ID等。 。 因此，网络名称空间<strong>A</strong>和<strong>B的</strong>两个实例（对应于我们的类比中的两个相同类型的框）可以包含不同的资源-也许<strong>A</strong>包含<code>wlan0</code> ，而<strong>B</strong>包含<code>eth0</code>和路由表的单独副本。 </p><br><p> 命名空间不是您需要安装的某些其他功能或库，例如，使用apt软件包管理器。 它们由Linux内核本身提供，已经是在系统上运行任何进程的必要条件。 在任何给定的时间点，任何进程<strong>P</strong>恰好属于每种类型的名称空间的一个实例。 因此，当他需要说“更新系统中的路由表”时，Linux向他显示当时他所属的名称空间路由表的副本。 </p><br><h2 id="dlya-chego-eto-nuzhno"> 这是为了什么 </h2><br><p> 绝对没事……当然，我只是在开玩笑。 盒子的一大优点是您可以在盒子中添加和删除东西，而这不会影响其他盒子的内容。 这与命名空间的想法相同<strong>-P</strong>进程可能“疯狂”并执行<code>sudo rm –rf /</code> ，但是属于另一个Mount命名空间的另一个<strong>Q</strong>进程将不受影响，因为它们使用这些文件的单独副本。 </p><br><p> 请注意，名称空间中包含的资源不一定是唯一副本。 在某些情况下，有意或由于安全漏洞而发生的情况下，两个或多个名称空间将包含相同的副本，例如，相同的文件。 因此，在一个Mount命名空间中对此文件所做的更改实际上将在所有其他引用它的Mount命名空间中可见。 因此，我们将放弃我们的抽屉类比，因为该物品不能同时放在两个不同的盒子中。 </p><br><h2 id="ogranichenie---eto-zabota"> 限制是一个问题 </h2><br><p> 我们可以看到进程所属的名称空间！ 通常对于Linux，它们显示为该进程的<code>/proc/$pid/ns</code>目录中的文件，其进程ID <code>$pid</code> ： </p><br><pre> <code class="bash hljs">$ ls -l /proc/$$/ns total 0 lrwxrwxrwx 1 iffy iffy 0 May 18 12:53 cgroup -&gt; cgroup:[4026531835] lrwxrwxrwx 1 iffy iffy 0 May 18 12:53 ipc -&gt; ipc:[4026531839] lrwxrwxrwx 1 iffy iffy 0 May 18 12:53 mnt -&gt; mnt:[4026531840] lrwxrwxrwx 1 iffy iffy 0 May 18 12:53 net -&gt; net:[4026531957] lrwxrwxrwx 1 iffy iffy 0 May 18 12:53 pid -&gt; pid:[4026531836] lrwxrwxrwx 1 iffy iffy 0 May 18 12:53 user -&gt; user:[4026531837] lrwxrwxrwx 1 iffy iffy 0 May 18 12:53 uts -&gt; uts:[4026531838]</code> </pre> <br><p> 您可以打开另一个终端，执行相同的命令，这应该给您相同的结果。 如前所述，这是因为该进程必须属于某个名称空间（名称空间），并且在我们明确指定哪个名称空间之前，Linux默认将其添加到名称空间中。 </p><br><p> 让我们稍微参与一下。 在第二个终端中，我们可以执行以下操作： </p><br><pre> <code class="bash hljs">$ hostname iffy $ sudo unshare -u bash $ ls -l /proc/$$/ns lrwxrwxrwx 1 root root 0 May 18 13:04 cgroup -&gt; cgroup:[4026531835] lrwxrwxrwx 1 root root 0 May 18 13:04 ipc -&gt; ipc:[4026531839] lrwxrwxrwx 1 root root 0 May 18 13:04 mnt -&gt; mnt:[4026531840] lrwxrwxrwx 1 root root 0 May 18 13:04 net -&gt; net:[4026531957] lrwxrwxrwx 1 root root 0 May 18 13:04 pid -&gt; pid:[4026531836] lrwxrwxrwx 1 root root 0 May 18 13:04 user -&gt; user:[4026531837] lrwxrwxrwx 1 root root 0 May 18 13:04 uts -&gt; uts:[4026532474] $ hostname iffy $ hostname coke $ hostname coke</code> </pre> <br><p>  <code>unshare</code>命令在新名称空间中启动程序（可选）。  <code>-u</code>标志告诉她在新的UTS名称空间中运行<code>bash</code> 。 请注意，我们新的<code>bash</code>进程指向另一个<code>uts</code>文件，而其他所有文件均保持不变。 </p><br><blockquote>  <em>创建新的名称空间通常需要超级用户访问权限。</em>  <code>unshare</code> <em>，</em> <em>我们将假定</em> <code>unshare</code> <em>和我们的实现都是使用</em> <code>sudo</code> <em>执行的</em> 。 </blockquote><p> 我们刚做的结果之一就是现在我们可以从新的bash进程中更改系统主机名，而这不会影响系统中的任何其他进程。 您可以通过在第一个终端中运行<code>hostname</code>并查看该主机名在那里没有更改来验证这一点。 </p><br><h2 id="no-chto-naprimer-takoe-konteyner"> 但是，例如，什么是容器？ </h2><br><p> 希望现在您对命名空间可以做什么有所了解。 您可以假定容器本质上是具有不同于其他进程名称空间的普通进程，这是正确的。 实际上，这是一个配额。 没有配额的容器不需要属于每种类型的唯一命名空间-它可以共享其中的一些。 </p><br><p> 例如，当您键入<code>docker run --net=host redis</code> ，您要做的就是告诉<code>docker run --net=host redis</code>不要为redis进程创建新的Network名称空间。 并且，正如我们已经看到的，Linux将像其他任何常规过程一样，将该过程添加为默认网络名称空间的参与者。 因此，从网络角度来看，redis过程与其他所有人完全相同。 这不仅是一个网络配置选项， <code>docker run</code>允许您对大多数现有名称空间进行此类更改。 这就引出了一个问题，什么是容器？ 是否有一个容器使用使用除一个公共命名空间之外的所有命名空间的进程？ 通常，容器带有通过名称空间实现<strong>隔离</strong>的概念：进程与其他人共享的名称空间和资源越少， <strong>隔离度</strong>就越高，这才是真正重要的。 </p><br><h2 id="izolirovanie"> 隔离度 </h2><br><p> 在本文的其余部分中，我们将为程序奠定基础，我们将其称为<code>isolate</code> 。  <code>isolate</code>将命令作为参数，并在一个新进程中启动它，该进程与系统的其余部分隔离，并受其自己的名称空间限制。 在以下文章中，我们将研究为<code>isolate</code>启动的process命令添加对单个名称空间的支持。 </p><br><p> 根据应用程序，我们将重点关注用户，装载，PID和网络名称空间。 在我们完成之后，其余的实现将相对微不足道（实际上，我们将在程序的初始实现中在此处添加UTS支持）。 例如，对Cgroups的考虑超出了本系列的范围（对cgroups的研究，cgroups <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">是</a>用于控制进程可以使用多少资源<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的容器的另一个组件</a> ）。 </p><br><p> 命名空间可能很快就可以使用，在探索每个命名空间时可以使用多种不同的方式，但是我们不能一次全部选择它们。 我们将仅讨论与我们正在开发的程序相关的那些方式。 为了了解配置此名称空间所需的步骤，每篇文章都将在控制台中对相关名称空间进行一些实验。 结果，我们已经对要实现的目标有了一个想法，然后将进行<code>isolate</code>的相应实现。 </p><br><blockquote> 为了避免帖子的代码重载，我们将不包括诸如辅助功能之类的对于理解实现不是必需的东西。 您可以<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在Github上</a>找到完整的源代码。 </blockquote><br><h2 id="realizaciya"> 实作 </h2><br><p> 这篇文章的源代码<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">可以在这里找到</a> 。 我们的<code>isolate</code>实现将是一个简单的程序，该程序从stdin读取一条带有命令的行，并克隆一个使用指定参数执行该行的新进程。 使用该命令克隆的进程将以其自己的UTS命名空间运行，就像我们之前使用<code>unshare</code> 。 在接下来的文章中，我们将看到名称空间不一定能在盒子里正常工作（或至少提供隔离），并且我们需要在创建名称空间之后（但在实际运行命令之前）执行一些配置，以便命令真正地独立运行。 </p><br><p> 这种名称空间的create-configure组合将需要主<code>isolate</code>进程与命令的子进程之间进行一些交互。 因此，这里主要工作的一部分将是配置两个进程之间的连接通道-在我们的例子中，由于其简单性，我们将使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Linux管道</a> 。 </p><br><p> 我们需要做三件事： </p><br><ol><li> 创建一个基本的<code>isolate</code>进程，从stdin读取数据。 </li><li> 克隆一个新进程，该进程将在新的UTS命名空间中运行命令。 </li><li> 配置管道，以使命令执行过程仅在从主过程接收到名称空间配置已完成的信号后才开始其启动。 </li></ol><br><p> 这是基本过程： </p><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">main</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> argc, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> **argv)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-class"><span class="hljs-keyword"><span class="hljs-class"><span class="hljs-keyword">struct</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">params</span></span></span><span class="hljs-class"> </span><span class="hljs-title"><span class="hljs-class"><span class="hljs-title">params</span></span></span><span class="hljs-class">;</span></span> <span class="hljs-built_in"><span class="hljs-built_in">memset</span></span>(&amp;params, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">sizeof</span></span>(struct params)); parse_args(argc, argv, &amp;params); <span class="hljs-comment"><span class="hljs-comment">//         . if (pipe(params.fd) &lt; 0) die("Failed to create pipe: %m"); //   . int clone_flags = SIGCHLD | CLONE_NEWUTS ; int cmd_pid = clone(cmd_exec, cmd_stack + STACKSIZE, clone_flags, &amp;params); if (cmd_pid &lt; 0) die("Failed to clone: %m\n"); //      . int pipe = params.fd[1]; //      namespace ... //   ,     . if (write(pipe, "OK", 2) != 2) die("Failed to write to pipe: %m"); if (close(pipe)) die("Failed to close pipe: %m"); if (waitpid(cmd_pid, NULL, 0) == -1) die("Failed to wait pid %d: %m\n", cmd_pid); return 0; }</span></span></code> </pre> <br><p> 注意我们传递到<code>clone</code>调用中的<code>clone_flags</code> 。 看到在自己的名称空间中创建流程有多容易吗？ 我们需要做的就是为名称空间类型设置一个标志（ <code>CLONE_NEWUTS</code>标志对应于UTS命名空间），Linux将负责其余的工作。 </p><br><p> 接下来，命令进程在启动之前需要一个信号： </p><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">int</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">cmd_exec</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">void</span></span></span></span><span class="hljs-function"><span class="hljs-params"> *arg)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-comment"><span class="hljs-comment">//   cmd   isolate . if (prctl(PR_SET_PDEATHSIG, SIGKILL)) die("cannot PR_SET_PDEATHSIG for child process: %m\n"); struct params *params = (struct params*) arg; //   ' '   . await_setup(params-&gt;fd[0]); char **argv = params-&gt;argv; char *cmd = argv[0]; printf("===========%s============\n", cmd); if (execvp(cmd, argv) == -1) die("Failed to exec %s: %m\n", cmd); die("¯\\_(ツ)_/¯"); return 1; }</span></span></code> </pre> <br><p> 最后，我们可以尝试运行此命令： </p><br><pre> <code class="bash hljs">$ ./isolate sh ===========sh============ $ ls isolate isolate.c isolate.o Makefile $ hostname iffy $ hostname coke $ hostname coke <span class="hljs-comment"><span class="hljs-comment">#     ,     </span></span></code> </pre> <br><p> 现在， <code>isolate</code>不仅仅是一个简单地使团队分叉的程序（我们有一个适用于我们的UTS）。 在下一篇文章中，我们将通过检查User命名空间并使<code>isolate</code>在其自己的User命名空间中执行命令来采取下一步。 在那里，我们将看到我们实际上需要做一些工作，以便拥有可以在其中执行命令的可用命名空间。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN458462/">https://habr.com/ru/post/zh-CN458462/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN458446/index.html">超大规模数据中心：谁来建造它们以及它们要花多少钱</a></li>
+<li><a href="../zh-CN458450/index.html">量子计算机的特征</a></li>
+<li><a href="../zh-CN458452/index.html">如何通过杂货店的方式制作办公室厨房</a></li>
+<li><a href="../zh-CN458454/index.html">Alexey Savvateev：互联网和社交网络的模型</a></li>
+<li><a href="../zh-CN458460/index.html">来自OpenStreetMap No.466的世界新闻（06/18/2019-06/26/2019）</a></li>
+<li><a href="../zh-CN458464/index.html">激光调制解调器上的3 km千兆链路</a></li>
+<li><a href="../zh-CN458468/index.html">如何举办令人印象深刻的看板站立会议？</a></li>
+<li><a href="../zh-CN458470/index.html">纹理，或成为Surface Artist所需要了解的知识。 第2部分。蒙版和纹理</a></li>
+<li><a href="../zh-CN458472/index.html">使用公开数据通过热势方法编制领土等级</a></li>
+<li><a href="../zh-CN458474/index.html">HighLoad ++ 2018的最佳报告</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

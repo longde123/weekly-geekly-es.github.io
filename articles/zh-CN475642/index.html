@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤛🏽 🖕🏾 ✌🏽 PostgreSQL中仅堆元组机制 🧔🏼 💇🏼 🏺</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="PostgreSQL与其他DBMS的不同之处在于，在UPDATE操作期间，不会对现有行进行更改，而是制作了行副本，该行副本与原始行有所不同，但列值受更新影响-它们在原始行中很旧并且在副本中已更改。 一方面，这种方法允许您在执行读写请求时避免锁定，另一方面，它需要不断清除没有人会读取的旧版本的字符串。...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL中仅堆元组机制</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/475642/"><p> PostgreSQL与其他DBMS的不同之处在于，在UPDATE操作期间，不会对现有行进行更改，而是制作了行副本，该行副本与原始行有所不同，但列值受更新影响-它们在原始行中很旧并且在副本中已更改。 一方面，这种方法允许您在执行读写请求时避免锁定，另一方面，它需要不断清除没有人会读取的旧版本的字符串。 与该体系结构功能有关，通常会产生一个问题，即如果您需要在数据库中存储诸如最后一次访问数据的时间之类的东西，而该时间原本不会改变，那将会发生什么。 它会对性能产生反应吗？ 是否会导致指数的不断调整？ </p><br><p> 简而言之，是的，“写时复制”将无处可去，但是由于HOT，在许多情况下无法重建索引。 </p><a name="habracut"></a><br><p> 仅堆元组（也称为HOT）是Postgres用于减少更新所需的I / O量的优化。 由于MVCC，Postgres中的更新包括查找更新行，并将该行的新版本插入数据库。 此过程的主要缺点是需要向每个索引重新添加一行。 <br> 这需要更多的I / O，因为该行需要重新插入到表中的每个索引中。 由于磁盘上新版本的物理位置与旧版本的物理位置不同，因此需要重新插入。 </p><br><p> 为了减少UPDATE所需的I / O量，Postgres团队将HOT添加到了Postgres。  HOT背后的想法相对简单。 更新该行时，如果可能，Postgres将在该行的旧副本之后立即放置该行的新副本。 另外，在字符串的旧副本中，会贴上一个特殊标签，以便Postgres知道字符串的新副本紧随旧字符串之后。 因此，不需要更新所有索引。 </p><br><p> 在通过索引进行扫描时，字符串的新副本将通过该索引，Postgres筛选器将找到该字符串的旧副本。 由于该行的旧副本上有一个特殊标签，因此Postgres将理解该行的新副本位于旧行之后，并会找到并使用新版本。 事实证明，在这种情况下，Postgres的行为就好像所有索引都指向该字符串的新副本一样，并且不需要重新构建它们。 </p><br><p> 现在，仅当更新中仅包含不可索引的列时，才涉及HOT。 如果索引中至少包含一列参与更新，则无法应用HOT。 在这种情况下，使用HOT存在几个问题。 例如，当需要更新的列索引通过扫描索引并且该行的旧副本属于扫描谓词时，而新副本则不包含在扫描谓词中。 在这种情况下，Postgres将尝试使用索引来快速查找适合查询谓词的所有行，并且对于使用HOT更新的列，它将生成与查询谓词不匹配的行的新副本。 由于此限制（当更新中包含可索引的列时，HOT无法工作），Postgres可以保证，当他尝试查找适合通过该谓词的谓词的行时，如果谓词与该行的旧版本匹配，则该行的新版本也适合他，反之亦然。 </p><br><p> 当前正在开发一个称为WARM的HOT扩展，该扩展在更新创建索引的列时也可以使用。  WARM的想法是在旧行之后立即放置新行，并为已更改列的索引更新行。 这使所描述的情况大大复杂化，因为现在Postgres需要一种以某种方式确定行是否通过索引过滤器的方法。 </p><br><p>  <strong>PS</strong>在原始文章中，描述了HOT机制，但是在这里我们要记住只涉及堆元组的机制，该术语本身具有单独的含义。 </p><br><p> 仅堆元组只是该行的新版本。 看起来很奇怪，Heap是一个表，并且Heap仅意味着只能通过从旧版本的根（称为根）开始的链找到该行。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN475642/">https://habr.com/ru/post/zh-CN475642/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN475624/index.html">PHP-Watcher：简化长期应用程序开发的工具</a></li>
+<li><a href="../zh-CN475626/index.html">自动测试可以代替一个人寻找漏洞：采访亚历山德拉·斯瓦蒂科娃（Alexandra Svatikova）</a></li>
+<li><a href="../zh-CN475630/index.html">Knative-基于k8s的平台即服务，无服务器支持</a></li>
+<li><a href="../zh-CN475636/index.html">增量向量元素</a></li>
+<li><a href="../zh-CN475640/index.html">如果要创建东西，请避免经理的日程安排。</a></li>
+<li><a href="../zh-CN475646/index.html">尤里·里亚巴采夫（Yuri Ryabtsev）：“第一次拦截弹道导弹的事件大约等于加加林的飞行”</a></li>
+<li><a href="../zh-CN475652/index.html">我们如何在Aurora OS（Sailfish Mobile OS RUS）上开发移动应用程序</a></li>
+<li><a href="../zh-CN475654/index.html">“头三个月，三个健康的男人害怕打开涡轮机”-阿列克谢·斯塔森科如何从头开始建造喷气背包</a></li>
+<li><a href="../zh-CN475656/index.html">2019年10月移动设备的病毒活动回顾</a></li>
+<li><a href="../zh-CN475658/index.html">为什么要去DevOpsDays？ 为什么这不是另一个DevOps会议</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

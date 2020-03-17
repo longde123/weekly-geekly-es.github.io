@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍞 🧤 👮 使用逻辑复制在主要PostgreSQL版本之间进行无缝（几乎）迁移 👨🏿‍🍳 💪🏼 🔴</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在True Engineering中，在一个项目中，需要将PostgreSQL的版本从9.6更改为11.1。 
+
+ 怎么了 该项目的数据库大小已经达到1.5 Tb，并且还在不断增长。 性能是系统的主要要求之一。 数据结构本身也在不断发展：添加新列，更改现有列。 新版本的Postgres已经学习了如何...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>使用逻辑复制在主要PostgreSQL版本之间进行无缝（几乎）迁移</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/true_engineering/blog/437318/"> 在True Engineering中，在一个项目中，需要将PostgreSQL的版本从9.6更改为11.1。 <br><br> 怎么了 该项目的数据库大小已经达到1.5 Tb，并且还在不断增长。 性能是系统的主要要求之一。 数据结构本身也在不断发展：添加新列，更改现有列。 新版本的Postgres已经学习了如何通过添加具有默认值的新列来有效地工作，因此无需在应用程序级别隔离自定义拐杖。 即使在新版本中，也添加了几种分区表的新方法，这在处理大量数据的情况下也非常有用。 <br><br> 因此，可以确定，我们正在迁移。 当然，您可以与旧版本同时发行新版本的PostgreSQL服务器，停止应用程序，使用转储/还原（或pg_upgrade）移动数据库，然后重新启动应用程序。 由于基地的规模很大，因此该解决方案不适合我们，此外，该应用程序可在战斗模式下工作，停机时间只有几分钟。 <br><br> 因此，我们决定尝试使用称为<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pgologic</a>的第三方插件在PostgreSQL中使用逻辑复制进行迁移。 <br><br> 在“试用”过程中，我们遇到了有关该过程的非常零散的文档（俄语根本不是），以及一些陷阱和不明显的细微差别。 在本文中，我们想以教程的形式介绍我们的经验。 <br><br><img src="https://habrastorage.org/webt/cp/i7/oi/cpi7oixtsenmioqdrcyyotgagyk.png"><br><br>  <b>TL; DR</b> <br><br><ul><li> 一切都结果了（并非没有拐杖，有关拐杖的文章）。 </li><li> 您可以在PostgreSQL版本中从9.4迁移到11.x，也可以从任何版本向下或向上迁移。 </li><li> 停机时间等于您的应用程序重新连接到新的数据库服务器所花费的时间（在我们的示例中，这是整个应用程序的重新启动，但显然，在野外显然是“可能的选择”）。 </li></ul><a name="habracut"></a><br><h3> 为什么“前额”解决方案不适合我们 </h3><br> 正如我们已经说过的，最简单的方法是与旧版本同时提高新版本的PostgreSQL服务器，停止应用程序，使用dump / restore（或pg_upgrade）移动数据库，然后再次启动应用程序。 对于小容量的数据库，原则上来说，这是一个非常合适的选择（或者，通常情况下，当您可以选择在数据库从旧服务器到新服务器的“输液”期间“关闭”应用程序的停机时间时，无论该时间有多长，该卷都不重要）。 但是在我们的例子中，数据库在磁盘上大约需要1.5 Tb的存储空间，移动它不是几分钟，而是几个小时。 反过来，该应用程序可以在战斗模式下工作，我真的很想避免停机时间超过几分钟。 <br><br> 同样反对这一选择的事实是，我们使用主从复制，并且无法安全地从工作流程中关闭从服务器。 因此，要在迁移主服务器后将应用程序从旧版本的PostgreSQL切换到新版本，则有必要在启动应用程序之前准备新的从属服务器。 在创建从站之前，这要花费几个小时的停机时间（尽管比主服务器的迁移要少得多）。 <br><br> 因此，我们决定尝试使用称为pgologic的第三方插件在PostgreSQL中使用逻辑复制进行迁移。 <br><br><h3> 一般资讯 </h3><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pglogical</a>是在PostgreSQL中使用本机逻辑解码的逻辑复制系统，并已实现为PostgreSQL扩展。 允许您使用订阅/发布模型配置选择性复制。 它不需要在数据库中创建触发器或使用任何外部实用程序进行复制。 <br><br> 该扩展名适用于从9.4版本开始的任何版本的PostgreSQL（自9.4起首次出现逻辑解码），并且允许您以任何方向在任何受支持的PostgreSQL版本之间迁移。 <br><br> 手动使用pgologic手动设置复制并不是一件容易的事，尽管从原理上讲这是完全可能的。 幸运的是，我们将使用第三方实用程序<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pgrepup</a>来自动执行配置过程。 <br><br><h3> 磁盘空间备忘 </h3><br> 由于我们计划与旧版本同时在同一服务器上提高新版本的PostgreSQL，因此主服务器和从属服务器上数据库的磁盘需求将增加一倍。 看来这是显而易见的，但是...在开始复制之前，请照顾好足够的可用空间，以免后悔漫漫的岁月。 <br><br> 在我们的案例中，需要修改数据库，以及在9.6和11之间“迁移”期间迁移的存储格式，而不是最新版本，因此磁盘空间必须增加2倍，而不是增加2.2倍。 赞美LVM，这可以在迁移过程中完成。 <br><br> 通常，请注意这一点。 <br><br><h3> 在Master上安装PostgreSQL 11 </h3><br><blockquote> 注意：我们使用Oracle Linux，并且针对此发行版将完善以下所有内容。 其他Linux发行版可能需要对文件进行少许修订，但这不太重要。 </blockquote><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   yum install https://download.postgresql.org/pub/repos/yum/11/redhat/rhel-7-x86_64/pgdg-oraclelinux11-11-2.noarch.rpm #   postgresql11 yum install postgresql11 postgresql11-devel postgresql11-server postgresql11-contrib #   /usr/pgsql-11/bin/postgresql-11-setup initdb</span></span></code> </pre> <br> 旧的datadir位于<b>/var/lib/pgsql/9.6/data中</b> ，新的datadir因此位于<b>/ var / lib / pgsql / 11 / data中</b> <br><br> 将访问设置（ <b>pg_hba.conf</b> ）和服务器设置（ <b>postgresql.conf</b> ）从9.6复制到11。 <br><br> 要在同一台机器上运行两个PostgreSQL服务器，请在<b>postgresql.conf</b> 11配置配置中将端口更改为15432（端口= 15432）。 <br><br> 在这里，您需要仔细考虑在新版本的PostgreSQL中还需要做些什么，特别是针对您的情况，以便它从您的<b>postgresql.conf</b>开始（您的应用程序最终可以使用它）。 在我们的情况下，需要在新版本中安装我们使用的PostgreSQL扩展。 这超出了本文的范围，仅使新的PostgreSQL启动，运行并完全适合您即可：) <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#  ,  ,  shared libraries, whatever... # .... #  systemctl enable postgresql-11 systemctl start postgresql-11</span></span></code> </pre> <br> 我们在<b>/ var / lib / pgsql / 11 / data / pg_log /中查看</b> 。 一切还好吗？ 我们继续！ <br><br><h3> 安装和配置pgrepup </h3><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#  python yum install python yum install python2-pip #  pgrepup pip install pgrepup #   pgrepup config</span></span></code> </pre> <br><img src="https://habrastorage.org/webt/zg/xz/9o/zgxz9oct5l-qglkxyeyrqejh4we.png"><br><br> 细微差别： <br><br><ol><li> 作为<b>app_owner，我们</b>指定运行PostgreSQL服务器的用户。 </li><li> 对于<b>数据库，</b>指定<b>template1</b> 。 </li><li>  <b>用户名</b>和<b>密码</b> -用于超级用户访问的数据。 在我们的例子中，在<b>pg_hba.conf中</b>为<b>postgres</b>用户的本地连接指定了<b>trust</b>方法，因此您可以指定任意密码。 </li></ol><br><h3> 配置复制 </h3><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   pgrepup check</span></span></code> </pre><br> 我们得到许多必须根据需要配置的参数列表的输出。 <br><br> 验证结果示例： <br><br><img src="https://habrastorage.org/webt/h3/wu/zm/h3wuzmcevo7idf-xlyrz3ae8av8.png"><br><br><img src="https://habrastorage.org/webt/58/zh/bb/58zhbbubdbfvzzgat051bviywqy.png"><br><br> 验证过程中的所有错误都需要消除。 在两台服务器的设置中，都应设置<b>wal_level = LOGICAL</b> （为了使逻辑解码正常工作），这是复制引擎的必要设置（插槽数和<b>wal_senders</b> ）。  pgrepup实用程序的提示非常有用；大多数情况下都不会出现问题。 <br><br> 我们进行了pgrepup要求的所有必要设置。 <br><br> 在这两个<b>pg_hba.conf</b>文件中，我们为将要执行复制的用户添加权限，所有权限都在pgrepup提示符下： <br><br><pre> <code class="bash hljs">host replication pgrepup_replication 127.0.0.1/32 md5 host all pgrepup_replication 127.0.0.1/32 md5</code> </pre> <br><h3> 添加主键 </h3><br> 为了使复制生效，必须在所有表中定义主键。 <br><br> 在我们的情况下，PK并非无处不在，因此，在复制时，您需要添加它，在复制结束时，如有必要，将其删除。 <br><br> 没有PK的表列表将产生<code>pgrepup check</code> 。 对于此列表中的所有表，您需要以适合您的任何方式添加主键。 在我们的情况下，它类似于： <br><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> %s <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COLUMN</span></span> temporary_pk <span class="hljs-type"><span class="hljs-type">BIGSERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span></code> </pre> <br>  pgrepup实用程序具有用于执行此操作的内置命令（ <code>pgrepup fix</code> ），即使使用了该命令，也可以理解，如果复制<code>pgrepup fix</code> ，这些临时列将被自动删除。 但是，不幸的是，此功能在很大的基础上是如此虚幻和令人迷惑的错误，我们决定不使用它，而是手动进行此操作，因为它对我们很方便。 <br><br><h3> 安装pgologic扩展 </h3><br> 可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处</a>找到安装扩展的说明。 该扩展名必须同时安装在两台服务器上。 <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#       curl https://access.2ndquadrant.com/api/repository/dl/default/release/9.6/rpm | bash curl https://access.2ndquadrant.com/api/repository/dl/default/release/11/rpm | bash #   yum install postgresql96-pglogical postgresql11-pglogical</span></span></code> </pre> <br> 在两个服务器的<b>postgresql.conf中</b>添加库负载： <br><br><pre> <code class="bash hljs">shared_preload_libraries = <span class="hljs-string"><span class="hljs-string">'pglogical'</span></span></code> </pre> <br><h3> 安装pgl_ddl_deploy扩展 </h3><br> 这是pgrepup用于逻辑DDL复制的帮助程序扩展。 <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#      git clone https://github.com/enova/pgl_ddl_deploy.git #       PATH=/usr/pgsql-9.6/bin/:$PATH USE_PGXS=1 make USE_PGXS=1 make install make clean #       PATH=/usr/pgsql-11/bin/:$PATH make CLANG=true make install</span></span></code> </pre> <br> 在两个服务器的<b>postgresql.conf中</b>添加库负载： <br><br><pre> <code class="bash hljs">shared_preload_libraries = <span class="hljs-string"><span class="hljs-string">'pglogical,pgl_ddl_deploy'</span></span></code> </pre> <br><h3> 检查变更 </h3><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   postgresql systemctl restart postgresql-11</span></span></code> </pre> <br> 现在使用<code>pgrepup check</code>您需要确保目标服务器一切正常，并且已完全消除了有关目标服务器的所有注释。 <br><br> 如果一切正常，则可以重新启动旧服务器。 在这里，您需要考虑应用程序对数据库服务器重启的反应，也许您应该首先停止它。 <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#  systemctl restart postgresql-9.6 #  pgrepup check</span></span></code> </pre> <br> 现在，在命令的输出中，所有项目都应标记为OK。 <br><br> 看来您可以开始迁移了，但是... <br><br><h3> 修复pgrepup错误 </h3><br> 当前版本的pgrepup中有几个错误，这些错误使得无法移植。 拉取请求已发送，但是可惜它们被忽略了，因此您必须手动进行更正。 <br><br> 我们转到pgrepup安装文件夹（我们的情况是<b>/usr/lib/python2.7/site-packages/pgrepup/commands/</b> ）。 <br><br> 做一次。 在每个<b>* .py</b>文件中，在函数描述中添加缺少的<code>**kwargs</code> 。 一幅图画胜过一千个单词： <br><br><img src="https://habrastorage.org/webt/l3/zc/uo/l3zcuo2exe8lq_0u3gwv_nq8jty.png"><br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在这里</a>提交。 <br><br> 做两个。 在<b>setup.py中，</b>我们搜索“ sh -c”这两个条目，所有多行shell命令都必须做成单行。 <br><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在这里</a>提交。 <br><br><h3> 开始迁移 </h3><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#  pgrepup setup</span></span></code> </pre> <br>  pgrepup使用此命令准备两台服务器开始复制，创建用户，配置pgologic，传输数据库模式。 <br><br><img src="https://habrastorage.org/webt/ww/km/jd/wwkmjdmmpmwyvgbdqyktohnhmmy.png"><br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   pgrepup start</span></span></code> </pre> <br> 他说：“走吧！” 挥了挥手： <br><br><img src="https://habrastorage.org/webt/3k/xc/_r/3kxc_rgde-t7q6yuhtvwkol5acs.png"><br><br> 复制正在运行。 使用<code>pgrepup status</code>命令可以看到当前情况： <br><br><img src="https://habrastorage.org/webt/ig/gs/wb/iggswbqldii-c6cd5a1y7qyqawu.png"><br><br> 在这里，我们看到两个数据库已经移动并且复制正在进行中，而一个仍在移动过程中。 现在只剩下喝咖啡了，等到原始数据库的全部数据被抽出。 <br><br> 在此过程中，您可以更深入地了解pgrepup外观，并了解幕后情况。 对于询问者，以下是一系列查询作为起点： <br><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_replication_origin_status <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> remote_lsn <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> *,pg_xlog_location_diff(s.sent_location,s.replay_location) byte_lag <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_stat_replication s; <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> query <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_stat_activity <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> application_name=<span class="hljs-string"><span class="hljs-string">'subscription_copy'</span></span></code> </pre> <br> 喝咖啡（在撰写本文时，在测试服务器上，大约700Gb的数据迁移持续了一天左右），我们终于看到了下图： <br><br><img src="https://habrastorage.org/webt/ep/2e/q2/ep2eq2c_mtywxboftk4ocb0e_1c.png"><br><br> 这意味着是时候准备一个新的Slave了。 <br><br><h3> 在从站上安装PostgreSQL 11 </h3><br> 这里的一切都很简单，根据教科书，没有任何细微差别。 <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   yum install https://download.postgresql.org/pub/repos/yum/11/redhat/rhel-7-x86_64/pgdg-oraclelinux11-11-2.noarch.rpm #  postgresql 11 yum install postgresql11 postgresql11-devel postgresql11-server postgresql11-contrib #      su - postgres pg_basebackup -h db-master.hostname -p 15432 -D /var/lib/pgsql/11/data/ -R -P -U replication -X stream -c fast</span></span></code> </pre> <br> 将访问设置（ <b>pg_hba.conf</b> ）和服务器设置（ <b>postgresql.conf</b> ）从9.6复制到11。在<b>postgresql.conf</b> 11版本配置中，将端口更改为15432（port = 15432） <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#  systemctl enable postgresql-11 systemctl start postgresql-11</span></span></code> </pre> <br><pre> <code class="pgsql hljs">#     Master <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> *,pg_wal_lsn_diff(s.sent_lsn,s.replay_lsn) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> byte_lag <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_stat_replication s; #     Slave <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> now()-pg_last_xact_replay_timestamp();</code> </pre><br><h3> 小计 </h3><br> 完成所有这些步骤之后，我们得到了这个棘手的复制方案： <br><br><img src="https://habrastorage.org/webt/70/ns/ej/70nsejcslxlccih_yktvesptqjg.png"><br><br> 在这里，作为最后检查（最后只是很漂亮），您可以在9.6 Master数据库中执行一些UPDATE，并观察它如何复制到其他三台服务器。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/7c0/c42/89e/7c0c4289e8a00b100f58ce751bd9209e.png" alt="图片"><br><br><h3> 将应用程序切换到新版本的PostgreSQL </h3><br> 到目前为止，我们的应用程序尚未怀疑有关新版本PostgreSQL的任何信息，是时候对其进行修复。 此处的选项基本上仅取决于两件事： <br> 您是否会超过旧服务在相同端口上的新服务， <br> 以及重新启动数据库服务器时您的应用程序是否需要重新启动。 <br><br> 为了娱乐，我们将回答两个问题“是”并继续。 <br><br> 我们停止申请。 <br><br><pre> <code class="pgsql hljs"># ,   , : <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_stat_activity;</code> </pre> <br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#    #       sequences. pgrepup stop</span></span></code> </pre> <br><img src="https://habrastorage.org/webt/cz/hc/2t/czhc2t8k6pjk-6ivvilidj5k9xq.png"><br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#      pgrepup uninstall</span></span></code> </pre><br><img src="https://habrastorage.org/webt/2w/ud/dq/2wuddqovqbninwwz9rx9fia8psa.png"><br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#  master: #    systemctl disable postgresql-9.6 #   ,  ,  . systemctl stop postgresql-9.6 systemctl stop postgresql-11 #  slave: #    systemctl disable postgresql-9.6 #   ,  ,  . systemctl stop postgresql-9.6 systemctl stop postgresql-11</span></span></code> </pre> <br> 我们将新版本的<b>postgresql.conf</b>配置中的标准端口返回给Master和Slave。 <br><br> 在新的从站上，我们还将端口<b>恢复为recovery.conf中</b>的标准端口。 <br><br> 在此过程中，有人提出过一个建议，那就是进一步更改不再活跃的旧版本上的端口： <br> 我们将旧版本的<b>postgresql.conf中的</b>非标准端口暴露给Master和Slave。 <br> 在旧的Slave上，我们还在<b>recovery.conf</b>中将端口更改为非标准端口。 <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#   master systemctl enable postgresql-11 systemctl start postgresql-11 #   slave: systemctl enable postgresql-11 systemctl start postgresql-11</span></span></code> </pre> <br> 检查日志。 <br><br> 检查主服务器上的复制状态。 <br><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> *,pg_wal_lsn_diff(s.sent_lsn,s.replay_lsn) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> byte_lag <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_stat_replication s;</code> </pre> <br> 我们启动该应用程序。 我们高兴了半个小时。 <br><br>  <b>最后，关于该主题的有用文献：</b> <br><br><ul><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">逻辑的</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pgologic的安装说明</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pgologic文档</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">使用pgologic将PostgreSQL从9.4升级到10.3</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pgrepup-使用逻辑复制升级PostgreSQL</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pgrepup-PostgreSQL复制和升级</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">使用pgologic将PostgreSQL从9.6升级到10并减少停机时间</a> </li></ul><br> 祝你好运！ </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN437318/">https://habr.com/ru/post/zh-CN437318/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN437308/index.html">SDL 2.0课程周期：第4课-处理事件</a></li>
+<li><a href="../zh-CN437310/index.html">CSS渐变边框</a></li>
+<li><a href="../zh-CN437312/index.html">在Linux和macOS上热重载C ++代码：深入研究</a></li>
+<li><a href="../zh-CN437314/index.html">Italian Enigma：OMI密码机</a></li>
+<li><a href="../zh-CN437316/index.html">自2月1日起，Internet Development Institute已命名可能在RuNet上断开连接的站点</a></li>
+<li><a href="../zh-CN437320/index.html">2018年媒体领域发展指数：电视停滞，对非正式媒体的信心增强</a></li>
+<li><a href="../zh-CN437322/index.html">该州从事BigDate</a></li>
+<li><a href="../zh-CN437324/index.html">血腥之吻：吸血蝙蝠唾液的血管舒张特性</a></li>
+<li><a href="../zh-CN437326/index.html">关于乘法，平方根提取，进口替代和米兰德公司的问题</a></li>
+<li><a href="../zh-CN437330/index.html">开发者-谈论倦怠</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤱 ♒️ 👰🏻 故障转移群集PostgreSQL + Patroni。 实施经验 ✋🏾 🍺 👃🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在本文中，我将告诉您我们如何解决PostgreSQL容错问题，为什么这对我们变得很重要以及最终发生了什么。 
+
+ 我们的服务负载很高：全球有250万用户，每天有5万多位活跃用户。 这些服务器位于爱尔兰一个地区的Amazone：不断运行着100多种不同的服务器，其中近50台使用数据库。 
+
+ 整个后端...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>故障转移群集PostgreSQL + Patroni。 实施经验</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/miro/blog/457326/"> 在本文中，我将告诉您我们如何解决PostgreSQL容错问题，为什么这对我们变得很重要以及最终发生了什么。 <br><br> 我们的服务负载很高：全球有250万用户，每天有5万多位活跃用户。 这些服务器位于爱尔兰一个地区的Amazone：不断运行着100多种不同的服务器，其中近50台使用数据库。 <br><br> 整个后端是一个大型的单状态Java应用程序，可保持与客户端的恒定Websocket连接。 由于几个用户在一块板上同时工作，他们都可以实时看到更改，因为我们将每个更改记录在数据库中。 每秒我们数据库大约有1万个查询。 在Redis的峰值负载下，我们每秒写80-100K个查询。 <br><img src="https://habrastorage.org/webt/ef/pn/er/efpner_0rhtuim1zt0gwrhff3b8.png"><br><a name="habracut"></a><br><br><h2> 为什么我们从Redis切换到PostgreSQL </h2><br> 最初，我们的服务与Redis（键值存储库）一起使用，该键值存储库将所有数据存储在服务器的RAM中。 <br><br>  Redis的优点： <br><br><ol><li> 响应率高 一切都存储在内存中； </li><li> 备份和复制的便利。 </li></ol><br>  Reds缺点： <br><br><ol><li>没有实际交易。 我们尝试在应用程序级别上对它们进行仿真。 不幸的是，这并不总是很好，并且需要编写非常复杂的代码。 </li><li> 数据量受内存量限制。 随着数据量的增加，内存将增加，最后，我们将遇到所选实例的特征，这在AWS中要求停止我们的服务以更改实例的类型。 </li><li> 有必要不断保持低延迟水平，因为 我们有很多要求。 对我们来说，最佳延迟级别是17-20毫秒。 在30到40毫秒的级别上，我们可以对应用程序的请求和服务的下降获得很长的答案。 不幸的是，这发生在2018年9月，当时一个Redis实例由于某种原因收到的延迟比平时高2倍。 为了解决该问题，我们在一天当中停止了计划外的维护服务，并替换了有问题的Redis实例。 </li><li> 即使代码中有小错误，也很容易导致数据不一致，然后花费大量时间编写代码来修复此数据。 </li></ol><br> 我们考虑到了这些缺点，并意识到我们需要转移到更方便的地方，即正常的交易并且对延迟的依赖性降低。 进行了研究，分析了许多选择并选择了PostgreSQL。 <br><br> 我们使用新数据库已有1.5年的时间了，只传输了一小部分数据，因此现在我们同时使用Redis和PostgreSQL。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我的同事</a>在一篇<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文章中</a>写了有关在数据库之间移动和切换数据的各个阶段的更多信息。 <br><br> 当我们刚开始移动时，我们的应用程序直接与数据库一起使用，并转向Redis和PostgreSQL向导。  PostgreSQL集群由一个主副本和一个异步副本副本组成。 这是数据库操作方案的外观： <br><img src="https://habrastorage.org/webt/wc/wg/ef/wcwgefzqham9mw7hm-5xc37pfp0.png"><br><br><h2>  PgBouncer部署 </h2><br> 在我们迁移的同时，该产品也得到了发展：与PostgreSQL一起工作的用户数量和服务器数量都在增加，并且我们开始失去连接。  PostgreSQL为每个连接创建一个单独的进程并消耗资源。 您可以将连接数增加到一定程度，否则就有机会获得非最佳的数据库操作。 在这种情况下，理想的选择是选择将面对基础的连接管理器。 <br><br> 连接管理器有两个选项：Pgpool和PgBouncer。 但是第一个不支持使用数据库的事务性模式，因此我们选择了PgBouncer。 <br><br> 我们建立了以下工作方案：我们的应用程序访问一个PgBouncer，然后访问Masters PostgreSQL，在每个master之后，访问一个具有异步复制的副本。 <br><img src="https://habrastorage.org/webt/ql/uq/vh/qluqvh64yeyzwvow79wc3tt0nm0.png"><br><br> 同时，我们无法在PostgreSQL中存储全部数据，并且使用数据库的速度对我们很重要，因此我们开始在应用程序级别分片PostgreSQL。 上面描述的方案对此相对方便：添加新的PostgreSQL碎片时，足以更新PgBouncer配置，并且应用程序可以立即使用新的碎片。 <br><br><h3>  PgBouncer容错 </h3><br> 该方案一直有效，直到唯一的PgBouncer实例死亡。 我们位于AWS中，所有实例都在定期失效的硬件上运行。 在这种情况下，实例仅移至新硬件并可以再次工作。  PgBouncer发生了这种情况，但是它变得不可用。 这个秋天的结果是25分钟内我们的服务无法访问。  AWS建议在这种情况下在用户端使用冗余，这在我们当时还没有实现。 <br><br> 之后，我们认真考虑了PgBouncer和PostgreSQL集群的容错能力，因为在我们的AWS账户中的任何实例都可能再次发生类似情况。 <br><br> 我们构建了PgBouncer容错方案，如下所示：所有应用程序服务器都访问网络负载平衡器，其后有两个PgBouncer。 每个PgBouncer都查看每个分片的同一主PostgreSQL。 如果AWS实例再次崩溃，则所有流量都将通过另一个PgBouncer重定向。 容错网络负载平衡器提供AWS。 <br><br> 此方案使您可以轻松添加新的PgBouncer服务器。 <br><img src="https://habrastorage.org/webt/05/uc/da/05ucdayudomunfsxjc_gggs5abe.png"><br><br><h2> 创建PostgreSQL故障转移群集 </h2><br> 在解决此问题时，我们考虑了不同的选项：手写故障转移，repmgr，AWS RDS，Patroni。 <br><br><h3> 自写脚本 </h3><br> 他们可以监视母版的工作，并在其掉落的情况下将副本升级到母版并更新PgBouncer的配置。 <br><br> 这种方法的优点是最大程度的简化，因为您自己编写脚本并确切了解它们的工作方式。 <br><br> 缺点： <br><br><ul><li> 该向导可能不会消失；相反，可能会发生网络故障。 故障转移将在不知道的情况下将副本推进到主服务器，而旧的主服务器将继续工作。 结果，我们获得了两个服务器作为主服务器，我们不知道其中哪个服务器具有最新的数据。 这种情况也称为裂脑。 </li><li> 我们没有副本。 在我们的配置中，主服务器和一个副本在切换副本后将移至主服务器，并且我们不再具有副本，因此我们必须手动添加一个新副本。 </li><li> 当我们有12个PostgreSQL分片时，我们需要对故障转移进行其他监视，这意味着我们必须监视12个集群。 如果增加分片的数量，则仍必须记住要更新故障转移。 </li></ul><br> 自我编写的故障转移看起来非常复杂，需要非凡的支持。 对于一个PostgreSQL集群，这将是最简单的选择，但它不能扩展，因此不适合我们。 <br><br><h3>  Repmgr </h3><br> 用于PostgreSQL集群的Replication Manager，可以管理PostgreSQL集群的操作。 同时，其中没有“开箱即用”的自动故障转移功能，因此对于工作，您需要在现成的解决方案之上编写自己的“包装器”。 因此，所有结果都比使用自行编写的脚本还要复杂，因此我们甚至都没有尝试Repmgr。 <br><br><h3>  AWS RDS </h3><br> 它支持您需要的一切，我们知道如何备份并支持连接池。 它具有自动切换功能：在主服务器消失后，副本成为新的主服务器，AWS将dns记录更改为新的主服务器，而副本可以位于不同的可用区中。 <br><br> 缺点包括缺乏微妙的设置。 作为一个微调的例子：在我们的实例上，tcp连接受到限制，但是不幸的是，这不能在RDS中完成： <br><br><pre><code class="python hljs">net.ipv4.tcp_keepalive_time=<span class="hljs-number"><span class="hljs-number">10</span></span> net.ipv4.tcp_keepalive_intvl=<span class="hljs-number"><span class="hljs-number">1</span></span> net.ipv4.tcp_keepalive_probes=<span class="hljs-number"><span class="hljs-number">5</span></span> net.ipv4.tcp_retries2=<span class="hljs-number"><span class="hljs-number">3</span></span></code> </pre> <br> 此外，AWS RDS价格几乎是常规实例价格的两倍，这是拒绝该决定的主要原因。 <br><br><h3> 帕特罗尼 </h3><br> 这是一个用于管理PostgreSQL的python模板，具有良好的文档，自动故障转移和github源代码。 <br><br>  Patroni的优点： <br><br><ul><li> 每个配置参数都被绘制，很清楚它是如何工作的。 </li><li> 自动故障转移即开即用； </li><li> 它是用python编写的，并且由于我们自己用python编写了很多东西，因此对我们来说解决问题甚至可能有助于项目的开发将变得更加容易。 </li><li> 它完全控制PostgreSQL，允许您一次更改集群所有节点上的配置，如果需要重启集群以应用新配置，则可以使用Patroni再次进行。 </li></ul><br> 缺点： <br><br><ul><li> 从文档中尚不清楚如何使用PgBouncer。 尽管很难将其称为负号，但是因为Patroni的任务是管理PostgreSQL，以及如何与Patroni建立连接是我们的问题； </li><li> 大量实施Patroni的例子很少，而从头开始实施的例子很多。 </li></ul><br> 结果，为了创建故障转移群集，我们选择了Patroni。 <br><br><h2>  Patroni实施流程 </h2><br> 在Patroni之前，我们配置了12个PostgreSQL碎片，一个主数据库和一个具有异步复制的副本。 应用程序服务器通过网络负载平衡器访问数据库，该数据库后面有两个带有PgBouncer的实例，而它们后面都是所有PostgreSQL服务器。 <br><img src="https://habrastorage.org/webt/05/uc/da/05ucdayudomunfsxjc_gggs5abe.png"><br><br> 要实现Patroni，我们需要选择一个分布式集群配置存储库。  Patroni使用分布式配置存储系统，例如etcd，Zookeeper，Consul。 我们在产品上只有一个完整的Consul集群，可以与Vault结合使用，我们不再使用它。 开始将Consul用于其预期目的的重要原因。 <br><br><h3>  Patroni如何与领事合作 </h3><br> 我们有一个由三个节点组成的Consul集群，以及一个由领导者和副本组成的Patroni集群（在Patroni中，主服务器称为集群领导，从服务器称为副本）。  Patroni群集的每个实例都会不断将群集状态信息发送给Consul。 因此，您始终可以从Consul中找到Patroni集群的当前配置以及当前的领导者。 <br><br><img src="https://habrastorage.org/webt/jx/j5/is/jxj5ispkzoegn8x80dw-qtynw3q.png"><br><br> 要将Patroni连接到Consul，只需学习官方文档，该文档表明您需要以http或https格式指定主机，具体取决于我们与Consul的合作方式以及连接方案，可选： <br><br><pre> <code class="plaintext hljs">host: the host:port for the Consul endpoint, in format: http(s)://host:port scheme: (optional) http or https, defaults to http</code> </pre> <br> 看起来很简单，但是这里就存在陷阱。 使用Consul，我们正在通过https建立安全连接，我们的连接配置如下所示： <br><br><pre> <code class="python hljs">consul: host: https://server.production.consul:<span class="hljs-number"><span class="hljs-number">8080</span></span> verify: true cacert: {{ consul_cacert }} cert: {{ consul_cert }} key: {{ consul_key }}</code> </pre> <br> 但这是行不通的。 一开始，Patroni无法连接到Consul，因为它仍然尝试遵循http。 <br><br>  Patroni的源代码有助于解决该问题。 好东西是用python编写的。 事实证明，根本不解析host参数，并且必须在方案中指定协议。 这是与Consul合作的工作配置块： <br><br><pre> <code class="python hljs">consul: host: server.production.consul:<span class="hljs-number"><span class="hljs-number">8080</span></span> scheme: https verify: true cacert: {{ consul_cacert }} cert: {{ consul_cert }} key: {{ consul_key }}</code> </pre> <br><h3> 领事模板 </h3><br> 因此，我们选择了用于配置的存储。 现在，您需要了解在更改Patroni集群中的领导者时PgBouncer将如何切换其配置。 该文档未回答此问题，因为 原则上，这里没有描述与PgBouncer一起工作。 <br><br> 为了寻找解决方案，我们找到了一篇文章（不幸的是，我不记得这个名字了），上面写着Consul模板在连接PgBouncer和Patroni方面有很大帮助。 这促使我们研究领事模板的工作。 <br><br> 事实证明，Consul模板会不断监视Consul中PostgreSQL集群的配置。 领导者更改后，他将更新PgBouncer配置并发送命令以重新启动它。 <br><br><img src="https://habrastorage.org/webt/iv/_f/j-/iv_fj-sjbnqtfabqlnmu986sa0o.png"><br><br> 模板的最大优点是将其存储为代码，因此在添加新的分片时，足以进行新的提交并以自动模式更新模板，从而支持基础结构即代码的原理。 <br><br><h3>  Patroni的新架构 </h3><br> 结果，我们得到了以下工作方案： <br><img src="https://habrastorage.org/webt/7b/-m/-v/7b-m-vyorrbbuognzt2qx2-fymm.png"><br><br> 所有应用程序服务器都访问平衡器→后面有两个实例PgBouncer→在每个实例上启动onsul模板，该模板监视每个Patroni群集的状态并监视PgBouncer配置的相关性，该配置将请求发送到每个群集的当前领导者。 <br><br><h3> 手动测试 </h3><br> 在启动程序之前，我们在小型测试环境中启动了该电路，并检查了自动切换的操作。 他们打开了木板，移动了标语，然后“杀死”了集群的领导者。 在AWS中，只需通过控制台关闭实例。 <br><br><img src="https://habrastorage.org/webt/ly/yf/aj/lyyfaj6bxodfoaqrsds5j00ycnw.gif"><br><br> 贴纸在10到20秒内返回，然后再次开始正常移动。 这意味着Patroni集群正常工作：它更改了领导者，将信息发送给Consul，Consul模板立即获取了此信息，替换了PgBouncer配置并发送了重新加载命令。 <br><br><h2> 如何在高负载下生存并保持最少的停机时间？ </h2><br> 一切正常！ 但是出现了新的问题：在高负载下它将如何工作？ 如何快速安全地将所有产品投入生产？ <br><br> 我们在其中进行负载测试的测试环境有助于我们回答第一个问题。 它在架构上与生产完全相同，并已生成测试数据，其数量与生产大致相等。 我们决定在测试过程中仅“杀死”一个PostgreSQL向导，然后看看会发生什么。 但是在此之前，检查自动滚动非常重要，因为在这种环境下，我们有几个PostgreSQL分片，因此在出售之前，我们将对配置脚本进行出色的测试。 <br><br> 这两个任务看起来都很雄心勃勃，但是我们拥有PostgreSQL 9.6。 也许我们会立即升级到11.2？ <br><br> 我们决定分两个阶段执行此操作：首先升级到11.2，然后启动Patroni。 <br><br><h3>  PostgreSQL更新 </h3><br> 要快速升级PostgreSQL的版本，必须使用<b>-k</b>选项，该选项会在磁盘上创建一个硬链接，并且无需复制数据。 在300-400 GB的基础上，更新需要1秒钟。 <br><br> 我们有很多分片，因此更新需要自动完成。 为此，我们编写了Ansible剧本，它为我们执行了整个更新过程： <br><br><pre> <code class="plaintext hljs">/usr/lib/postgresql/11/bin/pg_upgrade \ &lt;b&gt;--link \&lt;/b&gt; --old-datadir='' --new-datadir='' \ --old-bindir='' --new-bindir='' \ --old-options=' -c config_file=' \ --new-options=' -c config_file='</code> </pre> <br> 此处需要特别注意的是，在开始升级之前，必须使用<b>--check</b>参数执行它，以确保可能进行升级。 我们的脚本还为升级替换了配置。 我们在30秒内完成了脚本，这是一个很好的结果。 <br><br><h3> 启动Patroni </h3><br> 要解决第二个问题，只需查看Patroni的配置即可。 在官方存储库中，有一个使用initdb的示例配置，该配置用于在首次启动Patroni时初始化新数据库。 但是，由于我们有现成的数据库，因此我们仅从配置中删除了此部分。 <br><br> 当我们开始在现成的PostgreSQL集群上安装Patroni并运行它时，我们面临一个新问题：两台服务器都以领导者身份启动。  Patroni对群集的早期状态一无所知，并尝试将两个服务器作为两个具有相同名称的单独群集启动。 要解决此问题，请删除从站上的数据目录： <br><br><pre> <code class="plaintext hljs">rm -rf /var/lib/postgresql/</code> </pre> <br>  <b>这只能在奴隶上完成！</b> <br><br> 当连接一个干净的副本时，Patroni会创建一个基本备份领导者并将其还原到副本中，然后通过wal-logs赶上当前状态。 <br><br> 我们遇到的另一个困难是默认情况下所有PostgreSQL集群都称为main。 当每个群集对彼此一无所知时，这是正常的。 但是，当您要使用Patroni时，所有群集都必须具有唯一的名称。 解决方案是在PostgreSQL配置中更改群集名称。 <br><br><h3> 负载测试 </h3><br> 我们启动了一项测试，以模拟用户在董事会上的工作。 当负载达到我们的每日平均价值时，我们重复了完全相同的测试，我们关闭了带有领导者PostgreSQL的一个实例。 自动故障转移按我们预期的那样工作：Patroni更改了领导者，Consul模板更新了PgBouncer的配置并发送了重新加载命令。 根据我们在Grafana中的图表，很明显存在20到30秒的延迟以及与连接数据库有关的来自服务器的少量错误。 这是正常情况，这些值对我们的故障转移有效，并且绝对比服务的停机时间更好。 <br><br><h2> 帕特罗尼的生产量 </h2><br> 结果，我们得到了以下计划： <br><br><ul><li> 将Consul模板部署到PgBouncer服务器并启动； </li><li>  PostgreSQL更新到版本11.2； </li><li> 集群名称更改； </li><li> 启动Patroni集群。 </li></ul><br> 同时，我们的计划使您几乎可以在任何时候制造第一件产品，我们可以轮流从工作中删除每个PgBouncer并在其上执行部署和领事模板。 我们做到了。 <br><br> 为了快速滚动，我们使用了Ansible，因为我们已经在测试环境中检查了所有剧本，并且每个脚本的完整脚本执行时间为1.5到2分钟。 我们可以在不停止服务的情况下为每个分片交替推出所有内容，但是我们必须关闭每个PostgreSQL几分钟。 在这种情况下，其分片上的数据的用户此时无法完全工作，这对我们来说是不可接受的。 <br><br> 避免这种情况的方法是计划的维护，该维护每3个月进行一次。 当我们完全关闭服务并更新数据库实例时，这是计划工作的窗口。 距下一个窗口还剩一个星期，我们决定等待并作进一步准备。 在等待期间，我们还确保：对于每个PostgreSQL碎片，我们在失败的情况下提出了一个备用副本以保存最新数据，并为每个碎片添加了一个新实例，该实例应成为Patroni集群中的新副本，以便不执行删除数据的命令。 所有这些都有助于最大程度地减少出错的风险。 <br><img src="https://habrastorage.org/webt/ps/ge/yh/psgeyhvrazg-zd1nrochwhl1hag.png"><br><br> 我们重新启动了服务，一切正常，用户继续工作，但是在图表上我们注意到Consul服务器上的负载异常高。 <br><img src="https://habrastorage.org/webt/uk/b9/gu/ukb9guaj4wfabq60v262qe098am.png"><br><br> 为什么我们在测试环境中看不到它？ 这个问题很好地说明了，有必要遵循基础架构的原则作为代码并完善整个基础架构，从测试环境开始直到生产。 否则，很容易得到我们遇到的问题。 发生什么事了  Consul首先出现在生产环境中，然后出现在测试环境中，结果，在测试环境中，Consul的版本高于生产环境。 仅在其中一个版本中，使用领事模板解决了CPU泄漏问题。 因此，我们只更新了领事，从而解决了问题。 <br><br><h3> 重新启动Patroni集群 </h3><br> 但是，我们遇到了一个我们根本没有意识到的新问题。 更新Consul时，我们只需使用consul离开命令→Patroni连接到另一台Consul服务器→即可将群集中的Consul节点删除→一切正常。 但是，当我们到达Consul群集的最后一个实例并向其发送consul离开命令时，所有Patroni群集都只是重新启动，并且在日志中我们看到以下错误： <br><br><pre> <code class="plaintext hljs">ERROR: get_cluster Traceback (most recent call last): ... RetryFailedError: 'Exceeded retry deadline' ERROR: Error communicating with DCS &lt;b&gt;LOG: database system is shut down&lt;/b&gt;</code> </pre> <br>  Patroni集群无法获取有关其集群的信息并重新启动。 <br><br> 为了找到解决方案，我们通过github上的问题联系了Patroni的作者。 他们建议对我们的配置文件进行改进： <br><br><pre> <code class="python hljs">consul: consul.checks: [] bootstrap: dcs: retry_timeout: <span class="hljs-number"><span class="hljs-number">8</span></span></code> </pre> <br> 我们能够在测试环境中重复该问题，并在那里测试了这些参数，但是不幸的是，它们不起作用。 <br><br> 该问题仍未解决。 我们计划尝试以下解决方案： <br><br><ul><li> 在Patroni集群的每个实例上使用Consul-agent； </li><li> 解决代码中的问题。 </li></ul><br> 我们了解发生错误的位置：问题可能是使用默认超时，该超时未通过配置文件覆盖。 当从群集中删除最后一个Consul服务器时，整个Consul群集将冻结超过一秒钟，因为此Patroni无法获取群集的状态并完全重新启动了整个群集。 <br><br> 幸运的是，我们没有遇到更多错误。 <br><br><h2> 使用Patroni的结果 </h2><br> 成功启动Patroni之后，我们在每个集群中添加了一个附加副本。 现在，每个群集中都有一个法定人数：一个领导者和两个副本-以确保切换时不会出现裂脑情况。 <br><img src="https://habrastorage.org/webt/ef/pn/er/efpner_0rhtuim1zt0gwrhff3b8.png"><br><br>  Patroni从事生产工作已经超过三个月。 在这段时间里，他已经设法帮助了我们。 最近，其中一个集群的负责人死于AWS，自动故障转移有效，并且用户继续工作。 帕特罗尼完成了他的主要任务。 <br><br>  <b>Patroni使用的一个小总结：</b> <br><br><ul><li> 更改配置的便利。 在一个实例上更改配置就足够了，它将被拉到整个集群上。 如果需要重新启动以应用新的配置，Patroni将报告此情况。  Patroni可以使用单个命令重新启动整个集群，这也非常方便。 </li><li> 自动故障转移有效并且已经设法帮助我们。 </li><li>  PostgreSQL更新没有应用程序停机。 您必须首先将副本升级到新版本，然后更改Patroni集群中的领导者并更新旧的领导者。 在这种情况下，将对自动故障转移进行必要的测试。 </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN457326/">https://habr.com/ru/post/zh-CN457326/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN457308/index.html">在Sergey Pavlovich Korolev的路上。 俄罗斯现代载人工程。 第2部分。火箭</a></li>
+<li><a href="../zh-CN457310/index.html">信息依赖生物学</a></li>
+<li><a href="../zh-CN457312/index.html">集合论导论</a></li>
+<li><a href="../zh-CN457316/index.html">如何为亚美尼亚的客人安排在现实世界中的角色扮演游戏，让他们环游全国一半</a></li>
+<li><a href="../zh-CN457324/index.html">6月24日至30日在莫斯科举行的数字活动</a></li>
+<li><a href="../zh-CN457328/index.html">类别而不是目录或Linux的语义文件系统</a></li>
+<li><a href="../zh-CN457330/index.html">如何快速检查PVS-Studio分析仪针对C和C ++代码给出的有趣警告？</a></li>
+<li><a href="../zh-CN457332/index.html">如何快速查看PVS-Studio分析器针对C和C ++代码生成的有趣警告？</a></li>
+<li><a href="../zh-CN457334/index.html">TacacsGUI，配置管理器</a></li>
+<li><a href="../zh-CN457336/index.html">不及时拔除智齿的后果</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

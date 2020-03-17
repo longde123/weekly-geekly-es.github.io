@@ -1,0 +1,287 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚣🏼 😏 👼🏼 如何加快ClickHouse中LZ4的卸载 😐 😙 👶🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在ClickHouse中执行查询时，您会注意到在探查器中的第一个位置，LZ_decompress_fast函数通常是可见的。 为什么会这样呢？ 这个问题成为整个研究选择最佳减压算法的原因。 我在这里发布了整个研究报告，简短版本可以在我关于HighLoad ++ Siberia的报告中找到。 
+
+ C...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>如何加快ClickHouse中LZ4的卸载</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/452778/">在ClickHouse中执行查询时，您会注意到在探查器中的第一个位置，LZ_decompress_fast函数通常是可见的。 为什么会这样呢？ 这个问题成为整个研究选择最佳减压算法的原因。 我在这里发布了整个研究报告，简短版本可以在我关于HighLoad ++ Siberia的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">报告中</a>找到。 <br><br>  ClickHouse数据以压缩形式存储。 在执行请求期间，ClickHouse几乎不执行任何操作-占用最少的CPU资源。 碰巧，所有可能花费一段时间的计算都已经过优化，并且用户很好地编写了请求。 然后剩下来执行发布。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/057/302/aba/057302aba5041790af404c2c781c4dd3.png"><br><br> 问题是-为什么LZ4卸载会成为瓶颈？  LZ4似乎是一种<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">非常轻量级的算法</a> ：每个数据核的压缩率通常取决于数据，范围为1至3 GB / s，具体取决于数据。 这远远超过了磁盘子系统的速度。 而且，我们使用所有可用的内核，并且扩展在所有物理内核上线性扩展。 <br><a name="habracut"></a><br> 但是要记住两点。 首先，从磁盘读取压缩数据，并以未压缩数据量给出压缩率。 如果压缩率足够大，则几乎不需要从磁盘读取任何内容。 但是与此同时，会生成大量压缩数据，这当然会影响CPU的使用：LZ4情况下的数据压缩工作量几乎与压缩数据本身的大小成正比。 <br><br> 其次，如果数据在缓存中，则可能根本不需要从磁盘读取数据。 为此，您可以依靠页面缓存或使用自己的缓存。 在列数据库中，由于并非所有列都属于缓存，而只有经常使用的列属于缓存，因此使用缓存更为有效。 这就是LZ4在CPU负载方面经常成为瓶颈的原因。 <br><br> 因此，还有两个问题。 如果数据压缩“变慢”，那么也许根本不应该压缩它们？ 但是实际上，这种假设是没有意义的。 最近在ClickHouse中，只能配置两个数据压缩选项<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">-LZ4</a>和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Zstandard</a> 。 默认值为LZ4。 通过切换到Zstandard，可以使压缩更强或更慢。 但是直到最近才完全禁用压缩是不可能的-LZ4被认为是一个合理的最小值，可以随时使用。 这就是为什么我真的很喜欢LZ4。  :) <br><br> 但是最近，在ClickHouse的英语<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">聊天室中</a>出现了一个神秘的陌生人，他说他有一个非常快的磁盘子系统（NVMe SSD），并且一切都取决于压缩-能够将其关闭会很好。 我回答说没有这种可能性，但是很容易添加。 几天后，我们收到了一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pool请求</a> ，该<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">请求</a>实现了<code>none</code>压缩方法。 我询问结果-这有多大帮助，请求速度如何。 这位知情人士说，由于没有压缩的数据开始占用太多空间，因此实际上该新功能没有用。 <br><br> 出现的第二个问题是：如果有缓存，为什么不将已经未压缩的数据存储在其中呢？ 这是允许的-在许多情况下，有可能无需减压。 在ClickHouse中有一个这样的缓存- <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">扩展块</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">缓存</a> 。 但是由于效率低，在上面花很多内存很可惜。 它仅在使用几乎相同数据的小型连续请求中证明自己是合理的。 <br><br> 一般考虑：应压缩数据，最好始终压缩。 始终将它们刻录到压缩磁盘上。 通过压缩也可以通过网络传输。 我认为，即使在传输到10 Gb网络而又没有在数据中心内超额预订的情况下，也应该考虑使用默认压缩，并且在数据中心之间进行无压缩的传输通常是不可接受的。 <br><br><h3> 为什么选择LZ4？ </h3><br> 为什么使用LZ4？ 是否有可能选择更容易的东西？ 原则上，这是可能的，而且是正确和有用的。 但是，让我们首先看一下LZ4属于哪类算法。 <br><br> 首先，它不依赖于数据类型。 例如，如果您事先知道将有一个整数数组，则可以使用VarInt算法的许多变体之一-它在CPU上会更高效。 其次，LZ4并不太依赖数据模型上的所需假设。 假设您有一个有序的传感器读数时间序列-一个数字类型为float的数组。 然后，您可以计算增量，然后进一步压缩，这将在压缩率方面更加有效。 <br><br> 也就是说，LZ4可以毫无问题地用于任何字节数组-任何文件。 当然，他有自己的专长（在下文中有更多介绍），在某些情况下，它的使用是没有意义的。 但是，如果将其称为通用算法，这将是一个小错误。 并请注意，由于采用了内部设备，LZ4作为特殊情况自动实现了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">RLE</a>算法。 <br><br> 另一个问题：对于速度和压缩力的组合，LZ4是此类中最优化的算法吗？ 此类算法称为先验边界-这意味着没有其他算法严格地在一种指标上好于其他指标（甚至在各种各样的数据集上）也不差。 有一些算法更快，但是压缩率较低，有一些算法压缩得更多，但同时压缩或解压缩的速度也较慢。 <br><br> 实际上，LZ4并不是前沿领域。 有一些更好的选择。 例如，这是某个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">powturbo中的LZTURBO</a> 。 毫无疑问，这要归功于encode.ru（数据压缩的最大且唯一的论坛）社区。 但是开发人员不会分发源代码或二进制文件，而只是将它们提供给有限的一群人进行测试或花费很多钱（就像到目前为止没有人付钱一样）。 同样值得关注的是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">蜥蜴</a> （以前为LZ5）和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">密度</a> 。 选择某种压缩级别时，它们的性能可能比LZ4好一些。 也要注意<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">LZSSE-</a>非常有趣的事情。 但是，最好在阅读本文后再进行查看。 <br><br><h3>  LZ4如何工作？ </h3><br> 让我们看一下LZ4的总体工作原理。 这是LZ77算法的一种实现：L和Z表示作者的名字（Lempel和Ziv），而77-分别是1977年算法发布时的名称。 当使用低压缩级别时，它还有许多其他实现：QuickLZ，FastLZ，BriefLZ，LZF，LZO以及gzip和zip。 <br><br> 使用LZ4压缩的数据块包含两种类型的记录序列（命令，指令）： <br><br><ol><li> 文字：“按原样获取下N个字节，并将其复制到结果中。” </li><li> 匹配（match）：“获取已通过从当前位置的偏移量偏移量解压缩的N个字节。” </li></ol><br> 一个例子。 压缩前： <br> <code>Hello world Hello</code> <br> <br> 压缩后： <br> <code>literals 12 "Hello world " match 5 12</code> <br> <br> 如果我们使用压缩块并用游标浏览它，执行这些命令，那么我们将得到初始的未压缩数据。 <br><br> 我们粗略研究了如何解压缩数据。 重点也很清楚：为了执行压缩，该算法使用匹配对重复的字节序列进行编码。 <br><br> 清除和一些属性。 该算法是面向字节的-它不会剖析单个字节，而只会完整地复制它们。 这就是例如与熵编码的区别。 例如， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">zstd</a>是LZ77和熵编码的组合。 <br><br> 请注意，压缩块的大小不要选择太大，以免在卸载过程中花费大量RAM。 以免减慢压缩文件（由许多压缩块组成）中的随机访问； 有时使该块适合某些CPU缓存。 例如，您可以选择64 KB-这样，压缩和未压缩数据的缓冲区将适合L2高速缓存，而一半将保留。 <br><br> 如果我们需要压缩一个更大的文件，我们将串联压缩的块。 同时，在每个压缩块旁边可以方便地放置其他数据-大小，校验和。 <br><br> 比赛的最大偏移量是有限的，以LZ4-64 KB为单位。 此值称为滑动窗口。 确实，这意味着随着光标向前移动，匹配项可能在与光标一起移动的光标所在的64 KB窗口中。 <br><br> 现在让我们看一下如何压缩数据-换句话说，如何在文件中找到匹配的序列。 当然，您可以使用后缀trie（如果听说过的话会很棒）。 在压缩过程中，有一些选项可以确保最长的匹配序列在前面的字节中。 这称为最佳解析，它为固定的压缩块格式提供了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">几乎</a>更好的压缩率。 但是，还有更有效的选择-当我们在数据中找到足够好的匹配，但不一定是最长的匹配时。 找到它的最有效方法是使用哈希表。 <br><br> 为此，我们使用游标浏览源数据块，并在游标之后占用几个字节。 例如，4个字节。 对它们进行哈希处理，然后将其与块开头的偏移量放在哈希表中-这4个字节在此处相遇。 值4称为最小匹配-在这样的哈希表的帮助下，我们可以找到至少4个字节的匹配项。 <br><br> 如果我们查看哈希表，并且那里已经有一条记录，并且如果偏移量不超过滑动窗口，那么我们将检查在这四个字节之后还有多少个字节匹配。 也许还有更多巧合。 哈希表中也可能发生了冲突而没有匹配项。 这是正常现象-您只需将哈希表中的值替换为新值即可。 哈希表中的冲突只会导致较低的压缩率，因为匹配项较少。 顺便说一句，这种哈希表（具有固定大小且没有冲突解决方案）被称为缓存表，即缓存表。 这也是合乎逻辑的-在发生冲突的情况下，缓存表只是忘记了旧记录。 <br><blockquote> 专心的读者的任务。 假设数据为小尾数格式的数字数组，例如UInt32，它是自然数序列的一部分：0、1、2 ...解释为什么使用LZ4时不压缩此数据（压缩数据量不少于未压缩数据量）。 </blockquote><h3> 如何加快速度 </h3><br> 因此，我想加快LZ4的卸载速度。 让我们看看卸载周期是什么样的。 这是伪代码中的循环： <br><br><pre> 而（...）
+ {
+    读取（input_pos，literal_length，match_length）;<font></font>
+<font></font>
+    复制（output_pos，input_pos，literal_length）；
+     output_pos + =文字长度;<font></font>
+<font></font>
+    读取（input_pos，match_offset）;<font></font>
+<font></font>
+    复制（output_pos，output_pos-match_offset，
+         match_length）;
+     output_pos + = match_length;
+ } </pre><br>  LZ4格式的设计目的是使文字和匹配项在压缩文件中交替出现。 显然，文字总是第一位的（因为从一开始比赛就无处可寻）。 因此，它们的长度被一起编码。 <br><br> 实际上，一切都有些复杂。 从文件中读取一个字节，然后从文件中读取两个半字节，其中从0到15的数字被编码，如果相应的数字不等于15，则分别视为文字的长度和match的长度。 如果为15，则长度更长，并在以下字节中进行编码。 然后读取下一个字节，并将其值添加到长度中。 此外，如果它等于255，那么我们继续-我们以相同的方式读取下一个字节。 <br><br> 请注意，LZ4格式的最大压缩率未达到255。第二（无用）观察：如果您的数据非常冗余，则使用LZ4将使压缩率增加一倍。 <br><br> 当我们读取文字的长度（然后是匹配的长度和匹配的偏移量）时，要进行解密，只需复制两个内存即可。 <br><br><h3> 如何复制内存 </h3><br> 似乎可以使用<code>memcpy</code>函数，该函数仅用于复制内存。 但这不是最佳选择，仍然是不正确的。 <br><br> 为什么对memcpy函数的使用不理想？ 因为她： <br><br><ol><li> 通常位于libc库中（而libc库通常是动态链接的，并且memcpy调用将通过PLT间接进行）， </li><li> 不符合编译时未知的size参数， </li><li> 为正确处理不是机器字或寄存器大小的倍数的内存片段的“尾部”，我们付出了很多努力。 </li></ol><br> 最后一点是最重要的。 假设我们要求memcpy函数精确复制5个字节。 为此，使用两个movq指令一次复制8个字节会很好。 <br><br> <code>Hello world <font color="#0fc000">Hello</font> <font color="#ff0000">wo</font> ... <br> ^^^^^ <font color="#ff0000">^^^</font> - src <br> ^^^^^ <font color="#ff0000">^^^</font> - dst</code> <br> <br> 但是然后我们将复制三个额外的字节-也就是说，我们将在国外写入传输的缓冲区。  <code>memcpy</code>函数无权执行此操作-实际上，由于我们将覆盖程序中的某些数据，因此内存中会有“通道”。 而且，如果我们在未对齐的地址上进行写操作，则这些额外的字节可以位于未分配的虚拟内存页面上或没有写访问权限的页面上。 然后我们得到了segfault（很好）。 <br><br> 但是在我们的情况下，我们几乎总是可以写入额外的字节。 我们可以读取输入缓冲区中的额外字节，只要额外字节完全位于其中即可。 在相同条件下，我们可以将额外的字节写入输出缓冲区-因为在下一次迭代中，我们还是会覆盖它们。 <br><br> 最初的LZ4实现中已经存在此优化： <br><br><pre> 内联无效copy8（UInt8 * dst，const UInt8 * src）
+ {
+     memcpy（dst，src，8）;  ///实际上，此处未调用memcpy。
+ }<font></font>
+<font></font>
+内联void wildCopy8（UInt8 * dst，const UInt8 * src，UInt8 * dst_end）
+ {
+    做
+     {
+         copy8（dst，src）;
+         dst + = 8;
+         src + = 8;
+     } while（dst &lt;dst_end）;
+ } </pre><br> 要利用这种优化，您只需要验证我们离缓冲区的边界足够远。 这应该是免费的，因为我们已经检查了是否超出了缓冲区限制。 最后几个字节（数据的“尾部”）的处理可以在主循环之后进行。 <br><br> 但是，仍然有一些微妙之处。 循环中有两个副本-文字和匹配。 但是，当使用LZ4_decompress_fast函数（而不是LZ4_decompress_safe）时，将执行一次检查-当我们需要复制文字时。 复制匹配项时，不执行检查，但是在<a href="">LZ4格式</a>的<a href="">规范中，</a>有一些条件可以避免： <br><br><blockquote> 最后5个字节始终是文字 <br> 最后的匹配必须在块结束之前至少12个字节开始。 <br> 因此，少于13个字节的块无法压缩。 </blockquote><br> 特殊选择的输入数据可能会导致存储驱动器。 如果使用LZ4_decompress_fast函数，则需要防止不良数据的保护。 压缩数据至少应为校验和。 并且，如果您需要针对攻击者的保护，请使用LZ4_decompress_safe函数。 其他选择：采用加密哈希函数作为校验和，但是几乎可以肯定会破坏所有性能； 分配更多的内存用于缓冲区； 要么通过单独调用mmap为缓冲区分配内存，然后创建保护页。 <br><br> 当我看到一个复制8字节数据的代码时，我立即问-为什么正好是8字节？ 您可以使用SSE寄存器复制16个字节： <br><br><pre> 内联void copy16（UInt8 * dst，const UInt8 * src）
+ {
+ #if __SSE2__
+     _mm_storeu_si128（reinterpret_cast &lt;__ m128i *&gt;（dst），
+         _mm_loadu_si128（reinterpret_cast &lt;const __m128i *&gt;（src）））;
+ #else
+     memcpy（dst，src，16）;
+ #endif
+ }<font></font>
+<font></font>
+内联void wildCopy16（UInt8 * dst，const UInt8 * src，UInt8 * dst_end）
+ {
+    做
+     {
+         copy16（dst，src）;
+         dst + = 16;
+         src + = 16;
+     } while（dst &lt;dst_end）;
+ } </pre><br> 复制AVX的32字节和AVX-512的64字节的过程类似。 此外，您可以将周期扩展多次。 如果您曾经看过<code>memcpy</code>实现方式，那么这就是方法。  （顺便说一下，在这种情况下，编译器既不会扩展也不会对循环进行矢量化：这将需要插入繁琐的检查。） <br><br> 为什么在原始LZ4实现中未做到这一点？ 首先，这是好是坏还不是很明显。 结果取决于需要复制的片段的大小。 突然之间他们都矮了，多余的工作会没用吗？ 其次，它破坏了LZ4格式的那些条件，使您可以避免内部循环中不必要的早午餐。 <br><br> 不过，我们暂时会记住此选项。 <br><br><h3> 棘手的副本 </h3><br> 回到问题-是否总是可以这种方式复制数据？ 假设我们需要复制一个匹配项-即，将输出缓冲区中的一块内存复制到该游标的位置，该内存在游标之后的某个偏移处。 <br><br> 想象一个简单的情况-您需要在偏移量12处复制5个字节： <br><br> <code><font color="#0fc000">Hello</font> world ........... <br> ^^^^^ - src <br> ^^^^^ - dst <br> <br> Hello world <font color="#0fc000">Hello</font> <font color="#a8a8a8">wo</font> ... <br> ^^^^^ - src <br> ^^^^^ - dst</code> <br> <br> 但是，还有一种更为复杂的情况-当我们需要复制长度大于偏移量的内存时。 即，它部分指示尚未写入输出缓冲区的数据。 <br><br> 在偏移量3处复制10个字节： <br><br> <code><font color="#0fc000">abc</font> ............. <br> ^^^^^^^^^^ - src <br> ^^^^^^^^^^ - dst <br> <br> abc <font color="#0fc000">abcabcabca</font> ... <br> ^^^^^^^^^^ - src <br> ^^^^^^^^^^ - dst</code> <br> <br> 在压缩过程中，我们拥有所有数据，并且很可能会找到这样的匹配项。  <code>memcpy</code>函数不适用于复制它：它不支持内存片段范围相交的情况。 顺便说一句， <code>memmove</code>函数也不适合，因为从那里获取数据的内存片段尚未完全初始化。 您需要复制，就像我们按字节复制一样。 <br><br><pre>  op [0] =匹配[0]；
+ op [1] =匹配[1]；
+ op [2] =匹配[2]；
+ op [3] =匹配[3]；
+ ... </pre><br><br> 运作方式如下： <br><br> <code><font color="#0fc000">a</font> bc <font color="#0fc000">a</font> ............ <br> ^ - src <br> ^ - dst <br> <br> a <font color="#0fc000">b</font> ca <font color="#0fc000">b</font> ........... <br> ^ - src <br> ^ - dst <br> <br> ab <font color="#0fc000">c</font> ab <font color="#0fc000">c</font> .......... <br> ^ - src <br> ^ - dst <br> <br> abc <font color="#0fc000">a</font> bc <font color="#0fc000">a</font> ......... <br> ^ - src <br> ^ - dst <br> <br> abca <font color="#0fc000">b</font> ca <font color="#0fc000">b</font> ........ <br> ^ - src <br> ^ - dst</code> <br> <br> 也就是说，我们必须创建一个重复序列。 在原始的LZ4实现中，为此编写了令人惊讶的难以理解的代码： <br><br><pre>  const unsigned dec32table [] = {0，1，2，1，4，4，4，4};
+ const int dec64table [] = {0，0，0，-1，0，1，2，3};<font></font>
+<font></font>
+ const int dec64 = dec64table [offset];
+ op [0] =匹配[0]；
+ op [1] =匹配[1]；
+ op [2] =匹配[2]；
+ op [3] =匹配[3]；
+匹配+ = dec32table [偏移量];
+ memcpy（op + 4，match，4）;
+匹配-= dec64; </pre><br> 我们逐位复制前4个字节，移位某个幻数，整体复制后4个字节，将指针移位以匹配另一个幻数。 由于一些荒谬的原因，代码作者（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Jan Collet</a> ）忘了对这意味着什么发表评论。 另外，变量名令人困惑。 两者都称为dec ...表，但我们将其中一个加减另一个。 此外，另一个是无符号的，另一个是int的。 但是，值得赞扬：就在最近，作者在代码中改进了这个位置。 <br><br> 实际上是这样的。 复制前4个字节的字节： <br><br> <code>abc <font color="#0fc000">abca</font> ......... <br> ^^^^ - src <br> ^^^^ - dst</code> <br> <br> 现在，您可以一次复制4个字节： <br><br> <code>abcabca <font color="#0fc000">bcab</font> ..... <br> ^^^^ - src <br> ^^^^ - dst</code> <br> <br> 您可以照常继续操作，一次复制8个字节： <br><br> <code>abcabcabcab <font color="#0fc000">cabcabca</font> ..... <br> ^^^^^^^^ - src <br> ^^^^^^^^ - dst</code> <br> <br>     ,      —   .   : <br><br><pre> inline void copyOverlap8(UInt8 * op, const UInt8 *&amp; match, const size_t offset)<font></font>
+{<font></font>
+    /// 4 % n.<font></font>
+    /// Or if 4 % n is zero, we use n.<font></font>
+    /// It gives equivalent result, but is better CPU friendly for unknown reason.<font></font>
+    static constexpr int shift1[] = { 0, 1, 2, 1, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 8 % n - 4 % n<font></font>
+    static constexpr int shift2[] = { 0, 0, 0, 1, 0, -1, -2, -3 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+} </pre><br> ,  ,   . ,     ,     —   16 . <br><br>    « »    ,     ( <code>offset &lt; 16</code>   ,  <code>offset &lt; 8</code> ).  ()     16-   : <br><br><pre> inline void copyOverlap16(UInt8 * op, const UInt8 *&amp; match, const size_t offset)<font></font>
+{<font></font>
+    /// 4 % n.<font></font>
+    static constexpr int shift1[]<font></font>
+        = { 0, 1, 2, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 8 % n - 4 % n<font></font>
+    static constexpr int shift2[]<font></font>
+        = { 0, 0, 0, 1, 0, -1, -2, -3, -4, 4, 4, 4, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 16 % n - 8 % n<font></font>
+    static constexpr int shift3[]<font></font>
+        = { 0, 0, 0, -1, 0, -2, 2, 1, 8, -1, -2, -3, -4, -5, -6, -7 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+    memcpy(op + 8, match, 8);<font></font>
+    match += shift3[offset];<font></font>
+} </pre><br>       ?  ,        SIMD-,       16 ,         ( 1  15). ,   ,      . <br><br>    —   <code>pshufb</code> (  packed shuffle bytes)    SSSE3 (  S).    16- .      .   — «»:       0  15 —    ,       . ,      127 —     . <br><br> 这是一个例子： <br><br><pre> xmm0: abc.............<font></font>
+xmm1: 0120120120120120<font></font>
+<font></font>
+pshufb %xmm1, %xmm0<font></font>
+<font></font>
+xmm0: abcabcabcabcabca </pre><br>           —      !      : <br><br><pre> inline void copyOverlap16Shuffle(UInt8 * op, const UInt8 *&amp; match, const size_t offset)<font></font>
+{<font></font>
+#ifdef __SSSE3__<font></font>
+<font></font>
+    static constexpr UInt8 __attribute__((__aligned__(16))) masks[] =<font></font>
+    {<font></font>
+        0, 1, 2, 1, 4, 1, 4, 2, 8, 7, 6, 5, 4, 3, 2, 1, /* offset = 0, not used as mask, but for shift amount instead */<font></font>
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* offset = 1 */<font></font>
+        0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,<font></font>
+        0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0,<font></font>
+        0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0,<font></font>
+        0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1,<font></font>
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0,<font></font>
+    };<font></font>
+<font></font>
+    _mm_storeu_si128(reinterpret_cast&lt;__m128i *&gt;(op),<font></font>
+        _mm_shuffle_epi8(<font></font>
+            _mm_loadu_si128(reinterpret_cast&lt;const __m128i *&gt;(match)),<font></font>
+            _mm_load_si128(reinterpret_cast&lt;const __m128i *&gt;(masks) + offset)));<font></font>
+<font></font>
+    match += masks[offset];<font></font>
+<font></font>
+#else<font></font>
+    copyOverlap16(op, match, offset);<font></font>
+#endif<font></font>
+} </pre><br>  <code>_mm_shuffle_epi8</code> —  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">intrinsic</a> ,    <code>pshufb</code> . <br><br>          ,    ?  SSSE3 —    ,   2006 .  AVX2  ,      32 ,      16- .     packed shuffle bytes,  vector permute bytes —  ,    .  AVX-512 VBMI    ,    64 ,        .      ARM NEON —   vtbl (vector table lookup),     8 . <br><br>  ,    <code>pshufb</code>  64- MMX-,   8 .         . ,        ,   16  (  ). <br><br>   Highload++ Siberia         ,    8          (  ) —       ! <br><br><h3>    if </h3><br> ,    ,   16 .         ? <br><br>  ,       .      ,           ,  ,         .    ,     . <br><br> ,    . , ,    ,      65 536 .        65 536    .           , ,  65 551 .  ,  ,       96   128  —     .     ,           «»      mmap    (     madvice).      - page faults.         ,    . <br><br><h3>   ? </h3><br> ,    ,     : <br><br><ol><li>   16   8. </li><li>  shuffle-   <code>offset &lt; 16</code> . </li><li>    if. </li></ol><br>              . <br><br> 范例1： <br> Xeon E2650v2,  .,  AppVersion. <br> reference: 1.67 GB/sec. <br> 16 bytes, shuffle: 2.94 GB/sec ( 76% ). <br><br> 范例2： <br> Xeon E2650v2,  .,  ShowsSumPosition. <br> reference: 2.30 GB/sec. <br> 16 bytes, shuffle: 1.91 GB/sec ( 20% ). <br><br>   ,         .     ,    .   - ,   .   ,      .     —       16 .  :    ,     ,   . <br><br>   ,     C++      :  8-  16-  ;     shuffle-. <br><br><pre> template &lt;size_t copy_amount, bool use_shuffle&gt;<font></font>
+void NO_INLINE decompressImpl(<font></font>
+     const char * const source,<font></font>
+     char * const dest,<font></font>
+     size_t dest_size) </pre><br>        ,         shuffle  .     ,   : <br><br><pre> sudo echo 'performance' | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor<font></font>
+kill -STOP $(pidof firefox) $(pidof chromium) </pre><br>        «»  (c  Xeon E5645),           ,    . ,         ,    .    ,    shuffle-,   ,      16- . <br><br>         : <br><br><pre> sudo kill -STOP $(pidof python) $(pidof perl) $(pgrep -u skynet) $(pidof cqudp-client) </pre><br>    .    thermal throttling  power capping. <br><br><h3>     </h3><br> ,      ,        .         ,         ,    .       .       , ,     .   : ClickHouse      ,       ,         .       ,             (       —  ?).      . <br><br>      ,    ,      .  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">« »</a> .   ,      ,           ,    . <br><br>      ,   .        .       -        .             —   ClickHouse      64 . ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="></a>   .) <br><br>  ,     « », ,    .      ,     ,   ,   -   .           .            ,          ,    .      . <br><br>         ,          ,       .    «»     ,    .     ,        .    Thompson Sampling. <br><br> ,   ,    .  —      :  ,  .          .     ,     .       ,           C++.     — ,     -   ,   ;     . <br><br>     ?      ,       .    . -,      ,         . -,  ,   ,   «» . <br><br> ,  ,           Thompson Sampling —   (   ,        ).   ,         ,         - ,     ,      .           ,     . <br><br>   ,   «» .   ,     ,        «»,     .      — <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="> </a> .    ,     ,       . <br><br>       ,   ,    ,    ,   «»: <br><br><pre> /// For better convergence, we don't use proper estimate of stddev.<font></font>
+/// We want to eventually separate between two algorithms even in case<font></font>
+/// when there is no statistical significant difference between them.<font></font>
+double sigma() const<font></font>
+{<font></font>
+    return mean() / sqrt(adjustedCount());<font></font>
+}<font></font>
+<font></font>
+double sample(pcg64 &amp; rng) const<font></font>
+{<font></font>
+     ...<font></font>
+    return std::normal_distribution&lt;&gt;(mean(), sigma())(rng);<font></font>
+} </pre><br>    ,       —    memory latencies. <br><br>   ,         ,       —    LZ4    . <br><br>  ,    : <br> — reference (baseline):  LZ4   ; <br> — variant 0:   8 ,   shuffle; <br> — variant 1:   8 ,  shuffle; <br> — variant 2:   16 ,   shuffle; <br> — variant 3:   16 ,  shuffle; <br> — «» ,            . <br><br><h3>    CPU </h3><br>       CPU,    ,  .  ,   CPU   ? <br><br>         ClickHouse   ,  256    100    ( 256  ).  ,  CPU  ,      .      CPU: <br> — Intel® Xeon® CPU E5-2650 v2 @ 2.60GHz <br> — Intel® Xeon® CPU E5-2660 v4 @ 2.00GHz <br> — Intel® Xeon® CPU E5-2660 0 @ 2.20GHz <br> — Intel® Xeon® CPU E5645 @ 2.40GHz <br> — Intel Xeon E312xx (Sandy Bridge) <br> — AMD Opteron(TM) Processor 6274 <br> — AMD Opteron(tm) Processor 6380 <br> — Intel® Xeon® CPU E5-2683 v4 @ 2.10GHz <br> — Intel® Xeon® CPU E5530 @ 2.40GHz <br> — Intel® Xeon® CPU E5440 @ 2.83GHz <br> — Intel® Xeon® CPU E5-2667 v2 @ 3.30GHz <br><br>    — ,   R&amp;D: <br> — AMD EPYC 7351 16-Core Processor —    AMD. <br> — Cavium ThunderX2 —     x86,  AArch64.    SIMD-   .    224   56  . <br><br>  13 ,        256   6  (reference, 0, 1, 2, 3, adaptive),    10 ,   .  199 680 ,    . <br><br> ,    CPU  .         :      LZ4    (   —  ).  ,  Cavium   .       ClickHouse,   «» Xeon E5-2650 v2         ,      ,   ClickHouse    x86. <br><br><pre> ┌─cpu───────────────────┬──ref─┬─adapt─┬──max─┬─best─┬─adapt_boost─┬─max_boost─┬─adapt_over_max─┐<font></font>
+│ E5-2667 v2 @ 3.30GHz │ 2.81 │ 3.19 │ 3.15 │ 3 │ 1.14 │ 1.12 │ 1.01 │<font></font>
+│ E5-2650 v2 @ 2.60GHz │ 2.5 │ 2.84 │ 2.81 │ 3 │ 1.14 │ 1.12 │ 1.01 │<font></font>
+│ E5-2683 v4 @ 2.10GHz │ 2.26 │ 2.63 │ 2.59 │ 3 │ 1.16 │ 1.15 │ 1.02 │<font></font>
+│ E5-2660 v4 @ 2.00GHz │ 2.15 │ 2.49 │ 2.46 │ 3 │ 1.16 │ 1.14 │ 1.01 │<font></font>
+│ AMD EPYC 7351 │ 2.03 │ 2.44 │ 2.35 │ 3 │ 1.20 │ 1.16 │ 1.04 │<font></font>
+│ E5-2660 0 @ 2.20GHz │ 2.13 │ 2.39 │ 2.37 │ 3 │ 1.12 │ 1.11 │ 1.01 │<font></font>
+│ E312xx (Sandy Bridge) │ 1.97 │ 2.2 │ 2.18 │ 3 │ 1.12 │ 1.11 │ 1.01 │<font></font>
+│ E5530 @ 2.40GHz │ 1.65 │ 1.93 │ 1.94 │ 3 │ 1.17 │ 1.18 │ 0.99 │<font></font>
+│ E5645 @ 2.40GHz │ 1.65 │ 1.92 │ 1.94 │ 3 │ 1.16 │ 1.18 │ 0.99 │<font></font>
+│ AMD Opteron 6380 │ 1.47 │ 1.58 │ 1.56 │ 1 │ 1.07 │ 1.06 │ 1.01 │<font></font>
+│ AMD Opteron 6274 │ 1.15 │ 1.35 │ 1.35 │ 1 │ 1.17 │ 1.17 │ 1 │<font></font>
+│ E5440 @ 2.83GHz │ 1.35 │ 1.33 │ 1.42 │ 1 │ 0.99 │ 1.05 │ 0.94 │<font></font>
+│ Cavium ThunderX2 │ 0.84 │ 0.87 │ 0.87 │ 0 │ 1.04 │ 1.04 │ 1 │<font></font>
+└───────────────────────┴──────┴───────┴──────┴──────┴─────────────┴───────────┴────────────────┘ </pre><br> ref, adapt, max —       (,            ). best —      ,  0  3. adapt_boost —        baseline. max_boost —          baseline. adapt_over_max —         . <br><br>  ,    x86      12–20%.   ARM    4%,   ,         .  ,        «»              Intel. <br><br><h3>  </h3><br>       . ,   LZ4     12–20%,            .           .      ,         . <br><br>    ,     ,    «» ,    ZStandard level 1  LZ4:      IO    . <br><br>           — ,      .          ,       . <br><br>    :         . LZ4    ,   Lizard, Density  LZSSE  ,    . ,    LZ4      LZSSE  ClickHouse. <br><br>       LZ4 :         .          :      ,   .             . ,   inc-  dec-   <a href=""></a> .  ,           12–15%     32 ,    16,   .       32  —     ,     <a href=""> </a> . <br><br>       ,  ,          page cache  userspace (   mmap,    O_DIRECT  userspace page cache —     ),      - (  CityHash128  CRC32-C,    HighwayHash, FARSH  XXH3).         ,       . <br><br>   ,     master,            .  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="></a>  HighLoad++ Siberia,   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="></a> . </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN452778/">https://habr.com/ru/post/zh-CN452778/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN452766/index.html">渐进式流技术，或如何通过网络观看4k视频而不会感到烦恼</a></li>
+<li><a href="../zh-CN452768/index.html">如果您决定进入国外市场，如何设计产品</a></li>
+<li><a href="../zh-CN452772/index.html">5种先进的Go测试技术</a></li>
+<li><a href="../zh-CN452774/index.html">Dell XPS 13 9380：可靠且非常紧凑的笔记本电脑，适合严肃的业务</a></li>
+<li><a href="../zh-CN452776/index.html">N.M.D. （不是我的事）</a></li>
+<li><a href="../zh-CN452780/index.html">Mobius 2019 Piter：免费直播和其他所有功能</a></li>
+<li><a href="../zh-CN452788/index.html">Web应用程序，抑郁症，龙和Westeros中的质量争夺战</a></li>
+<li><a href="../zh-CN452790/index.html">OpenCV 4.0和4.1-新功能？</a></li>
+<li><a href="../zh-CN452792/index.html">企业用户固态固态硬盘评论金士顿DC500R</a></li>
+<li><a href="../zh-CN452794/index.html">关于产品本地化。 第一部分：从哪里开始？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

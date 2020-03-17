@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔀 🤦 👋🏾 如何在不损失一致性的情况下将整体切入服务并保持内存中缓存的性能 🤙🏾 🚵 🏏</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="大家好 我的名字叫Alexander，我是Tinkoff公司集团的Java开发人员。 
+
+ 在本文中，我想分享我的经验，以解决与分布式系统中的缓存状态同步有关的问题。 我们遇到了它们，将我们的整体应用程序细分为微服务。 显然，我们将讨论在JVM级别上缓存数据，因为有了外部缓存，就可以在应用程序上下文...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>如何在不损失一致性的情况下将整体切入服务并保持内存中缓存的性能</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tinkoff/blog/474994/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/io/g8/yg/iog8ygcpquu5zvi7xmlsecbbwmu.png"></div><br> 大家好 我的名字叫Alexander，我是Tinkoff公司集团的Java开发人员。 <br><br> 在本文中，我想分享我的经验，以解决与分布式系统中的缓存状态同步有关的问题。 我们遇到了它们，将我们的整体应用程序细分为<s>微</s>服务。 显然，我们将讨论在JVM级别上缓存数据，因为有了外部缓存，就可以在应用程序上下文之外解决同步问题。 <br><br> 在本文中，我将讨论我们在转向面向服务的体系结构的过程中，伴随着转向Kubernetes的经验，以及有关解决相关问题的经验。 我们将考虑组织内存中数据网格（IMDG）分布式缓存系统的方法，其优缺点，因此，我们决定编写自己的解决方案。 <br><br> 本文讨论了一个项目，其后端是用Java编写的。 因此，我们还将讨论临时内存缓存领域的标准。 我们讨论了JSR-107规范，失败的JSR-347规范以及Spring中的缓存功能。 欢迎来到猫！ <br><a name="habracut"></a><br><br><h1> 让我们将应用程序切成服务... </h1><br> 我们将转向面向服务的架构，然后转向Kubernetes，这是我们在6个月前做出的决定。 长期以来，我们的项目是一个庞大的项目，与技术债务相关的许多问题已累积，并且我们作为单独的服务编写了新的应用程序模块。 结果，不可避免地要过渡到面向服务的体系结构和整体式的削减。 <br><br> 我们的应用程序已加载，Web服务平均达到500 rps（峰值时达到900 rps）。 为了收集响应每个请求的整个数据模型，您必须访问各种缓存数百次。 <br><br> 根据所需的数据集，我们尝试访问每个请求的远程缓存不超过3次，并且在内部JVM缓存上，每个缓存的负载达到90,000 rps。 我们为各种实体和DTO-shki提供了大约30个这样的缓存。 在某些已加载的缓存中，我们甚至无法删除该值，因为这会导致Web服务的响应时间增加并导致应用程序崩溃。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/mn/db/2v/mndb2vp6ot9byy_fqysaooom6j0.png"></div><br> 这是负载监视的外观，白天是从每个节点的内部缓存中删除的。 根据负载配置文件，很容易看到大多数请求都是读取数据。 统一的写负载是由于以给定的频率更新高速缓存中的值。 <br><br> 停机时间对于我们的应用程序无效。 因此，出于无​​缝部署的目的，我们始终将所有传入流量平衡到两个节点，并使用滚动更新方法部署应用程序。 当切换到服务时，Kubernetes成为我们理想的基础架构解决方案。 因此，我们立即解决了几个问题。 <br><br><h3> 不断订购和建立新服务基础架构的问题 </h3><br> 我们在集群中为每个电路分配了一个命名空间，我们有三个命名空间：dev-开发人员，qa-测试人员，prod-客户。 <br><br> 在命名空间突出显示的情况下，添加新服务或应用程序将导致编写四个清单：部署，服务，入口和ConfigMap。 <br><br><h3> 高负载公差 </h3><br> 业务在不断扩展并不断增长-一年前的平均负载是当前负载的两倍。 <br><br>  Kubernetes中的水平缩放可让您随着开发项目的工作量增加而实现规模经济。 <br><br><h3> 维护，日志收集和监控 </h3><br> 当在添加每个节点时无需在日志系统中添加日志，配置度量标准围栏（除非具有推送监视系统），执行网络设置并只需安装必要的软件即可使工作变得更加轻松。 <br><br> 当然，所有这些都可以使用Ansible或Terraform进行自动化，但是最后，为每个服务编写多个清单要容易得多。 <br><br><h3> 高可靠性 </h3><br> 内置的“活动性和就绪性”样本的k8s机制使您不必担心应用程序开始变慢或完全停止响应。 <br><br>  Kubernetes现在可以控制包含应用程序容器的火炉包的生命周期以及定向到它们的流量。 <br><br> 除了所描述的便利性之外，我们还需要解决许多问题，以使服务适合于水平缩放并为许多服务使用通用数据模型。 有必要解决两个问题： <br><br><ol><li>  <b>应用程序的状态。</b> 当将项目部署在k8s集群中时，将开始创建带有与应用程序新版本的容器无关的容器，这些容器与先前版本的容器的状态无关。 可以在满足指定限制的任意群集服务器上引发新的应用程序容器。 而且，现在，如果Liveness探针指出需要重新启动，则可以随时销毁在Kubernetes pod内运行的每个应用程序容器。 </li><li>  <b>数据一致性。</b> 必须在所有节点之间保持一致性和数据完整性。 如果多个节点在单个数据模型中工作，则尤其如此。 当响应中对应用程序的不同节点的请求时，不一致的数据会到达客户端，这是不可接受的。 </li></ol><br> 在可伸缩系统的现代开发中，无状态体系结构是上述问题的解决方案。 通过将所有静态变量移至S3云存储，我们摆脱了第一个问题。 <br><br> 但是，由于需要聚合复杂的数据模型并节省Web服务的响应时间，因此我们不能拒绝将数据存储在内存缓存中。 为了解决第二个问题，他们编写了一个库来同步各个节点的内部缓存的状态。 <br><br><h1> 我们在单独的节点上同步缓存 </h1><br> 作为初始数据，我们有一个由N个节点组成的分布式系统。 每个节点大约有20个内存中的高速缓存，其中的数据每小时更新几次。 <br><br> 大多数高速缓存具有TTL（生存时间）数据刷新策略，由于高负载，某些数据每20分钟通过CRON操作进行更新。 缓存的工作量从晚上的几千rps到白天的几万rp不等。 通常，峰值负载不超过100,000 rps。 临时存储中的记录数不超过数十万，并放置在一个节点的堆中。 <br><br> 我们的任务是在不同节点上的同一缓存之间实现数据一致性，并尽可能缩短响应时间。 考虑通常有什么方法可以解决此问题。 <br><br> 我想到的第一个也是最简单的解决方案是将所有信息放入远程缓存中。 在这种情况下，您可以完全摆脱应用程序的状态，而不必考虑实现一致性的问题，并且可以使用单个访问点访问临时数据仓库。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ez/zm/bg/ezzmbg3cuvhczrwpwmh5hg5a0-o.png"></div><br> 这种临时数据存储方法非常简单，我们可以使用它。 我们将部分数据缓存在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Redis中</a> ，这是NoSQL数据存储在RAM中。 在Redis中，我们通常记录一个Web服务响应框架，对于每个请求，我们都需要使用相关信息来丰富此数据，为此，我们必须向本地缓存发送数百个请求。 <br><br> 显然，我们无法取出用于远程存储的内部缓存的数据，因为通过网络传输如此大量流量的成本将使我们无法满足所需的响应时间。 <br><br> 第二种选择是使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">内存中的数据网格</a> （IMDG），它是分布式的内存中缓存。 这种解决方案的方案如下： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/l7/ku/k9/l7kuk9uaiuydck1hs1boeykflys.png"></div><br>  IMDG体系结构基于单个节点的内部缓存的数据分区原则。 实际上，这可以称为分布在节点群集上的哈希表。  IMDG被认为是临时分布式存储最快的实现方式之一。 <br><br>  IMDG实现有很多，最受欢迎的是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Hazelcast</a> 。 分布式缓存允许您将数据存储在多个应用程序节点上的RAM中，并且具有可接受的可靠性，并且可以通过数据复制来保持一致性。 <br><br> 构建这样的分布式缓存的任务并不容易，但是为我们使用现成的IMDG解决方案可以很好地替代JVM缓存，并消除所有应用程序节点之间的复制，一致性和数据分发问题。 <br><br> 大多数Java应用程序的IMDG供应商都实现了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">JSR-107</a> ，这是用于内部缓存的标准Java API。 总的来说，该标准有一个很大的故事，我将在下面更详细地讨论。 <br><br> 从前，有一些想法可以实现与IMDG- <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">JSR 347</a>交互的界面。 但是，这样的API的实现没有得到Java社区的足够支持，现在，无论我们的应用程序体系结构如何，我们都有一个用于与内存中缓存进行交互的接口。 好的还是坏的是另一个问题，但是它使我们可以完全忽略实现分布式内存中高速缓存的所有困难，并将其用作整体应用程序的高速缓存。 <br><br> 尽管使用IMDG具有明显的优势，但由于要确保在多个JVM节点之间连续复制分布的数据并备份这些数据，因此该解决方案仍比标准JVM缓存慢。 在我们的例子中，用于临时存储的数据量不是很大，具有一定余量的数据适合一个应用程序的内存，因此将它们分配给多个JVM似乎是不必要的解决方案。 在高负载下，应用程序节点之间的其他网络流量会极大地影响性能并增加Web服务的响应时间。 最后，我们决定为这个问题编写自己的解决方案。 <br><br> 我们将内存缓存保留为数据的临时存储，并且为了保持一致性，我们使用了RabbitMQ队列管理器。 我们采用了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“发布者-订阅者”</a>行为设计模式，并通过从每个节点的缓存中删除已修改的记录来保持数据的相关性。 解决方案如下： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/05/y9/di/05y9dihavtlltrsgxxnkvuj5bhs.png"></div><br> 该图显示了一个由N个节点组成的集群，每个节点都有一个标准的内存缓存。 所有节点都使用公共数据模型，并且必须一致。 第一次通过任意键访问高速缓存时，高速缓存中的值不存在，我们将数据库中的实际值放入其中。 进行任何更改-删除记录。 <br><br> 缓存响应中的实际信息是通过同步条目在任何节点上更改时的删除来提供的。 系统中的每个节点在RabbitMQ队列管理器中都有一个队列。 记录到所有队列是通过一个公共的主题类型访问点完成的。 这意味着发送给主题的消息将落入与其关联的所有队列中。 因此，当在系统的任何节点上更改该值时，将从每个节点的临时存储中删除该值，并且随后的访问将启动将当前值从数据库写入到高速缓存中。 <br><br> 顺便说一句，Redis中存在类似的PUB / SUB机制。 但是，我认为，最好使用队列管理器来处理队列，而RabbitMQ非常适合我们的任务。 <br><br><h1>  JSR 107标准及其实现 </h1><br> 用于将数据临时存储在内存中的标准Java Cache API（规范<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">JSR-107</a> ）历史悠久，已经开发了12年。 <br><br> 在这么长的时间内，软件开发方法已经改变，整体已经被微服务架构所取代。 由于对Cache API的长期缺乏规范，甚至有人要求为分布式系统<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">JSR-347</a> （Java平台的数据网格）开发API缓存。 但是，在期待已久的JSR-107版本和JCache版本发布之后，撤消了为分布式系统创建单独规范的请求。 <br><br> 在市场上漫长的12年中，随着Java 1.5的发布，临时数据存储的位置已从HashMap更改为ConcurrentHashMap，随后出现了许多现成的内存中缓存的开源实现。 <br><br>  JSR-107发布后，供应商解决方案开始逐步实施新规范。 对于JCache，甚至还有专门从事分布式缓存的提供程序-数据网格（Data Grid），其规范从未实现。 <br><br> 考虑一下<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">javax.cache</a>包<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">由</a>什么<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">组成</a> ，以及如何为我们的应用程序获取一个缓存实例： <br><pre><code class="java hljs">CachingProvider provider = Caching.getCachingProvider(<span class="hljs-string"><span class="hljs-string">"org.cache2k.jcache.provider.JCacheProvider"</span></span>); CacheManager cacheManager = provider.getCacheManager(); CacheConfiguration&lt;Integer, String&gt; config = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> MutableConfiguration&lt;Integer, String&gt;() .setTypes(Integer.class, String.class) .setReadThrough(<span class="hljs-keyword"><span class="hljs-keyword">true</span></span>) . . .; Cache&lt;Integer, String&gt; cache = cacheManager.createCache(cacheName, config);</code> </pre> <br> 这里的Caching是CachingProvider的启动加载程序。 <br><br> 在我们的例子中，将从ClassLoader加载JCacheProvider，这是JSR-107提供程序<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">SPI</a>的cache2k实现。 对于加载程序，您可能不必指定提供程序实现，但是它将尝试加载位于以下位置的实现： <br><blockquote>  META-INF /服务/ javax.cache.spi.CachingProvider </blockquote><br> 无论如何，在ClassLoader中应该只有一个CachingProvider实现。 <br><br> 如果您使用不带任何实现的javax.cache库，则尝试创建JCache时将引发异常。 提供程序的目的是创建和管理CacheManager的生命周期，而后者又负责管理和配置缓存。 因此，要创建缓存，您必须采用以下方式： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/fx/lp/fs/fxlpfsdfmlifqegpwtaynhiakt8.png"></div><br> 使用CacheManager创建的标准缓存必须具有与实现兼容的配置。 可以将javax.cache提供的标准参数化CacheConfiguration扩展到特定的CacheProvider实现。 <br><br> 如今，JSR-107规范有数十种不同的实现： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Ehcache</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Guava</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">caffeine</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">cache2k</a> 。 许多实现是分布式系统中的内存中数据网格<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">-Hazelcast</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Oracle Coherence</a> 。 <br><br> 还有许多不支持标准API的临时存储实现。 在我们的项目中很长一段时间，我们都使用了与JCache不兼容的Ehcache 2（该规范的实现随Ehcache 3一起出现）。 过渡到与JCache兼容的实现的需求与监视内存中缓存的状态的需求一起出现。 使用标准MetricRegistry，仅借助于JCacheGaugeSet实现即可加快监视速度，该实现从标准JCache收集度量。 <br><br> 如何为您的项目选择适当的内存中缓存实现？ 也许您应该注意以下几点： <br><br><ol><li> 您是否需要JSR-107规范的支持。 </li><li> 还应注意所选实现的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">速度</a> 。 在高负载下，内部缓存的性能可能会对系统的响应时间产生重大影响。 </li><li> 春季支持。 如果在项目中使用众所周知的框架，则值得考虑的事实是，并非每个JVM缓存实现在Spring中都具有兼容的CacheManager。 </li></ol><br> 如果像我们一样在您的项目中积极使用Spring，那么对于数据缓存，您很可能会遵循面向方面的方法（AOP）并使用@Cacheable批注。  Spring使用其自己的CacheManager SPI使各方面正常工作。 要使Spring缓存正常工作，需要以下bean： <br><pre> <code class="java hljs"><span class="hljs-meta"><span class="hljs-meta">@Bean</span></span> <span class="hljs-keyword"><span class="hljs-keyword">public</span></span> org.springframework.cache.<span class="hljs-function"><span class="hljs-function">CacheManager </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">cacheManager</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">()</span></span></span><span class="hljs-function"> </span></span>{ CachingProvider provider = Caching.getCachingProvider(); CacheManager cacheManager = provider.getCacheManager(); <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> JCacheCacheManager(cacheManager); }</code> </pre><br> 要在AOP范式中使用缓存，还必须考虑事务因素。 弹簧缓存必须必须支持事务管理。 为此，spring CacheManager继承了AbstractTransactionSupportingCacheManager属性，该属性可用于同步事务中执行的放置/退出操作，并仅在成功提交事务后才执行它们。 <br><br> 上面的示例显示了JCacheCacheManager包装器在缓存规范管理器中的使用。 这意味着任何JSR-107实现也都与Spring CacheManager兼容。 这是为您的项目选择支持JSR规范的内存中高速缓存的另一个原因。 但是，如果您仍然不需要此支持，但是我真的想使用@Cacheable，那么您还支持另外两个内部缓存解决方案：EhCacheCacheManager和CaffeineCacheManager。 <br><br> 如前所述，在选择内存缓存的实现时，我们没有考虑IMDG对分布式系统的支持。 为了保持我们系统上JVM缓存的性能，我们编写了自己的解决方案。 <br><br><h1> 清除分布式系统中的缓存 </h1><br> 具有微服务体系结构的项目中使用的现代IMDG使您可以使用具有所需冗余级别的可伸缩数据分区在系统的所有工作节点之间分配内存中的数据。 <br><br> 在这种情况下，存在许多与同步，数据一致性等相关的问题，更不用说增加对临时存储的访问时间。 如果所使用的数据量适合一个节点的RAM，并且为了保持数据的一致性，则对于高速缓存值的任何更改，删除所有节点上的此项就足够了，这样的方案是多余的。 <br><br> 在实现这种解决方案时，想到的第一个想法是使用一些EventListener，在JCache中，有一个CacheEntryRemovedListener，用于从缓存中删除条目的事件。 似乎足以添加您自己的Listener实现，当记录删除并且所有节点上的共晶缓存准备就绪时，该实现将向主题发送消息-前提是每个节点都侦听与常规主题相关联的队列中的事件，如图所示以上。 <br><br> 使用这种解决方案时，由于事件发生后任何JCache实现过程中的EventLists事实，不同节点上的数据将不一致。 也就是说，如果本地缓存中没有给定键的记录，并且在任何其他节点上也有相同键的记录，则该事件将不会发送到主题。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/_a/ev/5c/_aev5cw333ni_cnstj5elxbowhw.png"></div><br> 考虑还有什么其他方法可以捕获从本地缓存中删除值的事件。 <br><br> 在Javax.cache.event包中，EventListeners旁边还有一个CacheEntryEventFilter，据JavaDoc所说，它用于在将事件发送给CacheEntryListener之前检查是否有任何CacheEntryEvent事件，无论该事件是记录，删除，更新还是与记录到期有关的事件。在缓存中。 使用过滤器时，问题仍然存在，因为将在记录CacheEntryEvent事件之后和在缓存中执行CRUD操作之后执行逻辑。 <br><br> 但是，可以从高速缓存中捕获删除记录事件的启动。 为此，请使用JCache中的内置工具，该工具允许您使用API​​规范从外部源写入和加载数据（如果它们不在缓存中）。  javax.cache.integration包中有两个接口可用于此目的： <br><br><ul><li>  CacheLoader-如果高速缓存中没有条目，则加载密钥请求的数据。 </li><li>  CacheWriter-在调用相应的缓存操作时使用写入，删除和更新外部资源上的数据。 </li></ul><br> 为了确保一致性，相对于相应的缓存操作，CacheWriter方法是原子的。 我们似乎找到了解决问题的方法。 <br><br> 现在，当我们使用CacheWriter的实现时，我们可以保持节点上内存中缓存的响应的一致性，该实现将在本地缓存中的记录发生任何变化时将事件发送到RabbitMQ主题。 <br><br><h1> 结论 </h1><br> 在开发任何项目时，当寻找合适的解决方案来解决新出现的问题时，必须考虑其特殊性。 在我们的案例中，项目数据模型的特征，继承的遗留代码以及负载的性质不允许使用任何现有的分布式缓存问题解决方案。 <br><br> 使通用实现适用于任何已开发的系统非常困难。 对于每种此类实现，都有最佳使用条件。 在我们的案例中，该项目的细节导致了本文所述的解决方案。 如果有人遇到类似问题，我们将很乐意分享我们的解决方案并将其发布在GitHub上。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN474994/">https://habr.com/ru/post/zh-CN474994/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN474982/index.html">JavaFX教程：FXML和SceneBuilder</a></li>
+<li><a href="../zh-CN474984/index.html">RabbitMQ与Kafka：故障转移和高可用性</a></li>
+<li><a href="../zh-CN474988/index.html">欢迎来到Mitap：面向初学者的数据科学职业</a></li>
+<li><a href="../zh-CN474990/index.html">艰苦实践：如何在城市公园中建立Wi-Fi网络</a></li>
+<li><a href="../zh-CN474992/index.html">分析笔记本电脑电池故障。 电动摩托笔记</a></li>
+<li><a href="../zh-CN474996/index.html">11月的IT事件摘要（第二部分）</a></li>
+<li><a href="../zh-CN475000/index.html">公开测试以太坊云以及云隐私和可扩展性解决方案</a></li>
+<li><a href="../zh-CN475002/index.html">工作不是狼，第2部分。通过老板并在试用期中生存</a></li>
+<li><a href="../zh-CN475004/index.html">不同资格的开发人员在2019年上半年赚了多少钱</a></li>
+<li><a href="../zh-CN475006/index.html">如何在28小时内创建原型文档比较服务并赢得黑客马拉松</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

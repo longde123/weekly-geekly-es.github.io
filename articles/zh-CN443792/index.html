@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩‍💻 👨‍❤️‍👨 👲🏼 使用PostgreSQL时的典型错误。 第二部分 😗 👨🏼‍🎤 💏</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我们将继续发布PGConf.Russia 2019大会最佳报告的视频和成绩单。 在 Ivan Frolkov演讲的第一部分中， 涉及的是不一致的命名，约束，在数据库或应用程序中最好集中逻辑的位置。 在这一部分中，您将找到解析错误处理，并发访问，不可取消的操作，CTE和JSON。 
+
+
+
+ 我会讲一个...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>使用PostgreSQL时的典型错误。 第二部分</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/443792/">我们将继续发布<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><b>PGConf.Russia 2019</b></a>大会最佳报告的视频和成绩单。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在</a> <b>Ivan Frolkov</b>演讲<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的第一部分中，</a> <b>涉及的</b>是不一致的命名，约束，在数据库或应用程序中最好集中逻辑的位置。 在这一部分中，您将找到解析错误处理，并发访问，不可取消的操作，CTE和JSON。 <br><br><img src="https://habrastorage.org/webt/f7/ro/mc/f7romcfk7jnjqrlwyalubebwxbo.jpeg"><br><br> 我会讲一个这样的故事。 我们的客户说：“数据库运行缓慢，我们的应用程序正在为大众服务。 我们担心他们会在这里为我们筹集资金。” 事实证明， <b>在事务</b>状态下，它们有许多进程处于<b>空闲</b>状态。 应用程序启动了事务，但没有执行任何操作，但是事务未完成。 如果您与某些外部服务进行交互，那么原则上这是正常情况。 另一件事是，如果您<b>的事务空闲</b>状态持续了很长时间（已经可疑超过一分钟），那么这很糟糕，因为PostgreSQL确实不喜欢长时间的事务：VACUUM无法清除它可以看到的所有行，并且挂起很长时间交易有效地阻止了VACUUM。 表格开始膨胀，索引的有效性越来越低。 <br><br><img src="https://habrastorage.org/webt/mf/ml/t8/mfmlt8ovoywmqjplbggaszfvj-q.jpeg"><a name="habracut"></a><br><br> 在这种情况下，人们没有正确地编写请求并收到笛卡尔积-这样的请求已经完成了几天。 好吧，用户将按下按钮，等待结果，如果没有结果，请再次按下按钮。 <br><br> 但这并不能解释为什么它们<b>在事务中</b>有这么多<b>空闲的</b>进程。 它们出现在以下情况中：应用程序爬入数据库，启动事务，爬到某个外部服务上，在那里出现错误，然后一切都崩溃了，我们打印到<b>堆栈跟踪</b>日志，对此我们保持冷静。 连接仍然被放弃，挂起和干扰。 <br><br> 怎么办呢？ 首先，您必须始终处理错误。 如果您遇到错误，请不要忽略它。 如果PostgreSQL失去连接就很好了：它回滚了交易，我们得以生存。 为此，我将停止。 好吧，如果有一个根本没有时间编辑的代码，那么我们<b>在事务中</b>仍然有<b>最大的空闲时间</b> –您可以放它，它只会淘汰无效的事务。 <br><br><img src="https://habrastorage.org/webt/jf/nn/gj/jfnngjpf_bkmogvxhjzxigrwlli.jpeg"><br><br> 错误处理的典型情况是：异常大于NULL。 曾经有一次我们与同事争论术语。 我说过的意思是“用蓝焰燃烧所有东西”，他的意思是“一切都浪费了”。 如果我们发生了什么不好的事情，那么即使一切都被指责了，它仍然比完全保持沉默要好-就像这里。 <br><br><img src="https://habrastorage.org/webt/wt/ya/u0/wtyau0lfirp6ftxlbxw7lpkrqpa.jpeg"><br><br> 如果您不知道如何处理该错误，请不要拦截它。 一种很常见的做法：他们发现了一个错误，将其记录下来，然后继续运行，好像什么都没发生。 再次，如果您进行货币交易，并且您有一个被忽略的错误，则结果可能是不可预测的。 例如，在90年代，它们可以被带入树干的森林中。 现在时代已经变得更柔和了，但也不是很愉快。 <br><br><img src="https://habrastorage.org/webt/yh/p0/zv/yhp0zvuubrxfxgdqoqxy6xoai0a.jpeg"><br><br> 如果我们在客户端上执行操作，则通常返回值：一切成功或失败。 并且我们处理每个错误。 我看到人们是如何特别编写<b>plpgsql</b>代码的，他们在那里发现错误，并写到日志中，他们说，是的，有一个错误并且很粗鲁，他们插入了消息文本。 但是SQLSTATE没有返回。 总是这样做，因此，如果他们忘记检查某些东西，那么他们就会开始遇到问题。 <br><br> 出于某种原因，每个人都害怕使用<b>plpgsql</b>和其他语言的异常。 而且，如果您不是自己发明某种东西，而是使用该语言的标准功能，那么通常一切都会很好。 特别是当连接断开时，经常会出现此问题。 它已下降， <b>事务中</b>的进程<b>处于空闲状态</b> ，数据库正在填充，性能正在下降。 顺便说一句，这样的事务可能仍然会留下锁，但是由于某种原因，这种情况并不常见。 因此， <b>最后将</b>错误添加到处理代码中，然后清除连接并将其返回给服务器。 <br><br><img src="https://habrastorage.org/webt/z-/9-/dx/z-9-dxwfwub-ayln3xckyuzd9xy.jpeg"><br><br> 而且，如果您有明确定义的约束，则在处理错误时，可以从数据库而不是应用程序中引发异常。 在<b>春季</b> ，分别<b>在php中</b>有一个<b>set_exception_handler</b> <b>异常翻译</b> 。 注意框架为您提供的工具，它们之所以出现是有原因的。 <br><br> 因此：不要捕获您不知道该怎么办的错误； 仔细准确地命名错误； 分类错误。 <br><br><img src="https://habrastorage.org/webt/ly/ow/iu/lyowiutps2aojvxrwr0mu-tuopg.jpeg"><br><br> 我个人是按照这样的标准分类的：操作可以重复（例如，我们出现了死锁）； 该操作无法重复，已经完成； 原则上不能执行该操作。 <br><br> 矛盾的是，从应用程序的角度来看，发生死锁，失去连接以及我们用光了钱的情况都是相同的情况：错误处理程序将在一段时间后尝试再次执行该操作。 <br><br><img src="https://habrastorage.org/webt/i4/8v/tt/i48vttsmqdtuxbu3am8jtpa2swm.jpeg"><br><br> 另一方面，他们在应用程序中编写的内容通常不关我的事：我从事基础工作。 我只是敦促您谨慎处理错误，否则：事务空闲，行锁定，数据库膨胀等。 <br><br> 大多数开发人员认为他们只使用数据库，并且他们的应用程序严格按顺序执行操作。 这对所有关系型DBMS来说都是一个优点，因为奇怪的是，即使使用标准隔离级别READ COMMITTED而不是SERIALIZABLE，一切都通常可以很好地工作。 同时，发生丢失更新的情况：一个加载表单，另一个加载相同的表单，一个写并保存，另一个保存旧的-更改被删除。 第一个发誓：“怎么这样，我写了那么多，一切都丢了。” <br><br><img src="https://habrastorage.org/webt/e_/ct/vz/e_ctvzfp_f1uqnunhhqllgds3cg.jpeg"><br><br> 根据我的经验：每周五一次，两名经理付款。 他们应该 <br> 每次都在变化，但是一次却同时攀登，每人分两次付款。 如果您至少有机会出现竞争性访问错误，则迟早会发生。 问题是何时。 <br><br> 此外，我提醒您注意这些限制。 我反复看到他们如何尝试通过触发器提供唯一性。 您将不会在触发器中提供表的唯一性。 您将需要阻止整个表，或者执行一些其他复杂的手势。 迟早您会发现这一点。 <br><br><img src="https://habrastorage.org/webt/ih/wo/ql/ihwoqlt5ysrheu4x4hqv5-pk1by.jpeg"><br><br> 有几次我遇到了一个完全噩梦般的事情：从数据库调用外部Web服务。 有些操作会更改外部实体。 这很不好，因为可以在数据库中回滚事务，但是不会拒绝远程服务上的操作。 <br><br> 更为微妙的一点是僵局。 想象一下：我们处理一个事务，调用一个外部Web服务，进行一些更改，之后我们陷入死锁，然后回滚，然后我们尝试再次执行该操作，再次调用，在良好的情况下，死锁再次发生回滚-它可以 <br> 发生了很多次（我遇到了数百次重复）。 现在，您或多或少正确地处理了这些僵局，重复操作，突然发现您在两个月内已向某人支付了两倍的款项。 <br><br><img src="https://habrastorage.org/webt/sp/lj/-v/splj-vecns-wphpahy3oqig9wuw.jpeg"><br><br> 我遇到了API较差的付款服务：“向这样的用户支付这样的金额”； 该函数返回结果-已付款/未付款。 首先，在重复的情况下存在问题，其次，如果连接中断，不清楚如何处理。 由于某些原因，很少有人对此问题进行打扰。 <br><br><img src="https://habrastorage.org/webt/z7/wt/pu/z7wtpuektoi3jxhedlabwntji-a.jpeg"><br><br> 幻灯片上的一个示例：这样的操作应该分两个阶段执行：好像是警告-“我们现在将做一些事情”； 操作本身。 <br><br><img src="https://habrastorage.org/webt/gl/49/jl/gl49jl1nror_ototnhr13hwpt8q.jpeg"><br><br> 如果我们突然中断-​​您永远都不知道，请关闭电源-我们可以重新执行该操作。 如果我们在第二阶段死亡，那么在整个世界上，我们将不会第二次这样做，而这可以手动拆卸。 实际上，绝大多数此类操作通常是第一次进行，但是这些措施并不是理论上的捏造。 一切都可以正常工作几个月，突然间，管理员开始变得对网络更明智，服务开始主动闪烁-问题开始了。 <br><br><img src="https://habrastorage.org/webt/sd/rd/ii/sdrdiiksbqdpczcux786fux_wik.jpeg"><br> 幻灯片上有4种不可取消的操作。 后者是非等幂运算。 这是一个非常可悲的情况。 刚开始时，我谈到了一个战友，他是在触发器上做所有事情的，以确保他的行动具有同等性。 <br><br><img src="https://habrastorage.org/webt/1z/1k/i4/1z1ki4ljohxetbual3kekohv_uu.jpeg"><br> 在会议上，人们将讨论通用表表达式及其优缺点。 不幸的是，PostgreSQL CTE不是免费的：它们自己需要work_mem。 如果您的样本很小，那么通常就可以。 如果突然变大了，那么问题就开始了。 人们经常将CTE用作一种迷你视图-这样您就可以以某种方式构造应用程序。  CTE的需求量很大。 <br><br><img src="https://habrastorage.org/webt/gx/tp/m8/gxtpm8kn0aplloqxdenlq2_hm8m.jpeg"><br><br><img src="https://habrastorage.org/webt/wq/eo/bp/wqeobptq8vshxvzc0fhvryxqf00.jpeg"><br><br> 您可以创建临时视图，但是不幸的是，每个视图都在pg_class中占据一行，如果非常活跃地使用它，则目录膨胀可能会出现问题。 <br> 在这种情况下，您可以建议进行参数化视图或动态形成查询，但是不幸的是，在PostgreSQL内部，这不是很酷。 <br><br><img src="https://habrastorage.org/webt/8s/1s/eg/8s1seg0zjkz85dhp_gdf56p4u1q.jpeg"><br><br>  JSON通常以出色的语调来谈论，但是JSON中的应用程序存在一种趋势，那就是完全推送任何内容。 原则上，一切正常。 另一方面，虽然可以快速从JSON中检索数据，但速度却不如从列中检索数据快。 更糟糕的是，如果您有一个大型JSON，并且它是在TOAST中发布的。 要从那里获取JSON，您需要从TOAST中获取。 <br><br> 如果所有列都在JSON中，则甚至会在其上构建功能索引，那么您仍然需要从那里获取它。 当数据库很大时，当您进行<b>位图索引扫描</b>时，大容量的情况甚至会变得更糟。 然后我们有了链接，而不是字符串，而是链接到整个页面，为了理解从页面中获取的内容，PostgreSQL将进行<b>Recheck</b> ，即从TOAST举起一行，并检查该值是否存在，并相应地跳过或不跳过。 如果使用较小的列，则效果很好，那么使用JSON，则是个大问题。 无需太烦恼JSON。 <br><br><img src="https://habrastorage.org/webt/i1/sx/et/i1sxeth5byhikfdkucqwy8uswk4.jpeg"><br><br>  <i>-如何检查几个用户何时使用字符串？</i>  <i>有哪些选择？</i> <br><br>  -首先，您可以减去所有列的值，并确保它们没有更改，然后在表格中显示该行。 第二个选项，更方便：完全计算哈希 <br> 列，特别是因为这些列可能又大又厚。 而且散列不是很大。 <br><br>  <i>-您说约束应该称为好名字，以便用户可以了解正在发生的事情。</i>  <i>但是每个约束名称不能超过60个字符。</i>  <i>这通常是不够的。</i>  <i>怎么处理呢？</i> <br><br>  -我认为要克制自己。 在PostgreSQL中，这是一种特殊的长度类型64。原则上，您可以重新编译为更长的长度，但这不是很好。 <br><br>  <i>-在报告中，您对我们很感兴趣，因为我们需要对档案进行某些处理。</i>  <i>对于过时的归档，哪种机制被认为是最正确的？</i> <br><br>  -正如我在一开始所说的那样，尽职调查将一切正常。 哪种方法最适合您，请使用它。 <br><br><iframe width="560" height="315" src="https://www.youtube.com/embed/sdVfBkoz_Fc" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>  <b>时间：报告的第2部分从25:16开始</b> <br><br>  <i>-有一个特定的过程，几个用户并行调用。</i>  <i>如何限制此过程的并行执行，即构建所有</i> <i><br></i>  <i>用户在队列中，以便在一个用户完成该过程之前，下一个用户无法开始使用它？</i> <br><br>  -确切的程序？ 还是足够的交易？ <br><br>  <i>-这是某些事务中调用的过程。</i> <br><br>  -您可以在对象上加锁。 如果您同时患有一个条件，例如不超过3个条件，将很困难。 但这是可以实现的。 我通常使用事务性锁，但也可以使用非事务性锁。 <br><br>  <i>-我仍然想再次返回档案数据。</i>  <i>你说过</i> <i><br></i>  <i>存档存储选项，以便从应用程序中获取数据。</i>  <i>我想到只是创建一个单独的存档数据库。</i>  <i>还有什么其他选择？</i> <br><br>  -是的，您可以建立一个存档数据库。 您可以编写一个函数并将其包装在视图中。 在一个函数中，您可以执行所有操作：可以访问存档数据库，可以从磁盘中拾取一些文件，可以访问外部Web服务，可以将所有这些组合在一起，可以自己生成一些随机数据-选择仅受想象力限制。 <br><br>  <i>-关于存档数据的问题：您可以使用分区-第11版的新芯片，当我们将整个表分区后，然后我们就可以拆下分区并将其保留为存档。</i>  <i>也可以访问它。</i> <br><br>  “当然，为什么不呢。” 我让位给下一位发言者。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN443792/">https://habr.com/ru/post/zh-CN443792/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN443780/index.html">MCDM项目。 第1部分。概念</a></li>
+<li><a href="../zh-CN443782/index.html">开发人员现在可以在他们的Steam游戏中使用Valve的网络API</a></li>
+<li><a href="../zh-CN443786/index.html">在莫斯科Mobius 2018的HeadHunter展台分析第二届Android测验竞赛</a></li>
+<li><a href="../zh-CN443788/index.html">Mikrotik RouterOS中静态路由的基础</a></li>
+<li><a href="../zh-CN443790/index.html">幸存者的错误</a></li>
+<li><a href="../zh-CN443794/index.html">房地产销售领域中IT初创公司的主要方向</a></li>
+<li><a href="../zh-CN443798/index.html">Zotero hacks：无限的同步存储及其与rmarkdown的平滑使用</a></li>
+<li><a href="../zh-CN443804/index.html">C＃是低级语言吗？</a></li>
+<li><a href="../zh-CN443808/index.html">对社会责任感低的女孩进行分析（由Power BI，Qlik Sense，Tableau收费）</a></li>
+<li><a href="../zh-CN443810/index.html">2018年，具有不同资格的开发人员能赚多少钱</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

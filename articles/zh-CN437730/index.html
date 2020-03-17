@@ -1,0 +1,127 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚥 👑 🥨 我们如何在不添加字节的情况下解决PostgreSQL中的内存问题 🍉 👎🏿 ⚫️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="关于“繁重”请求和解决问题的优雅解决方案的简短故事 
+
+
+ 最近，在晚上，警报开始唤醒我们：磁盘空间不足。 我们很快就发现问题出在ETL任务中。 
+
+
+ ETL任务在存储二进制记录和转储的表中执行。 每天晚上，此任务是删除重复的转储并释放空间。 
+
+
+ 为了搜索重复的转储，我们使用了以下查询： 
+
+...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>我们如何在不添加字节的情况下解决PostgreSQL中的内存问题</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/437730/"><p><img src="https://habrastorage.org/webt/bd/vf/bj/bdvfbjzxvmt2ijnwu5zjqnz3e1e.jpeg"></p><br><p> 关于“繁重”请求和解决问题的优雅解决方案的简短故事 </p><br><p> 最近，在晚上，警报开始唤醒我们：磁盘空间不足。 我们很快就发现问题出在ETL任务中。 </p><br><p>  ETL任务在存储二进制记录和转储的表中执行。 每天晚上，此任务是删除重复的转储并释放空间。 </p><a name="habracut"></a><br><p> 为了搜索重复的转储，我们使用了以下查询： </p><br><pre><code class="plaintext hljs">id, MIN(id) OVER (PARTITION BY blob ORDER BY id) FROM dumps</code> </pre> <br><p> 该查询通过BLOB字段合并了相同的转储。 使用窗口函数，我们获得每个转储的首次出现的标识符。 然后，根据此请求，我们删除所有重复的转储。 </p><br><p> 该请求已执行了一段时间，并且从日志中可以看出，该请求占用了大量内存。 该图显示了他每晚如何为可用磁盘空间评分： </p><br><p> <a href=""><img src="https://habrastorage.org/webt/v2/sn/ye/v2snyevasqsmvjjzpc7lbjs4mpe.png"></a> </p><br><p> 随着时间的流逝，请求需要更多的内存，故障更加严重。 而且，浏览执行计划，我们立即看到了一切： </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Sort (cost=69547.50..70790.83 rows=497332 width=36) (actual time=107.607..127.485 rows=39160) Sort Key: blob, id Sort Method: external merge Disk: 30456kB Buffers: shared hit=3916, temp read=3807 written=3816 -&gt; Seq Scan on dumps (cost=0..8889.32 rows=497332 width=36) (actual time=0.022..8.747 rows=39160) Buffers: shared hit=3916 Execution time: 159.960 ms</code> </pre> <br><p>  <strong>排序占用大量内存。</strong> 在执行方面，排序需要测试数据集中大约30 MB的内存。 </p><br><h3 id="pochemu-tak"> 为什么这样 </h3><br><p>  PostgreSQL分配内存用于哈希和排序。 内存量由<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>work_mem</code></a>参数控制。  work_mem的默认大小为4 MB。 如果散列或排序所需的内存超过4 MB，则PostgreSQL会临时占用磁盘空间。 </p><br><p> 我们的查询显然消耗了4 MB以上的内存，因此数据库使用了如此多的内存。 我们决定：我们不会着急，也没有增加参数并扩大存储量。 最好寻找另一种<strong>整理内存以进行排序的方法</strong> 。 </p><br><h3 id="ekonomnaya-sortirovka"> 经济分类 </h3><br><p>  “要吃多少排序取决于数据集和排序键的大小。您无法减少数据集，但是<strong>键</strong>的<strong>大小是可能的</strong> 。 </p><br><p> 对于参考点，我们采用排序键的平均大小： </p><br><pre> <code class="plaintext hljs"> avg ---------- 780</code> </pre> <br><p> 每个密钥的重量为780。为减少二进制密钥，可以对其进行哈希处理。 在PostgreSQL中有<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">md5</a>用于此操作（是的，不是安全性，但是出于我们的目的，它会这样做）。 让我们看看用md5散列的BLOB的权重是多少： </p><br><pre> <code class="plaintext hljs"> avg ----------- 36</code> </pre> <br><p> 通过md5散列的密钥的大小为36个字节。  <strong>哈希键仅占原始选项的4％</strong> 。 </p><br><p> 接下来，我们使用哈希键启动了原始请求： </p><br><pre> <code class="plaintext hljs"> id, MIN(id) OVER ( PARTITION BY md5(array_to_string(blob, '') ) ORDER BY id) FROM dumps;</code> </pre> <br><p> 以及实施计划： </p><br><pre> <code class="plaintext hljs"> Buffers: shared hit=3916 -&gt; Sort (cost=7490.74..7588.64 rows=39160 width=36) (actual time=349.383..353.045 rows=39160) Sort Key: (md5(array_to_string(blob, ''::text))), id Sort Method: quicksort Memory: 4005kB Buffers: shared hit=3916 -&gt; Seq Scan on dumps (cost=0..4503.40 rows=39160 width=36) (actual time=0.055..292.070 rows=39160) Buffers: shared hit=3916 Execution time: 374.125 ms</code> </pre> <br><p> 使用散列密钥，该请求仅消耗4个额外的兆字节，即仅比前30 MB的10％多一点。  <strong>因此，排序键的大小会极大地影响排序所消耗的内存</strong> 。 </p><br><h3 id="dalshe--bolshe"> 更进一步 </h3><br><p> 在此示例中，我们使用<code>md5</code>对BLOB进行了哈希处理。 用MD5创建的哈希必须重16个字节。 而且我们得到了更多： </p><br><pre> <code class="plaintext hljs">md5_size ------------- 32</code> </pre> <br><p> 我们的哈希值恰好是哈希值的两倍，因为<code>md5</code>会以十六进制文本的形式生成哈希值。 </p><br><p> 在PostgreSQL中，可以将MD5用于<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>pgcrypto</code></a>扩展的哈希。  <code>pgcrypto</code>创建<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>bytea</code></a>类型的MD5 <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">（二进制）</a> ： </p><br><pre> <code class="plaintext hljs">select pg_column_size( digest('foo', 'md5') ) as crypto_md5_size crypto_md5_size --------------- 20</code> </pre> <br><p> 散列仍然比应有的多4个字节。 只是<code>bytea</code>类型使用这4个字节来存储值的长度，但我们不会那样做。 </p><br><p> 事实证明，PostgreSQL中的<code>uuid</code>类型恰好重16个字节，并且支持任何任意值，因此我们摆脱了其余的四个字节： </p><br><pre> <code class="plaintext hljs">uuid_size --------------- 16</code> </pre> <br><p> 仅此而已。  <code>md5</code> 32个字节变成<code>uuid</code> 16个字节。 </p><br><p> 我通过获取更大的数据集检查了更改的影响。 数据本身无法显示，但我将分享结果： </p><br><p> <a href=""><img src="https://habrastorage.org/webt/rt/g4/v6/rtg4v65zaqxezkmjkh9cspgh2bo.jpeg"></a> </p><br><p> 从表中可以看到，最初有问题的请求重300 MB（并在半夜唤醒了我们）。 使用<code>uuid</code>键，排序仅花费了7 MB。 </p><br><h3 id="soobrazheniya-vdogonku"> 后续注意事项 </h3><br><p> 具有散列内存排序键的请求消耗较少，但运行速度慢得多： </p><br><p> <a href=""><img src="https://habrastorage.org/webt/b0/cv/vp/b0cvvpozbm_myvxy0-esybfu7gi.jpeg"></a> </p><br><p> 散列使​​用更多的CPU，因此带有散列的请求速度较慢。 但是我们试图解决磁盘空间问题，而且该任务在晚上执行，因此时间不是问题。 我们为了节省内存而妥协。 </p><br><p> 这是一个很好的例子，您<strong>不必总是尝试加快数据库查询的速度</strong> 。 最好使用平衡的资源，并从最少的资源中挤出最大的资源。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN437730/">https://habr.com/ru/post/zh-CN437730/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN437716/index.html">创建Flutter项目的三种相对诚实的方法</a></li>
+<li><a href="../zh-CN437720/index.html">Erlang / Elixir的质量解决方案之争</a></li>
+<li><a href="../zh-CN437722/index.html">美国停战的宇宙后果</a></li>
+<li><a href="../zh-CN437724/index.html">OpenSceneGraph：几何和状态属性的过程动画</a></li>
+<li><a href="../zh-CN437726/index.html">用Kotlinx序列化Kotlin.Serialization</a></li>
+<li><a href="../zh-CN437732/index.html">MakeX M-One Pro 70 DLP打印机概述</a></li>
+<li><a href="../zh-CN437734/index.html">在MikroTik路由器上从Rostelecom设置IPTV</a></li>
+<li><a href="../zh-CN437736/index.html">我们如何通过Moon和OpenShift自动执行硒测试的启动</a></li>
+<li><a href="../zh-CN437738/index.html">植物化学家的笔记。 土豆 第二部分 关于马铃薯脂肪的故事或“生食主义者的日子”</a></li>
+<li><a href="../zh-CN437740/index.html">Haxe：跨平台开发的大秘密</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

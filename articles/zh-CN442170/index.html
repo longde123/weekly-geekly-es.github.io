@@ -1,0 +1,133 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⏲️ 🐡 🐧 我们正在准备在Postgres中进行全文搜索。 第一部分 👩🏾‍🤝‍👩🏻 🔠 👨🏿‍🌾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="UPD 第二部分 
+
+
+ 本文是有关如何在PostgreSQL中最佳配置全文本搜索的系列文章的第一部分。 我最近不得不在工作中解决一个类似的问题-对于在此主题上至少缺少一些理智的材料，我感到非常惊讶。 我的战斗经验很丰富。 
+ 领带 
+
+
+ 我支持一个相对较大的项目，该项目可以对文档进行公开搜索。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>我们正在准备在Postgres中进行全文搜索。 第一部分</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/442170/"><p>  <strong>UPD</strong>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">第二部分</a> </p><br><p> 本文是有关如何在PostgreSQL中<em>最佳</em>配置全文本搜索的系列文章的第一部分。 我最近不得不在工作中解决一个类似的问题-对于在此主题上至少缺少一些理智的材料，我感到非常惊讶。 我的战斗经验很丰富。 </p><a name="habracut"></a><br><h2 id="zavyazka"> 领带 </h2><br><p> 我支持一个相对较大的项目，该项目可以对文档进行公开搜索。 该数据库包含约500,000个文档，总容量约为3.6 GB。 搜索的本质是：用户填写一个表格，其中既有全文查询，又有数据库中各个字段（包括join-s）进行的过滤。 </p><br><p> 搜索通过Sphinx进行了工作（或更有效），但效果不是很好。 主要问题如下： </p><br><ol><li> 索引消耗了大约8 GB的RAM。 在具有8 GB RAM的服务器上，这是一个问题。 内存交换，导致了<em>糟糕的</em>性能。 </li><li> 该索引在大约40分钟内建立。 毫无疑问，搜索结果是否一致；索引每天发布一次。 </li><li>搜索工作了<em>很长时间</em> 。 进行了特别长时间的请求，这对应于大量文档：必须将大量id-shnik从狮身人面像传输到数据库，并根据后端的相关性进行排序。 </li></ol><br><p> 由于这些问题，出现了任务-优化全文搜索。 此任务有两个解决方案： </p><br><ol><li> 收紧Sphinx：配置实时索引，将要过滤的属性存储在索引中。 </li><li> 使用内置的FTS PostgreSQL。 </li></ol><br><p> 决定实施第二种解决方案：这样，您可以本地提供索引的自动更新，摆脱两个服务之间的<em>长时间</em>通信，并监视一个服务而不是两个服务。 </p><br><p> 这似乎是一个很好的解决方案。 但是问题摆在面前。 </p><br><p> 让我们从头开始。 </p><br><h2 id="naivno-ispolzuem-polnotekstovyy-poisk"> 我们天真地使用全文搜索 </h2><br><p>如文档所述，全文本搜索需要使用<code>tsvector</code>和<code>tsquery</code> 。 第一个以搜索优化的形式存储文档的文本，第二个以全文查询的形式存储。 </p><br><p> 要搜索PostgreSQL，有函数<code>to_tsvector</code> ， <code>plainto_tsquery</code> ， <code>to_tsquery</code> 。 要对结果进行排名，请使用<code>ts_rank</code> 。 它们的用法很直观，并且在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文档中</a>有很好的描述，因此我们不再赘述它们的用法。 </p><br><p> 使用它们的传统搜索查询如下所示： </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> id, ts_rank(to_tsvector("document_text"), plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> to_tsvector("document_text") @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> ts_rank(to_tsvector("document_text"), plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> <br><p> 我们推导出文本中带有“查询”一词的文档ID，并按相关性从高到低的顺序对其进行排序。 一切似乎都还好吗？ 不行 </p><br><p> 上面的方法有很多缺点： </p><br><ol><li> 我们不使用索引进行搜索。 </li><li> 表格的每一行都会调用ts_vector函数。 </li><li> 对该表的每一行调用ts_rank函数。 </li></ol><br><p> 所有这些导致搜索花费<em>很</em>长时间的事实。 在战斗基础上解释结果： </p><br><pre> <code class="plaintext hljs">Gather Merge (actual time=420289.477..420313.969 rows=58742 loops=1) Workers Planned: 2 Workers Launched: 2 -&gt; Sort (actual time=420266.150..420267.935 rows=19581 loops=3) Sort Key: (ts_rank(to_tsvector(document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 2278kB -&gt; Parallel Seq Scan on documents_document (actual time=65.454..420235.446 rows=19581 loops=3) Filter: (to_tsvector(document_text) @@ plainto_tsquery(''::text)) Rows Removed by Filter: 140636 Planning time: 3.706 ms Execution time: 420315.895 ms</code> </pre> <br><p>  420秒！ 一个请求！ </p><br><p> 该基地还产生了很多形式的<code>[54000] word is too long to be indexed</code> 。 不用担心。 原因是在我的数据库中是在所见即所得编辑器中创建的文档。 它插入了很多 在任何可能的地方，并且连续5.4万。  Postgres会忽略此长度的单词，并写出无法禁用的vorning。 </p><br><p> 我们将尝试解决所有提到的问题，并加快搜索速度。 </p><br><h2 id="naivno-optimiziruem-poisk"> 我们天真地优化了搜索 </h2><br><p> 当然，我们不会使用战斗基地-我们将创建一个测试基地。 它包含约12,000个文档。 示例中的请求在35秒左右的时间内执行。 漫长的时间！ </p><br><div class="spoiler">  <b class="spoiler_title">说明结果</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">Sort (actual time=35431.874..35432.208 rows=3593 loops=1) Sort Key: (ts_rank(to_tsvector(document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Seq Scan on documents_document (actual time=8.470..35429.261 rows=3593 loops=1) Filter: (to_tsvector(document_text) @@ plainto_tsquery(''::text)) Rows Removed by Filter: 9190 Planning time: 0.200 ms Execution time: 35432.294 ms</code> </pre> </div></div><br><h3 id="indeks"> 索引 </h3><br><p> 首先，当然，您需要添加一个索引。 最简单的方法：功能索引。 </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_gin_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> gin (to_tsvector(<span class="hljs-string"><span class="hljs-string">'russian'</span></span>, "document_text"));</code> </pre> <br><p> 这样的索引将创建很长时间-在测试基础上花费了大约26秒。 他需要遍历数据库，并为每个记录调用to_tsvector函数。 尽管它仍然可以将搜索速度提高到12秒，但它的长度仍然无法原谅！ </p><br><div class="spoiler">  <b class="spoiler_title">说明结果</b> <div class="spoiler_text"><pre> <code class="plaintext hljs">Sort (actual time=12213.943..12214.327 rows=3593 loops=1) Sort Key: (ts_rank(to_tsvector('russian'::regconfig, document_text), plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Bitmap Heap Scan on documents_document (actual time=3.849..12212.248 rows=3593 loops=1) Recheck Cond: (to_tsvector('russian'::regconfig, document_text) @@ plainto_tsquery(''::text)) Heap Blocks: exact=946 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.427..0.427 rows=3593 loops=1) Index Cond: (to_tsvector('russian'::regconfig, document_text) @@ plainto_tsquery(''::text)) Planning time: 0.109 ms Execution time: 12214.452 ms</code> </pre> </div></div><br><h3 id="mnogokratnyy-vyzov-to_tsvector"> 重复调用<code>to_tsvector</code> </h3><br><p> 要解决此问题，您需要将<code>tsvector</code>存储在数据库中。 当然，在更改包含文档的表中的数据时，您需要通过后端使用数据库中的触发器进行更新。 </p><br><p> 有两种方法可以做到这一点： </p><br><ol><li> 将<code>tsvector</code>类型的列添加到包含文档的表中。 </li><li> 创建一个单独的表，并与文档表进行一对一通信，并将向量存储在那里。 </li></ol><br><p> 第一种方法的优点：搜索中缺少join-s。 <br> 第二种方法的优点：带有文档的表中缺少额外的数据，它的大小与以前相同。 使用备份，您无需浪费时间和时间在<code>tsvector</code> ，根本不需要备份。 </p><br><p> 两次旅行都导致磁盘上的数据变成原来的两倍：存储了文档文本及其向量。 </p><br><p> 我为自己选择了第二种方法，它的优势对我来说更为重要。 </p><br><div class="spoiler">  <b class="spoiler_title">索引创建</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INDEX</span></span> idx_gin_document <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">USING</span></span> gin ("document_text");</code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">新的搜索查询</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> documents_document.id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_document <span class="hljs-keyword"><span class="hljs-keyword">LEFT JOIN</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> documents_document.id = documents_documentvector.document_id <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> </div></div><br><p> 将数据添加到链接表并创建索引。 在测试的基础上，添加数据花费了24秒，而创建索引仅花费了<em>2.7秒</em> 。 如我们所见，更新索引和数据并没有明显加快，但是索引本身现在可以<em>非常</em>快速地更新。 </p><br><p> 搜索加速了多少次？ </p><br><pre> <code class="plaintext hljs">Sort (actual time=48.147..48.432 rows=3593 loops=1) Sort Key: (ts_rank(documents_documentvector.text, plainto_tsquery(''::text))) DESC Sort Method: quicksort Memory: 377kB -&gt; Hash Join (actual time=2.281..47.389 rows=3593 loops=1) Hash Cond: (documents_document.id = documents_documentvector.document_id) -&gt; Seq Scan on documents_document (actual time=0.003..2.190 rows=12783 loops=1) -&gt; Hash (actual time=2.252..2.252 rows=3593 loops=1) Buckets: 4096 Batches: 1 Memory Usage: 543kB -&gt; Bitmap Heap Scan on documents_documentvector (actual time=0.465..1.641 rows=3593 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=577 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.404..0.404 rows=3593 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.410 ms Execution time: 48.573 ms</code> </pre> <br><div class="spoiler">  <b class="spoiler_title">没有连接的指标</b> <div class="spoiler_text"><p> 要求： </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> id, ts_rank("text", plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>)) <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><p> 结果： </p><br><pre> 排序（实际时间= 44.339..44.487行= 3593循环= 1）
+  排序键：（ts_rank（文本，plainto_tsquery（'query'::文本）））
+  排序方式：quicksort内存：265kB
+   -&gt;对documents_documentvector进行位图堆扫描（实际时间= 0.692..43.682行= 3593循环= 1）
+        重新检查条件：（文本@@ plainto_tsquery（'query'::文本））
+        堆块：准确= 577
+         -&gt;对idx_gin_document进行位图索引扫描（实际时间= 0.577..0.577行= 3593循环= 1）
+              索引条件：（文本@@ plainto_tsquery（'query'::文本））
+计划时间：0.182毫秒
+执行时间：44.610毫秒
+</pre></div></div><br><p> 太不可思议了！ 尽管join和<code>ts_rank</code>仍然<code>ts_rank</code> 。 已经是一个可以接受的结果，大多数时间不是通过搜索，而是通过为每行计算<code>ts_rank</code>的。 </p><br><h3 id="mnogokratnyy-vyzov-ts_rank">  <code>ts_rank</code>多重通话 </h3><br><p> 似乎我们已经成功解决了除此以外的所有问题。  44毫秒是不错的交货时间。 幸福的结局似乎很接近？ 在那里！ </p><br><p> 在不使用<code>ts_rank</code>情况下运行相同的查询并比较结果。 </p><br><div class="spoiler">  <b class="spoiler_title">没有ts_rank</b> <div class="spoiler_text"><p> 要求： </p><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> document_id, <span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> rank <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> documents_documentvector <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> "text" @@ plainto_tsquery(<span class="hljs-string"><span class="hljs-string">''</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> rank;</code> </pre> <br><p> 结果： </p><br><pre> <code class="plaintext hljs">Bitmap Heap Scan on documents_documentvector (actual time=0.503..1.609 rows=3593 loops=1) Recheck Cond: (text @@ plainto_tsquery(''::text)) Heap Blocks: exact=577 -&gt; Bitmap Index Scan on idx_gin_document (actual time=0.439..0.439 rows=3593 loops=1) Index Cond: (text @@ plainto_tsquery(''::text)) Planning time: 0.147 ms Execution time: 1.715 ms</code> </pre> </div></div><br><p>  1.7毫秒！ 快三十倍！ 对于战斗基地，结果约为150毫秒1.5秒。 无论如何，两者之间的差异是一个数量级，而1.5秒并不是您要等待来自基础的答案的时间。 怎么办 </p><br><p> 您不能根据相关性关闭排序；不能减少要计数的行数（数据库应为所有<code>ts_rank</code>文档计算<code>ts_rank</code> ，否则无法排序）。 </p><br><p> 在Internet上的某些地方，建议缓存最频繁的请求（并因此调用ts_rank）。 但是我不喜欢这种方法：正确选择正确的查询非常困难，而且错误的查询仍然会降低搜索速度。 </p><br><p> 我非常希望在经过索引之后，数据像Sphinx一样以已经排序的形式出现。 不幸的是，在PostgreSQL的盒子里什么也做不了。 </p><br><p> 但是我们很幸运-RUM索引可以做到这一点。 有关它的详细信息，例如，可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">其作者</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">演讲中</a>找到。 它存储有关请求的其他信息，使您可以直接评估所谓的信息。  <code>tsvector</code>和<code>tsquery</code>之间的“距离”，并在扫描索引后立即产生排序结果。 </p><br><p> 但是，抛出GIN并安装RUM并不值得。 它有缺点，有优点和有应用限制-我将在下一篇文章中对此进行介绍。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN442170/">https://habr.com/ru/post/zh-CN442170/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN442158/index.html">英雄三世-20岁</a></li>
+<li><a href="../zh-CN442162/index.html">STM32快速启动。 第1部分软件，材料，Cube MX</a></li>
+<li><a href="../zh-CN442164/index.html">Roskomnadzor计划对Facebook的违规行为处以罚款</a></li>
+<li><a href="../zh-CN442166/index.html">明斯克的替代地铁方案</a></li>
+<li><a href="../zh-CN442168/index.html">Habra megarating：12年以来Habr的最佳文章和统计数据。 第2/2部分</a></li>
+<li><a href="../zh-CN442176/index.html">科学家组建一支由T淋巴细胞组成的全能军以摧毁癌症</a></li>
+<li><a href="../zh-CN442178/index.html">Mayhem-可以检测程序漏洞并修复它们的机器</a></li>
+<li><a href="../zh-CN442180/index.html">免费赠送“铁”</a></li>
+<li><a href="../zh-CN442182/index.html">急诊室：美国Facebook主持人的秘密生活</a></li>
+<li><a href="../zh-CN442184/index.html">入侵CAN总线汽车。 虚拟仪表板</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

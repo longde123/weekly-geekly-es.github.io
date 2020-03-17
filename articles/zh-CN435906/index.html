@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎳 ℹ️ 👩🏾‍🌾 Pacemaker群集存储+ DRBD（双主）+ ctdb 🛐 🚗 🏨</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="早上好，哈布罗夫斯克。 有一个任务-使用pacamaker + drbd（在双主模式下）+ clvmd + ctdb部署容错高可用性存储，该存储将安装在服务器上。 我将保留我第一次接触所有这些工具的资格，并乐于批评和补充/更正。 在Internet上，没有针对该捆绑软件的专门说明，或者信息已过时。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Pacemaker群集存储+ DRBD（双主）+ ctdb</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/435906/">早上好，哈布罗夫斯克。 有一个任务-使用pacamaker + drbd（在双主模式下）+ clvmd + ctdb部署容错高可用性存储，该存储将安装在服务器上。 我将保留我第一次接触所有这些工具的资格，并乐于批评和补充/更正。 在Internet上，没有针对该捆绑软件的专门说明，或者信息已过时。 目前，这是可行的，但是有一个问题的解决方案，我希望在不久的将来能找到。 除非另有说明，否则所有操作都必须在两个节点上执行。 <br><br><a name="habracut"></a> 让我们开始吧。 我们在CentOS 7上有两个虚拟机。 <br><br>  1）为了可靠性，将它们介绍给/ etc / hosts <br><br><pre><code class="bash hljs">192.168.0.1 node1 192.168.0.2 node2</code> </pre> <br>  2）标准存储库中没有DRBD，因此您需要连接第三方存储库。 <br><br><pre> <code class="bash hljs">rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org rpm -Uvh https://www.elrepo.org/elrepo-release-7.0-3.el7.elrepo.noarch.rpm</code> </pre><br>  3）安装drbd版本8.4（在双主要模式下我无法获得9.0） <br><br><pre> <code class="bash hljs">yum install -y kmod-drbd84 drbd84-utils</code> </pre><br>  4）在启动时激活并启用drbd内核模块 <br><br><pre> <code class="bash hljs">modprobe drbd <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> drbd &gt; /etc/modules-load.d/drbd.conf</code> </pre><br>  5）为资源drbd /etc/drbd.d/r0.res创建配置文件 <br><br><pre> <code class="bash hljs">resource r0 { protocol C; device /dev/drbd0; meta-disk internal; disk /dev/sdb; net { allow-two-primaries; } disk { fencing resource-and-stonith; } handlers { fence-peer <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-fence-peer.sh"</span></span>; after-resync-target <span class="hljs-string"><span class="hljs-string">"/usr/lib/drbd/crm-unfence-peer.sh"</span></span>; } on node1 { address 192.168.0.1:7788; } on node2 { address 192.168.0.2:7788; }</code> </pre><br>  6）禁用drbd单元（稍后由起搏器负责），为drbd磁盘创建元数据，增加资源 <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">disable</span></span> drbd drbdadm create-md r0 drbdadm up r0</code> </pre><br>  7）在第一个节点上，将资源设为主资源 <br><br><pre> <code class="bash hljs">drbdadm primary --force r0</code> </pre><br>  8）放置起搏器 <br><br><pre> <code class="bash hljs">yum install -y pacemaker pcs resource-agents</code> </pre><br>  9）为用户组设置密码以在节点上进行授权 <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> CHANGEME | passwd --stdin hacluster</code> </pre><br>  10）在两个节点上运行起搏器 <br><br><pre> <code class="bash hljs">systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> pcsd systemctl start pcsd</code> </pre><br>  11）登录到集群。 从这一阶段开始，我们在一个节点上进行所有操作 <br><br><pre> <code class="bash hljs">pcs cluster auth node1 node2 -u hacluster</code> </pre><br>  12）创建一个名为samba_cluster的集群 <br><br><pre> <code class="bash hljs">pcs cluster setup --force --name samba_cluster node1 node2</code> </pre><br>  13）激活节点 <br><br><pre> <code class="bash hljs">pcs cluster <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> --all pcs cluster start --all</code> </pre><br>  14）由于我们将虚拟机作为服务器，因此我们关闭了STONITH机制 <br><br><pre> <code class="bash hljs">pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> stonith-enabled=<span class="hljs-literal"><span class="hljs-literal">false</span></span> pcs property <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> no-quorum-policy=ignore</code> </pre><br>  15）创建VIP <br><br><pre> <code class="bash hljs">pcs resource create virtual_ip ocf:heartbeat:IPaddr2 ip=192.168.0.10 cidr_netmask=24 op monitor interval=60s</code> </pre><br>  16）创建一个drbd资源 <br><br><pre> <code class="bash hljs">pcs cluster cib drbd_cfg pcs -f drbd_cfg resource create DRBD ocf:linbit:drbd drbd_resource=r0 op monitor interval=60s pcs -f drbd_cfg resource master DRBDClone DRBD master-max=2 master-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-node-max=1 <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span>-max=2 notify=<span class="hljs-literal"><span class="hljs-literal">true</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs cluster cib-push drbd_cfg</code> </pre><br>  17）安装clvm所需的软件包并准备clvm <br><br><pre> <code class="bash hljs">yum install -y lvm2-cluster gfs2-utils /sbin/lvmconf --<span class="hljs-built_in"><span class="hljs-built_in">enable</span></span>-cluster</code> </pre> <br>  18）将dlm和clvd资源添加到起搏器 <br><br><pre> <code class="bash hljs">pcs resource create dlm ocf:pacemaker:controld op monitor interval=30s on-fail=fence <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> ordered=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs resource create clvmd ocf:heartbeat:clvm op monitor interval=30s on-fail=fence <span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> interleave=<span class="hljs-literal"><span class="hljs-literal">true</span></span> ordered=<span class="hljs-literal"><span class="hljs-literal">true</span></span> pcs constraint colocation add clvmd-clone with dlm-clone</code> </pre> <br>  19）此时，启动clvmd和dlm应该会引发错误。 我们转到网络界面起搏器<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">192.168.0.1：2224</a> 。 如果群集未出现，则将其添加到“现有的已添加”。 接下来，转到参考资料-dlm-可选参数，并设置值allow_stonith_disabled = true <br><br>  20）我们设置资源加载队列 <br><br><pre> <code class="bash hljs">pcs constraint order start DRBDClone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> dlm-clone pcs constraint order start dlm-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> clvmd-clone</code> </pre><br>  21）禁止LVM写入缓存并清除它。 在两个节点上 <br><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'s/write_cache_state = 1/write_cache_state = 0/'</span></span> /etc/lvm/lvm.conf rm /etc/lvm/cache/*</code> </pre><br>  22）我们编辑/etc/lvm/lvm.conf，这样lvm不会看到/ dev / sdb。 在两个节点上 <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># This configuration option has an automatic default value. # filter = [ "a|.*/|" ] filter = [ "r|^/dev/sdb$|" ]</span></span></code> </pre><br>  23）创建一个CLVM分区。 我们只做一个音符 <br><br><pre> <code class="bash hljs">$ vgcreate -Ay -cy cl_vg /dev/drbd0 Physical volume <span class="hljs-string"><span class="hljs-string">"/dev/drbd0"</span></span> successfully created. Clustered volume group <span class="hljs-string"><span class="hljs-string">"cl_vg"</span></span> successfully created $ lvcreate -l100%FREE -n r0 cl_vg Logical volume <span class="hljs-string"><span class="hljs-string">"r0"</span></span> created.</code> </pre><br>  24）我们在gfs2中标记该部分 <br><br><pre> <code class="bash hljs">mkfs.gfs2 -j2 -p lock_dlm -t drbd-gfs2:r0 /dev/cl_vg/r0</code> </pre><br>  25）接下来，在起搏器中添加此部分的安装，并告诉它在clvmd之后启动 <br><br><pre> <code class="bash hljs">pcs resource create fs ocf:heartbeat:Filesystem device=<span class="hljs-string"><span class="hljs-string">"/dev/cl_vg/r0"</span></span> directory=<span class="hljs-string"><span class="hljs-string">"/mnt/"</span></span> fstype=<span class="hljs-string"><span class="hljs-string">"gfs2"</span></span> --<span class="hljs-built_in"><span class="hljs-built_in">clone</span></span> pcs constraint order start clvmd-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> fs-clone</code> </pre><br>  26）现在轮到ctdb了，它将运行samba <br><br><pre> <code class="bash hljs">yum install -y samba ctdb cifs-utils</code> </pre><br>  27）编辑配置/etc/ctdb/ctdbd.conf <br><br><pre> <code class="bash hljs">CTDB_RECOVERY_LOCK=<span class="hljs-string"><span class="hljs-string">"/mnt/ctdb/.ctdb.lock"</span></span> CTDB_NODES=/etc/ctdb/nodes CTDB_MANAGES_SAMBA=yes CTDB_LOGGING=file:/var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/ctdb.log CTDB_DEBUGLEVEL=NOTICE</code> </pre><br>  28）创建一个带有节点列表的文件。 注意！ 在节点列表中的每个IP之后，都应存在换行符。 否则，该节点将在初始化期间失败。 <br><br><pre> <code class="bash hljs">cat /etc/ctdb/nodes 192.168.0.1 192.168.0.2</code> </pre><br>  29）添加到配置/etc/samba/smb.conf <br><br><pre> <code class="bash hljs">[global] clustering = yes private dir = /mnt/ctdb lock directory = /mnt/ctdb idmap backend = tdb2 passdb backend = tdbsam [<span class="hljs-built_in"><span class="hljs-built_in">test</span></span>] comment = Cluster Share path = /mnt browseable = yes writable = yes</code> </pre><br>  30）最后，创建ctdb资源并指示应在之后加载 <br><br><pre> <code class="bash hljs">pcs constraint order start fs-clone <span class="hljs-keyword"><span class="hljs-keyword">then</span></span> samba</code> </pre><br> 现在，关于我尚未决定的问题。 如果重新启动节点，那么整个集群将崩溃，因为drbd需要时间来激活/ dev / drbd0。  DLM无法看到该分区，因为该分区尚未激活并且无法启动，等等。 解决方法是手动激活分区并重新启动起搏器资源 <br><br><pre> <code class="bash hljs">vgchage -ay pcs resource refresh</code> </pre></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN435906/">https://habr.com/ru/post/zh-CN435906/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN435896/index.html">在.NET Core中使用DiagnosticSource：理论</a></li>
+<li><a href="../zh-CN435898/index.html">在NALSD面试中应该考虑的问题</a></li>
+<li><a href="../zh-CN435900/index.html">封装它</a></li>
+<li><a href="../zh-CN435902/index.html">如果供应商不允许，您不能只接受并编写SELECT ...，但是我们会写</a></li>
+<li><a href="../zh-CN435904/index.html">AI将大脑活动转化为语音</a></li>
+<li><a href="../zh-CN435908/index.html">禁欲网：Go和JS跳蚤市场原型</a></li>
+<li><a href="../zh-CN435910/index.html">为什么BSD输掉了与GNU / Linux的战斗？</a></li>
+<li><a href="../zh-CN435912/index.html">开发现代界面的主要问题</a></li>
+<li><a href="../zh-CN435914/index.html">使用Docker打包ASP.NET Core应用程序</a></li>
+<li><a href="../zh-CN435916/index.html">入侵VK，两因素身份验证将无法保存</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

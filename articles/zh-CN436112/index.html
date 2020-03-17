@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😐 🍎 ❌ Kubectl-debug插件，用于在Kubernetes Pod中调试 📡 👎🏿 👊</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="去年年底，Reddit 推出了一个用于kubectl 的插件，该插件有助于调试Kubernetes集群的pod-kubectl-debug 。 这个想法立即对我们的工程师来说似乎很有趣并且很有用，因此我们决定研究一下它的实现，并很高兴与Habra的读者分享我们的结果。 
+
+ 为什么还要这样做？ 
+ ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kubectl-debug插件，用于在Kubernetes Pod中调试</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/436112/"><img src="https://habrastorage.org/webt/t4/le/ko/t4lekoyyijply0zcuwy84_3mhay.jpeg"><br><br> 去年年底，Reddit <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">推出了一个</a>用于kubectl <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的</a>插件，该插件有助于调试Kubernetes集群的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pod-kubectl-debug</a> 。 这个想法立即对我们的工程师来说似乎很有趣并且很有用，因此我们决定研究一下它的实现，并很高兴与Habra的读者分享我们的结果。 <a name="habracut"></a><br><br><h2> 为什么还要这样做？ </h2><br> 目前，在Pod框架内调试某些东西的过程中存在严重的不便。 组装容器映像的主要目的是将其<b>最小化</b> ，即 使它尽可能小，并在内部包含尽可能少的“多余”。 但是，当涉及到容器中最终软件的操作问题或调试其与集群中/外部的其他服务之间的通信时，...极简主义对我们来说是一个窍门-毕竟，容器中<b>没有</b>发现问题的实际过程。 通常，诸如netstat / ip / ping / curl / wget等实用程序不可用。 <br><br> 通常，一切都以这样的事实结尾：工程师立即在运行中的容器中鞭打了必要的软件，以便“看到”并看到问题。 在这种情况下，kubectl-debug插件似乎是一个非常有用的工具-因为它免除了紧急的痛苦。 <br><br> 在它的帮助下，您可以<b>使用一个命令</b>在问题<b>窗格中启动带有所有必要工具的容器</b> ，并在内部“从外部”研究所有过程。 如果您现在曾经遇到过Kubernetes故障排除，那听起来很有吸引力，不是吗？ <br><br><h2> 这是什么插件？ </h2><br> 一般而言，此解决方案的体系结构看起来像一堆用于kubectl的<b>插件</b>和一个开始使用DaemonSet控制器的<b>代理</b> 。 该插件提供以<code>kubectl debug …</code>开头的命令，并与集群节点上的代理进行交互。 代理又在主机网络上运行，并且主机docker.sock安装在代理容器中，可以完全访问该服务器上的容器。 <br><br> 因此，当请求在指定的容器中启动调试容器时： <br> 存在标识<code>hostIP</code>的过程，并且将请求发送到代理（在合适的主机上工作）以在与目标Pod相对应的命名空间中启动调试容器。 <br><br> 这些步骤的更详细视图可在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">项目文档中找到</a> 。 <br><br><h2> 工作需要什么？ </h2><br>  kubectl-debug的作者声称与<b>Kubernetes</b>客户端/集群<b>1.12.0+</b>的版本兼容，但是，我手头上有K8s 1.10.8，在此上一切正常，没有明显的问题...只需要注意一下： <code>kubectl debug</code>团队可以工作在这种形式下， <b>kubectl</b>版本恰好是<b>1.12+</b> 。 否则，所有命令都是相似的，但只能通过<code>kubectl-debug …</code>调用。 <br><br> 当您启动<code>README</code>描述的DaemonSet模板时<code>README</code>您不应忘记在节点上使用的污点：没有适当的容忍度，特工的吊舱就不会在那里放置，结果，您将无法使用位于这些节点上的吊舱可以连接调试器。 <br><br> 调试器的帮助非常全面，似乎在描述当前所有启动/配置插件的可能性。 通常，该实用程序会附带大量指令来运行：您可以附加证书，指定kubectl上下文，指定单独的kubectl配置或群集API服务器的地址等等。 <br><br><h2> 使用调试器 </h2><br> 直到“一切正常”为止的安装过程分为两个阶段： <br><br><ol><li> 执行<code>kubectl apply -f agent_daemonset.yml</code> ; </li><li> 直接安装插件本身-通常，所有操作都如此处所述。 </li></ol><br> 如何使用？ 假设存在以下问题：群集中一项服务的度量未收集-我们想检查Prometheus与目标服务之间是否存在网络问题。 您可能会猜到，Prometheus图像缺少必需的工具。 <br><br> 让我们尝试使用Prometheus连接到容器（如果pod中有多个容器，则需要指定要连接的容器，否则调试器将默认选择第一个容器）： <br><br><pre> <code class="plaintext hljs">kubectl-debug --namespace kube-prometheus prometheus-main-0 Defaulting container name to prometheus. pulling image nicolaka/netshoot:latest... latest: Pulling from nicolaka/netshoot 4fe2ade4980c: Already exists ad6ddc9cd13b: Pull complete cc720038bf2b: Pull complete ff17a2bb9965: Pull complete 6fe9f5dade08: Pull complete d11fc7653a2e: Pull complete 4bd8b4917a85: Pull complete 2bd767dcee18: Pull complete Digest: sha256:897c19b0b79192ee5de9d7fb40d186aae3c42b6e284e71b93d0b8f1c472c54d3 Status: Downloaded newer image for nicolaka/netshoot:latest starting debug container... container created, open tty... [1] → root @ /</code> </pre> <br> 以前，我们发现有问题的服务位于地址10.244.1.214上，并且侦听端口8080。当然，我们也可以检查主机的可用性，但是，为了可靠的调试过程，必须在相同（或尽可能接近）的条件下重现这些操作。 因此，使用Prometheus从豆荚/容器中检查是最好的选择。 让我们从一个简单的例子开始： <br><br><pre> <code class="plaintext hljs"> [1] → ping 10.244.1.214 PING 10.244.1.214 (10.244.1.214) 56(84) bytes of data. 64 bytes from 10.244.1.214: icmp_seq=1 ttl=64 time=0.056 ms 64 bytes from 10.244.1.214: icmp_seq=2 ttl=64 time=0.061 ms 64 bytes from 10.244.1.214: icmp_seq=3 ttl=64 time=0.047 ms 64 bytes from 10.244.1.214: icmp_seq=4 ttl=64 time=0.049 ms ^C --- 10.244.1.214 ping statistics --- 4 packets transmitted, 4 received, 0% packet loss, time 61ms rtt min/avg/max/mdev = 0.047/0.053/0.061/0.007 ms</code> </pre> <br> 一切都很好。 也许端口不可用？ <br><br><pre> <code class="plaintext hljs"> [1] → curl -I 10.244.1.214:8080 HTTP/1.1 200 OK Date: Sat, 12 Jan 2019 14:01:29 GMT Content-Length: 143 Content-Type: text/html; charset=utf-8</code> </pre> <br> 而且没有问题。 然后，我们将检查Prometheus和带有指标的端点之间是否发生了实际通信： <br><br><pre> <code class="plaintext hljs"> [2] → tcpdump host 10.244.1.214 tcpdump: verbose output suppressed, use -v or -vv for full protocol decode listening on eth0, link-type EN10MB (Ethernet), capture size 262144 bytes 14:04:19.234101 IP prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278 &gt; 10.244.1.214.8080: Flags [P.], seq 4181259750:4181259995, ack 2078193552, win 1444, options [nop,nop,TS val 3350532304 ecr 1334757657], length 245: HTTP: GET /metrics HTTP/1.1 14:04:19.234158 IP 10.244.1.214.8080 &gt; prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278: Flags [.], ack 245, win 1452, options [nop,nop,TS val 1334787600 ecr 3350532304], length 0 14:04:19.290904 IP 10.244.1.214.8080 &gt; prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278: Flags [P.], seq 1:636, ack 245, win 1452, options [nop,nop,TS val 1334787657 ecr 3350532304], length 635: HTTP: HTTP/1.1 200 OK 14:04:19.290923 IP prometheus-main-0.prometheus-operated.kube-prometheus.svc.cluster.local.36278 &gt; 10.244.1.214.8080: Flags [.], ack 636, win 1444, options [nop,nop,TS val 3350532361 ecr 1334787657], length 0 ^C 4 packets captured 4 packets received by filter 0 packets dropped by kernel</code> </pre> <br> 要求答案。 根据这些操作的结果，我们可以得出结论，在网络交互级别上没有问题，这意味着（最有可能）您需要从应用方面看。 我们通过导出器连接到容器（当然，当然也使用调试器，因为导出器始终具有极其简约的图像），并且...我们惊讶地发现服务的配置存在问题-例如，我们忘记将导出器定向到正确的位置目的地申请地址  <b>案子解决了！</b> <br><br> 当然，在这里描述的情况下，其他调试方式也是可行的，但是我们将其排除在本文范围之外。 结果是kubectl-debug有很多使用机会：您可以将任何图像运行到工作中，并且如果愿意，甚至可以组装一些特定的图像（使用必要的工具集）。 <br><br> 马上想到什么其他应用程序？ <br><br><ul><li>  <s>有害</s>开发人员未对其执行常规日志记录的“静默”应用程序。 但是他具有连接到服务端口并使用特定工具进行调试的能力，当然，不应将其放在最终映像中。 </li><li> 在“手动”模式下相同的战斗应用程序旁边启动，但已打开调试-检查与相邻服务的交互。 </li></ul><br> 通常，很明显，在很多情况下此类工具可能有用。 每天在工作中遇到它们的工程师将能够通过“实时”调试来评估该实用程序的潜力。 <br><br><h2> 结论 </h2><br>  Kubectl-debug是有用且有前途的工具。 当然，对于Kubernetes集群和应用程序来说，这没有多大意义，但是在更多情况下，它将为调试提供宝贵的帮助-尤其是在战斗环境以及需要在此时此刻快速找到原因的情况下您遇到的问题。 <br><br> 最初的使用经验表明，迫切需要一种连接到Pod /容器的功能，该功能不会一直运行到最后（例如，它挂在<code>CrashLoopbackOff</code> ），只是为了即时检查应用程序无法启动的原因。 这次，我在项目存储库中创建了一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">相应的问题</a> ，开发人员对此做出了积极回应，并承诺在不久的将来予以实施。 快速而适当的反馈意见让我们感到非常满意。 因此，我们将期待该实用程序的新功能及其进一步的发展！ <br><br><h2> 聚苯乙烯 </h2><br> 另请参阅我们的博客： <br><br><ul><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">为在Kubernetes上运行的应用程序开发人员提供的工具</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Kubernetes提示和技巧：访问开发站点</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Kubernetes的Kubebox和其他控制台外壳</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">介绍日志仓库-一个用于在Kubernetes中处理日志的开源系统</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">监视和Kubernetes（审查和视频报告）</a> 。” </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN436112/">https://habr.com/ru/post/zh-CN436112/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN436100/index.html">对Windows 7的免费支持期仅剩一年</a></li>
+<li><a href="../zh-CN436104/index.html">Dodocode或如何通过SMS在工作系统中弄乱“代码字”和“数字确认代码”的概念</a></li>
+<li><a href="../zh-CN436106/index.html">这些文字来自哪里：针对那些希望节省SEO内容的人的简短指南</a></li>
+<li><a href="../zh-CN436108/index.html">2018年IMTS的HP 3D打印机评估</a></li>
+<li><a href="../zh-CN436110/index.html">数学家证明多项式不会帮助Hack RSA</a></li>
+<li><a href="../zh-CN436116/index.html">PERDIX：自动设计不同几何形状的DNA折纸的算法</a></li>
+<li><a href="../zh-CN436118/index.html">在Arduino上创建第一个机器人的经验（机器人猎人）</a></li>
+<li><a href="../zh-CN436120/index.html">LittleBigPlanet中难以捕获的错误</a></li>
+<li><a href="../zh-CN436122/index.html">英特尔Lakefield：3D凌动+核心混合处理器</a></li>
+<li><a href="../zh-CN436124/index.html">我们方便地阅读了关于哈布雷的评论</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

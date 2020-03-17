@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👐🏾 📠 📵 Apache Spark，惰性评估和多页SQL查询 ☣️ 🤗 👮</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="著名的：spark与数据帧一起使用，这是转换算法。 该算法在最后一刻启动，以“给更多空间”进行优化，并通过优化使其尽可能高效地执行。 
+
+
+ 在削减的基础上，我们将分析如何将多页SQL查询分解为原子（不损失效率），以及由于该原因如何减少ETL管道的执行时间。 
+ 懒惰评估 
+
+
+ spark的一个有...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Apache Spark，惰性评估和多页SQL查询</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/alfastrah/blog/481924/"><p> 著名的：spark与数据帧一起使用，这是转换算法。 该算法在最后一刻启动，以“给更多空间”进行优化，并通过优化使其尽可能高效地执行。 </p><br><p> 在削减的基础上，我们将分析如何将多页SQL查询分解为原子（不损失效率），以及由于该原因如何减少ETL管道的执行时间。 </p><a name="habracut"></a><br><h1 id="lazy-evaluation"> 懒惰评估 </h1><br><p>  spark的一个有趣的功能特性是惰性评估：仅在完成动作后才执行转换。 它是如何工作的（大致）：在操作之前构建数据帧的算法被“粘在一起”，优化程序从他的角度构建最有效的最终算法，该算法开始并给出结果（操作所要求的结果）。 </p><br><p> 在我们的演示中，这里有趣的是：任何复杂的查询都可以分解为“原子”而不会降低效率。 让我们进一步分析。 </p><br><h1 id="mnogostranichnyy-sql"> 多页SQL </h1><br><p> 我们编写“多页” SQL查询的原因有很多，这是主要的（可能是）不愿意创建中间对象（效率要求所支持的不满意）之一。 以下是一个相对复杂的查询的示例（当然，它甚至非常简单，但是为了进一步展示，我们将有足够的信息）。 </p><br><pre><code class="python hljs">qSel = <span class="hljs-string"><span class="hljs-string">""" select con.contract_id as con_contract_id, con.begin_date as con_begin_date, con.product_id as con_product_id, cst.contract_status_type_id as cst_status_type_id, sbj.subject_id as sbj_subject_id, sbj.subject_name as sbj_subject_name, pp.birth_date as pp_birth_date from kasko.contract con join kasko.contract_status cst on cst.contract_status_id = con.contract_status_id join kasko.subject sbj on sbj.subject_id = con.owner_subject_id left join kasko.physical_person pp on pp.subject_id = con.owner_subject_id """</span></span> dfSel = sp.sql(qSel)</code> </pre> <br><p> 我们看到的是： </p><br><ul><li> 从几个表中选择数据 </li><li> 使用不同类型的联接 </li><li> 可选列按选择部分，连接部分（以及其中的部分，但此处不在此处-为简单起见将其删除）分布 </li></ul><br><p> 该查询可以分解成简单的查询（例如，首先将contract和contract_status表合并，将结果保存在临时表中，然后将其与subject合并，还将结果保存在临时表中，等等）。 当然，当我们创建非常复杂的查询时，便会执行此操作，然后-在调试后-将所有这些收集到一个多页块中。 </p><br><p> 这里有什么不好？ 实际上，没有任何人像那样工作并且习惯了。 </p><br><p> 但是有缺点-或者说，有什么改进-请继续阅读。 </p><br><h1 id="tot-zhe-zapros-v-spark"> 火花中的相同查询 </h1><br><p> 当然，在使用spark进行转换时，您可以只接受并执行此请求（这很好，事实上，我们也将执行它），但是您可以采用其他方法，让我们尝试一下。 </p><br><p> 让我们将此“复杂”查询分解为“原子”-基本数据帧。 我们将获得与查询中涉及的表数一样多的表（在本例中为4）。 </p><br><p> 它们是“原子”： </p><br><pre> <code class="python hljs">dfCon = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select contract_id as con_contract_id, begin_date as con_begin_date, product_id as con_product_id, owner_subject_id as con_owner_subject_id, contract_status_id as con_contract_status_id from kasko.contract"""</span></span>) dfCStat = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select contract_status_id as cst_status_id, contract_status_type_id as cst_status_type_id from kasko.contract_status"""</span></span>) dfSubj = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select subject_id as sbj_subject_id, subject_type_id as sbj_subject_type_id, subject_name as sbj_subject_name from kasko.subject"""</span></span>) dfPPers = sp.sql(<span class="hljs-string"><span class="hljs-string">"""select subject_id as pp_subject_id, birth_date as pp_birth_date from kasko.physical_person"""</span></span>)</code> </pre> <br><p>  Spark允许您使用与实际“原子”分开的表达式将它们加入；让我们这样做： </p><br><pre> <code class="python hljs">con_stat = f.col(<span class="hljs-string"><span class="hljs-string">"cst_status_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"con_contract_status_id"</span></span>) con_subj_own = f.col(<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"sbj_subject_id"</span></span>) con_ppers_own = f.col(<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>)==f.col(<span class="hljs-string"><span class="hljs-string">"pp_subject_id"</span></span>)</code> </pre> <br><p> 然后，我们的“复杂查询”将如下所示： </p><br><pre> <code class="python hljs">dfAtom = dfCon.join(dfCStat,con_stat, <span class="hljs-string"><span class="hljs-string">"inner"</span></span>)\ .join(dfSubj,con_subj_own,<span class="hljs-string"><span class="hljs-string">"inner"</span></span>) \ .join(dfPPers,con_ppers_own, <span class="hljs-string"><span class="hljs-string">"left"</span></span>) \ .drop(<span class="hljs-string"><span class="hljs-string">"con_contract_status_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"sbj_subject_type_id"</span></span>, <span class="hljs-string"><span class="hljs-string">"pp_subject_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"con_owner_subject_id"</span></span>,<span class="hljs-string"><span class="hljs-string">"cst_status_id"</span></span>)</code> </pre> <br><p> 这里有什么好？ 乍一看，这没什么，反而相反：通过使用“复杂” SQL您可以了解正在发生的事情，通过我们的“原子”查询很难理解，您需要查看“原子”和表达式。 </p><br><p> 首先，请确保这些查询是相同的-在通过<a href="https://github.com/korolmi/dataeng/tree/master/data_doc">引用</a>的jupyter书中，我给出了实现这两个查询的计划（好奇的人可以找到10个差异，但实质-等效-很明显）。 当然，这不是奇迹，而是奇迹（请参阅上面的惰性评估和优化）。 </p><br><p> 最后，我们拥有的-“多页”请求和“原子”请求以相同的效率工作（这很重要，没有进一步的考虑，部分会失去其含义）。 </p><br><p> 好了，现在让我们以构建查询的“原子”方式找到好处。 </p><br><p> 什么是“原子”（基本数据框）是我们对主题区域（关系表的一部分）的子集的了解。 通过隔离这样的“原子”，我们自动地（并且重要地，在算法上和可重复性）选择了我们称为“物理数据模型”的无边事物的重要部分。 </p><br><p> 加入时我们使用什么表达？ 这也是有关主题区域的知识-这是主题区域的实体（数据库中的表）如何互连（如表达式中所示）的方式。 </p><br><p> 我重复一遍-这很重要-这种“知识”（原子和表达式）体现在可执行代码中（而不是在图或语言描述中），这是每次执行ETL管道时都要执行的代码（顺便说一句，该示例取自现实生活）。 </p><br><p> 我们从干净的编码器中知道，可执行代码是两个客观存在的工件之一，这些工件声称是文档的“标题”。 也就是说，“原子”的使用使我们在记录数据这样重要的过程中向前迈进了一步。 </p><br><p> 在“原子性”中还能找到什么？ </p><br><h1 id="optimizaciya-konveyerov"> 输送机优化 </h1><br><p> 在现实生活中，数据工程师-顺便说一句，我并没有介绍自己-ETL管道包括与上述类似的数十种转换。 表经常在其中重复（我以某种方式在Excel中进行了计算-40％的查询中使用了某些表）。 </p><br><p> 在效率方面会发生什么？ 混乱-从源中读取同一张表多次... </p><br><p> 如何改善呢？  Spark具有一种用于缓存数据帧的机制-我们可以显式指定哪些数据帧以及要保留在缓存中的数据量。 </p><br><p> 为此，我们要做的是选择重复的表并以使总缓存大小最小化的方式构建查询（因为按照定义，所有表都不适合它，因此存在大数据）。 </p><br><p> 可以使用多页SSQ查询完成此操作吗？ 是的，但是...有点复杂（我们实际上并没有数据帧，只有表格，也可以缓存它们-Spark社区正在为此工作）。 </p><br><p> 可以使用原子查询来完成吗？ 是的 这并不困难，我们只需要概括“原子”，即可将管道中所有查询中使用的列添加到其中。 如果您考虑一下，从文档的角度来看，这是“正确的”：如果在某个查询中使用了列（即使在where部分中），则它是我们感兴趣的主题领域数据的一部分。 </p><br><p> 然后一切都变得很简单-我们缓存重复的原子（数据帧），构建转换链，以使所缓存的数据帧的交集最小（顺便说一下，这不是微不足道的，而是可算法化的）。 </p><br><p> 而且，我们可以完全“免费”获得最高效的输送机。 除此之外，有用且重要的工件是“准备”主题领域数据的文档记录。 </p><br><h1 id="robotizaciya-i-avtomatizaciya"> 机器人化与自动化 </h1><br><p> 原子比“强大的SQL”更易于自动处理-原子的结构简单明了，spark可以为我们进行解析（为此特别感谢他），他还构建了查询计划，分析了查询计划，可以自动对查询处理的顺序进行重新排序。 </p><br><p> 因此，您可以在这里玩一些东西。 </p><br><h1 id="v-zaklyuchenie"> 总结 </h1><br><p> 也许我太乐观了-在我看来，此路径（查询原子化）比试图在事实之后描述数据源更有效。 另外-顺便说一下，“添加剂”的用途是什么-我们提高了效率。 为什么我认为原子方法“有效”？ 这是常规过程的一部分，这意味着所描述的工件在长期内确实具有相关性。 </p><br><p> 我可能错过了一些东西-帮助找到（在评论中）？ </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN481924/">https://habr.com/ru/post/zh-CN481924/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN481910/index.html">编写灵活的VerticalSwipeBehavior</a></li>
+<li><a href="../zh-CN481912/index.html">作为一个星期，我是SRE工程师的实习生。 通过软件工程师的眼光观察</a></li>
+<li><a href="../zh-CN481914/index.html">Spring Boot vs Spring MVC vs Spring-它们如何比较？</a></li>
+<li><a href="../zh-CN481916/index.html">记得2019年的发展年是什么？</a></li>
+<li><a href="../zh-CN481922/index.html">新年IMaskjs 6-React Native，管道，ESM</a></li>
+<li><a href="../zh-CN481926/index.html">满足适用于AWS的新Veeam Backup解决方案</a></li>
+<li><a href="../zh-CN481930/index.html">发展文化：如何评估绩效和效率</a></li>
+<li><a href="../zh-CN481932/index.html">零停机时间部署和数据库</a></li>
+<li><a href="../zh-CN481934/index.html">分析：特斯拉股价为何上涨</a></li>
+<li><a href="../zh-CN481936/index.html">A / B测试的优缺点：大公司的经验</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

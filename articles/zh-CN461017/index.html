@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔱 🏣 🏻 新的GPU跟踪算法：波前路径跟踪 📌 🤸🏾 📮</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在本文中，我们探讨了最近发布的Lighthouse 2平台中使用的重要概念：NVIDIA的Wavefront路径跟踪 （在NVIDIA中被称为Lane，Karras和Aila）或流路径跟踪（最初在Van Antwerp 的硕士论文中被称为）在其中起着至关重要的作用。在GPU上开发有效的路径跟踪器，以...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>新的GPU跟踪算法：波前路径跟踪</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/461017/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/_x/t8/rw/_xt8rwehj6jymumaisqg5ehgkro.png"></div><br> 在本文中，我们探讨了最近发布的Lighthouse 2平台中使用的重要概念：NVIDIA的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Wavefront路径跟踪</a> （在NVIDIA中被称为Lane，Karras和Aila）或流路径跟踪（最初在Van Antwerp <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的硕士论文中</a>被称为）在其中起着至关重要的作用。在GPU上开发有效的路径跟踪器，以及在CPU上开发潜在的路径跟踪器。 但是，这是非常违反直觉的，因此，要理解它，就必须重新考虑光线跟踪算法。 <br><a name="habracut"></a><br><h2> 占用率 </h2><br> 路径跟踪算法非常简单，可以用几行伪代码来描述： <br><br><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-function">vec3 </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Trace</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">( vec3 O, vec3 D )</span></span></span><span class="hljs-function"> IntersectionData i </span></span>= Scene::Intersect( O, D ) <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (i == NoHit) <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> vec3( <span class="hljs-number"><span class="hljs-number">0</span></span> ) <span class="hljs-comment"><span class="hljs-comment">// ray left the scene if (i == Light) return i.material.color // lights do not reflect vec3 R, pdf = RandomDirectionOnHemisphere( i.normal ), 1 / 2PI return Trace( i.position, R ) * i.BRDF * dot( i.normal, R ) / pdf</span></span></code> </pre> <br> 输入是从相机穿过屏幕像素的<em>主光线</em> 。 对于此光束，我们确定与场景图元最接近的交点。 如果没有交叉点，则光束消失在空隙中。 否则，如果光束到达光源，那么我们已经找到了光源和摄像机之间的光路。 如果找到其他东西，则执行反射和递归，希望反射的光束仍能找到照明源。 请注意，此过程类似于从场景表面反射的光子的（返回）路径。 <br><br>  GPU设计为在多线程模式下执行此任务。 起初，光线追踪似乎是理想的选择。 因此，我们使用OpenCL或CUDA为一个像素创建一个流，每个流执行的算法实际上可以按预期工作，并且速度非常快：只需查看ShaderToy的几个示例，即可了解<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">光线跟踪的</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">速度</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">如何</a>在GPU上 但是，问题可能是不同的：这些射线追踪器真的真的<em>尽可能快</em>吗？ <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/ce5/61d/07d/ce561d07daa3437927ab8ad5a6744ec9.jpg"></div><br> 该算法有问题。 初级射线可以立即或在一次随机反射后或在五十次反射后找到光源。  CPU的程序员将在此处注意到潜在的堆栈溢出；  GPU程序员应该看到<em>占用问题</em> 。 问题是由条件尾部递归引起的：该路径可能在光源处终止或继续。 让我们将其转移到许多线程：一些线程将停止，而另一部分将继续工作。 经过几次思考，我们将有几个需要继续计算的线程，并且大多数线程将等待最后的线程完成工作。  <em>使用率</em>是衡量GPU线程完成有用工作的部分的度量。 <br><br> 就业问题适用于SIMT GPU设备的执行模型。 流是按组组织的，例如，在Pascal GPU（NVidia设备类为10xx）中，将32个线程组合为<em>warp</em> 。  warp中的线程具有一个公共程序计数器：它们以固定的步骤执行，因此每个程序指令均由32个线程同时执行。  SIMT代表<em>单指令多线程</em> ，它很好地描述了这一概念。 对于SIMT处理器，带有条件的代码很复杂。 官方的Volta文档中清楚地显示了这一点： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/9bb/1c0/cb0/9bb1c0cb0c4916e8a7989edeb466d3dd.jpg"></div><br>  <i>使用SIMT中的条件执行代码。</i> <br><br> 当warp中的某些线程满足某个条件时，将对<em>if语句</em>的分支<em>进行</em>序列化。  “所有线程都执行相同”方法的替代方法是“禁用某些线程”。 在if-then-else块中，除非所有线程都对该状态保持一致，否则平均经向占用率为50％。 <br><br> 不幸的是，光线跟踪器中带有条件的代码并不是很罕见。 仅当光源不在阴影点后面，不同的路径可能会与不同的材料碰撞，与俄罗斯轮盘赌方法集成才能破坏或保留路径等时，才会发出阴影光线。 事实证明，占用率正在成为效率低下的主要根源，如果没有紧急措施则很难防止这种情况。 <br><br><h2> 流路径跟踪 </h2><br> 流路径跟踪算法旨在解决繁忙问题的根本原因。 流路径跟踪将路径跟踪算法分为四个步骤： <br><br><ol><li>  <strong>产生</strong> </li><li>  <strong>延伸</strong> </li><li>  <strong>阴影</strong> </li><li>  <strong>连接</strong> </li></ol><br> 每个阶段都作为单独的程序实现。 因此，我们不必使用完整的路径跟踪程序作为单个GPU程序（“内核”，内核），而必须使用<em>四个</em>内核。 此外，正如我们将很快看到的那样，它们是在循环中执行的。 <br><br>  <b>第1阶段（“生成”）</b>负责产生主光线。 这是一个简单的核心，可创建等于像素数量的光线起点和方向。 该阶段的输出是一个较大的射线缓冲区和一个计数器，该计数器会通知下一阶段需要处理的射线数量。 对于主光线，此值等于<em>屏幕</em>的<em>宽度</em>乘以<em>屏幕</em>的<em>高度</em> 。 <br><br>  <strong>第二阶段（“续订”）</strong>是第二个核心。 仅在阶段1对所有像素完成后才执行。 内核读取步骤1中生成的缓冲区，并将每条光线与场景交叉。 该阶段的输出是缓冲区中存储的每条光线的相交结果。 <br><br>  <strong>在阶段2</strong>完成之后执行<strong>阶段3（“阴影”）</strong> 。它从阶段2接收相交的结果，并为每个路径计算阴影模型。 此操作可能会或可能不会产生新的射线，具体取决于路径是否已完成。 产生新射线的路径（路径“延伸”）将新射线（“路径段”）写入缓冲区。 直接对光源进行采样的路径（“显式采样照明”或“计算下一个事件”）将阴影光束写入第二个缓冲区。 <br><br>  <strong>阶段4（“连接”）</strong>跟踪在阶段3中生成的阴影射线。这与阶段2类似，但有一个重要区别：阴影射线需要找到<em>任何</em>交点，而延伸射线需要找到最近的交点。 因此，为此创建了一个单独的核心。 <br><br> 完成第4步后，我们得到一个缓冲区，其中包含延伸路径的射线。 捕获了这些射线之后，我们进入第2阶段。我们将继续进行直到没有扩展射线或达到最大迭代次数为止。 <br><br><h2> 效率低下的根源 </h2><br> 在这种流路径跟踪算法方案中，关注性能的程序员会看到很多危险时刻： <br><br><ul><li> 现在，我们不再需要单个内核调用，而是<em>每个迭代</em>有<em>三个调用</em> ，以及一个生成内核。 具有挑战性的核心意味着负载一定增加，因此这很不好。 </li><li> 每个内核读取一个巨大的缓冲区，然后写入一个巨大的缓冲区。 </li><li>  CPU需要知道每个内核要生成多少个线程，因此GPU必须告诉CPU在步骤3中生成了多少射线。将信息从GPU转移到CPU是一个坏主意，并且每次迭代至少要完成一次。 </li><li> 第3阶段如何将光线写入缓冲区而不在各处产生空间？ 他没有为此使用原子计数器吗？ </li><li> 活动路径的数量仍在减少，那么该方案如何提供帮助？ </li></ul><br> 让我们从最后一个问题开始：如果我们将一百万个任务转移到GPU，它将不会生成一百万个线程。 同时执行的线程的真实数量取决于设备，但是在一般情况下，将执行数万个线程。 只有当负载下降到此数量以下时，我们才会注意到由少量任务引起的就业问题。 <br><br> 另一个问题是缓冲区的大规模I / O。 这确实是一个困难，但没有您想像的那么严重：对数据的访问是高度可预测的，尤其是在写入缓冲区时，因此延迟不会引起问题。 实际上，GPU主要是为此类数据处理而开发的。 <br><br>  GPU处理得很好的另一个方面是原子计数器，这对于在CPU领域工作的程序员来说是完全出乎意料的。  z缓冲区需要快速访问，因此在现代GPU中实现原子计数器非常有效。 在实践中，原子写操作与未缓存的全局内存写操作一样昂贵。 在许多情况下，延迟会被GPU中的大规模并行执行掩盖。 <br><br> 剩下两个问题：内核调用和计数器的双向数据传输。 后者实际上是一个问题，因此我们需要进行另一种体系结构更改： <em>持久线程</em> 。 <br><br><h2> 后果 </h2><br> 在深入研究细节之前，我们将研究使用波前路径跟踪算法的含义。 首先，让我们谈谈缓冲区。 我们需要一个缓冲区来输出阶段1的数据，即 初级射线。 对于每个光束，我们需要： <br><br><ul><li> 射线源：三个浮点值，即12个字节 </li><li> 射线方向：三个浮点值，即12个字节 </li></ul><br> 实际上，最好增加缓冲区的大小。 如果您为光束的开始和方向存储16个字节，GPU将能够通过一个128位读取操作读取它们。 另一种选择是先进行64位读取操作，再进行32位操作以获取float3，这几乎慢了两倍。 也就是说，对于1920×1080的屏幕，我们得到：1920x1080x32 =〜64 MB。 我们还需要一个缓冲区，用于由Extend内核创建的相交结果。 这是每个元素另外的128位，即32 MB。 此外，“ Shadow”内核最多可以创建1920×1080路径扩展（上限），并且我们无法将其写入读取的缓冲区。 那是另外64 MB。 最后，如果我们的路径跟踪器发出阴影光线，则这是另一个64 MB缓冲区。 总结完所有内容后，我们获得了224 MB的数据，仅用于波前算法。 或4K分辨率约为1 GB。 <br><br> 在这里，我们需要习惯另一个功能：我们有足够的内存。 似乎。  1 GB的数量很多，并且有很多方法可以减少此数量，但是如果您切实地采用这一方法，那么到我们真正需要以4K跟踪路径时，在8 GB GPU上使用1 GB将会是我们所要解决的问题较少的方法。 <br><br> 比内存要求更严重的后果将是渲染算法。 到目前为止，我已经建议我们需要为Shadow核心中的每个线程生成一个扩展射线，并可能生成一个阴影射线。 但是，如果我们要使用每像素16射线执行环境光遮挡怎么办？  16个AO射线需要存储在缓冲区中，但是更糟糕的是，它们仅在下一次迭代中出现。 当以Witted样式追踪光线时，也会出现类似的问题：几乎无法实现为多个光源发射阴影光束或与玻璃碰撞而分裂光束。 <br><br> 另一方面，波前路径跟踪解决了我们在“占用”部分中列出的问题： <br><br><ul><li> 在阶段1，所有无条件的流都会创建主光线并将其写入缓冲区。 </li><li> 在阶段2，所有无条件的流将光线与场景相交，并将相交的结果写入缓冲区。 </li><li> 在第3步中，我们开始计算占用率为100％的路口结果。 </li><li> 在第4步中，我们处理阴影射线的连续列表，没有空格。 </li></ul><br> 当我们回到第2阶段时，剩下的光线长度为2个分段，我们又有了一个紧凑的光线缓冲区，可以确保内核启动时充分使用。 <br><br> 此外，还有一个不应被低估的附加优势。 该代码分为四个单独的步骤。 每个内核可以使用所有可用的GPU资源（缓存，共享内存，寄存器），而无需考虑其他内核。 这可以允许GPU在更多线程中执行与场景的相交代码，因为该代码不需要与着色器代码一样多的寄存器。 线程越多，隐藏的延迟就越好。 <br><br> 全时，改进的延迟屏蔽，流记录：所有这些好处都与GPU平台的出现和性质直接相关。 对于GPU，波前路径跟踪算法非常自然。 <br><br><h2> 值得吗？ </h2><br> 当然，我们有一个问题：优化的使用是否可以使I / O脱离缓冲区以及调用附加内核的成本是否合理？ <br><br> 答案是肯定的，但要证明这一点并不容易。 <br><br> 如果我们再次使用ShaderToy返回路径跟踪器，我们将看到它们大多数使用简单且硬编码的场景。 用成熟的场景替换它并不是一件容易的事：对于数百万个图元而言，与光束相交并且场景成为一个复杂的问题，解决方案通常留给NVidia（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Optix</a> ），AMD（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Radeon-Rays</a> ）或Intel（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Emree</a> ）。 这些选项都无法轻松替换CUDA人造射线跟踪器中的硬编码场景。 在CUDA中，最接近的模拟（Optix）需要控制程序执行。  CPU中的Embree允许您从自己的代码跟踪单个光束，但是这样做的代价是很大的性能开销：他更喜欢跟踪大型光束组而不是单个光束。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/fb4/2a2/409/fb42a240924ba04871abb70421d16cdf.png"></div><br>  <i>使用Brigade 1渲染的《关于时间》中的屏幕。</i> <br><br> 波前路径跟踪的速度是否会比其替代方法（Lane及其同事所称的巨型内核）更快，取决于最大路径长度在核心上花费的时间（大型场景和昂贵的着色器减少了波前算法的相对成本超支） ，超级核心就业和四个阶段的注册负担差异。 在原始<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Brigade Path Tracer</a>的早期版本中<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">，</a>我们发现即使在GTX480上运行混合反射和Lambert表面的简单场景，也可以从使用波前中受益。 <br><br><h2>  Lighthouse 2中的流路径跟踪 </h2><br>  Lighthouse 2平台具有两个波前路径跟踪跟踪器。 第一个使用Optix Prime实施第2阶段和第4阶段（光线和场景相交的阶段）。 在第二个中，Optix直接用于实现该功能。 <br><br>  Optix Prime是Optix的简化版本，仅处理一组光束与由三角形组成的场景的交集。 与完整的Optix库不同，它不支持自定义交集代码，而仅与三角形相交。 但是，这正是波前路径跟踪器所需要的。 <br><br> 基于Optix Prime的波前路径跟踪器在<code>rendercore.cpp</code>项目的<code>rendercore.cpp</code> 。  Optix Prime的初始化从<code>Init</code>函数开始，并使用<code>rtpContextCreate</code> 。 使用<code>rtpModelCreate</code>创建场景。 使用<code>rtpBufferDescCreate</code>在<code>SetTarget</code>函数中创建各种射线缓冲区。 请注意，对于这些缓冲区，我们提供了通常的设备指针：这意味着它们可以在Optix和常规CUDA内核中使用。 <br><br> 渲染从“ <code>Render</code>方法开始。 为了填充主光线缓冲区，使用了称为<code>generateEyeRays</code>的CUDA核心。 填充缓冲区后，使用<code>rtpQueryExecute</code>调用Optix Prime。 有了它，交集结果将被写入<code>extensionHitBuffer</code> 。 请注意，所有缓冲区都保留在GPU中：除内核调用外，CPU与GPU之间没有流量。  “阴影”阶段是在常规CUDA <code>shade</code>核心中实现的。 它的实现在<code>pathtracer.cu</code> 。 <br><br>  <code>optixprime_b</code>一些实现细节值得一提。 首先，阴影射线在波阵面周期之外被追踪。 这是正确的：阴影射线只有在未被遮挡的情况下才会影响像素，但是在所有其他情况下，在其他任何地方都不需要其结果。 也就是说，阴影光束是<em>一次性的</em> ，可以随时随地追踪。 在我们的案例中，我们通过对阴影的光线进行分组来使用它，以便最终跟踪的批次尽可能大。 这有一个令人不愉快的结果：在波前算法的<em>N</em>次迭代和<em>X条</em>主射线的情况下，阴影射线数量的上限等于<em>XN</em> 。 <br><br> 另一个细节是各种计数器的处理。  “更新”和“阴影”阶段应该知道有多少条路径处于活动状态。 用于此的计数器（在原子上）已在GPU中更新，这意味着即使在不返回CPU的情况下，它们也已在GPU中使用。 不幸的是，在一种情况下这是不可能的：Optix Prime库需要知道所追踪的光线数量。 为此，我们需要一次迭代返回计数器的信息。 <br><br><h2> 结论 </h2><br> 本文介绍了什么是波前路径跟踪以及为什么必须在GPU上有效执行路径跟踪。 它的实际实现在Lighthouse 2平台中进行了介绍，该平台是开源的， <a href="">可在Github上获得</a> 。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN461017/">https://habr.com/ru/post/zh-CN461017/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN461005/index.html">为公司进行测试：在面试中提出正确的问题</a></li>
+<li><a href="../zh-CN461007/index.html">适用于Visual C ++的PVS-Studio静态分析器入门</a></li>
+<li><a href="../zh-CN461009/index.html">如何在10天内制定标准。 第二部分 无聊</a></li>
+<li><a href="../zh-CN461013/index.html">保留互联网连接</a></li>
+<li><a href="../zh-CN461015/index.html">生活和学习。 第2部分。大学：5年还是5条走廊？</a></li>
+<li><a href="../zh-CN461019/index.html">伊朗开发商的生活如何</a></li>
+<li><a href="../zh-CN461027/index.html">Java REPL你不用ScriptEngine</a></li>
+<li><a href="../zh-CN461029/index.html">大量的营销数据-从庞大的表格到报表和可视化</a></li>
+<li><a href="../zh-CN461031/index.html">我们将在线地图连接到智能手机上的导航器。 第1部分-标准栅格地图</a></li>
+<li><a href="../zh-CN461033/index.html">这个配置来自哪里？ [Debian / Ubuntu]</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

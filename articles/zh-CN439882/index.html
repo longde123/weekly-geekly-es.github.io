@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🉑 🕎 🐸 ptrace冒险（2） 🤶🏽 🎴 👱</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在Habré上已经写过关于通过ptrace拦截系统调用的信息； Alexa撰写了有关此详细文章的文章，我决定将其翻译。 
+
+ 从哪里开始 
+ 调试后的程序与调试器之间的通信使用信号进行。 这使本来就很困难的事情大大复杂化。 为了娱乐，您可以阅读man ptrace 的BUGS部分 。 
+
+ 至少有两...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>ptrace冒险（2）</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/439882/"><img src="https://habrastorage.org/webt/qq/ec/xe/qqecxe66j4wp8pni9hfg0wi76ww.jpeg" align="right" width="440"> 在Habré上已经<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">写过</a>关于通过<code>ptrace</code>拦截系统调用的信息；  Alexa撰写了有关此详细文章的文章，我决定将其翻译。 <br><hr><br><h3> 从哪里开始 </h3><br> 调试后的程序与调试器之间的通信使用信号进行。 这使本来就很困难的事情大大复杂化。 为了娱乐，您可以阅读<code>man ptrace</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的BUGS部分</a> 。 <br><br> 至少有两种不同的方法可以开始调试： <br><br><ol><li>  <code>ptrace(PTRACE_TRACEME, 0, NULL, NULL)</code>将使当前进程的父级为其调试器。 不需要父母的帮助；  <code>man</code>温和地建议： <i>“如果进程的父级不希望跟踪此请求，则该进程可能不应发出此请求。”</i>  （在其他地方，您是否看到过<i>“可能不应该</i> ？ <i>”</i>这个短语？）如果当前进程已经具有调试器，则调用将失败。 </li><li>  <code>ptrace(PTRACE_ATTACH, pid, NULL, NULL)</code>将使当前进程成为<code>pid</code>的调试器。 如果<code>pid</code>已经具有调试器，则调用将失败。  <code>SIGSTOP</code>发送到调试的进程，直到调试器解冻它，它才会继续工作。 </li></ol><br> 这两种方法是完全独立的。 您可以使用任何一个，但是将它们组合在一起没有任何意义。 <a name="habracut"></a> 重要的是要注意<code>PTRACE_ATTACH</code>并不是瞬时的：在调用<code>ptrace(PTRACE_ATTACH)</code>之后，通常调用<code>waitpid(2)</code>等待，直到<code>PTRACE_ATTACH</code> “起作用”。 <br><br> 您可以使用<code>PTRACE_TRACEME</code>在调试下启动子进程，如下所示： <br><br><pre> <code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">tracee</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> argc, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> **argv)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (ptrace(PTRACE_TRACEME, <span class="hljs-number"><span class="hljs-number">0</span></span>, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>, <span class="hljs-literal"><span class="hljs-literal">NULL</span></span>) &lt; <span class="hljs-number"><span class="hljs-number">0</span></span>) die(<span class="hljs-string"><span class="hljs-string">"child: ptrace(traceme) failed: %m"</span></span>); <span class="hljs-comment"><span class="hljs-comment">/*   ,   . */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (raise(SIGSTOP)) die(<span class="hljs-string"><span class="hljs-string">"child: raise(SIGSTOP) failed: %m"</span></span>); <span class="hljs-comment"><span class="hljs-comment">/*  . */</span></span> execvp(argv[<span class="hljs-number"><span class="hljs-number">0</span></span>], argv); <span class="hljs-comment"><span class="hljs-comment">/*     . */</span></span> die(<span class="hljs-string"><span class="hljs-string">"tracee start failed: %m"</span></span>); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">tracer</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">pid_t</span></span></span></span><span class="hljs-function"><span class="hljs-params"> pid)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> status = <span class="hljs-number"><span class="hljs-number">0</span></span>; <span class="hljs-comment"><span class="hljs-comment">/* ,       . */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (waitpid(pid, &amp;status, <span class="hljs-number"><span class="hljs-number">0</span></span>) &lt; <span class="hljs-number"><span class="hljs-number">0</span></span>) die(<span class="hljs-string"><span class="hljs-string">"waitpid failed: %m"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) { kill(pid, SIGKILL); die(<span class="hljs-string"><span class="hljs-string">"tracer: unexpected wait status: %x"</span></span>, status); } <span class="hljs-comment"><span class="hljs-comment">/*      ptrace,    . */</span></span> <span class="hljs-comment"><span class="hljs-comment">/* *  ,      *  ,      . *    --  API  ptrace! */</span></span> <span class="hljs-comment"><span class="hljs-comment">/*       PTRACE_SYSCALL. */</span></span> } <span class="hljs-comment"><span class="hljs-comment">/* (argc, argv) --    ,    . */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">shim_ptrace</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">int</span></span></span></span><span class="hljs-function"><span class="hljs-params"> argc, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> **argv)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">pid_t</span></span> pid = fork(); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (pid &lt; <span class="hljs-number"><span class="hljs-number">0</span></span>) die(<span class="hljs-string"><span class="hljs-string">"couldn't fork: %m"</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (pid == <span class="hljs-number"><span class="hljs-number">0</span></span>) tracee(argc, argv); <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> tracer(pid); die(<span class="hljs-string"><span class="hljs-string">"should never be reached"</span></span>); }</code> </pre><br> 如果没有<code>raise(SIGSTOP)</code>调用，可能会发现<code>execvp(3)</code>将在父进程为此准备好之前执行； 然后调试器的操作（例如，拦截系统调用）将不会从过程开始就开始。 <br><br> 启动调试后，每个<code>ptrace(PTRACE_SYSCALL, pid, NULL, NULL)</code>将“解冻”调试的进程，直到第一次进入系统调用，然后直到系统调用离开。 <br><br><h3> 远程汇编器 </h3><br>  <code>ptrace(PTRACE_SYSCALL)</code>不向调试器返回<b>任何</b>信息； 他只是保证被调试的进程将在每次系统调用时停止两次。 要获取有关调试过程正在发生的情况的信息（例如，停止在哪个系统调用中），您需要爬入内核以<code>struct user</code>的形式存储在<code>struct user</code>中的寄存器副本，该格式取决于特定的体系结构。  （例如，在x86_64上，呼叫号码将在<code>regs.orig_rax</code>字段中，传递的第一个参数将在<code>regs.rdi</code> ，等等。）Alexa <code>regs.rdi</code> ：“感觉就像您正在用C编写与远程处理器的寄存器一起工作的汇编代码。” <br><br> 代替<code>sys/user.h</code>描述的结构，使用<code>sys/reg.h</code>定义的索引常量可能更方便： <br><br><pre> <code class="cpp hljs"><span class="hljs-meta"><span class="hljs-meta">#</span><span class="hljs-meta-keyword"><span class="hljs-meta"><span class="hljs-meta-keyword">include</span></span></span><span class="hljs-meta"> </span><span class="hljs-meta-string"><span class="hljs-meta"><span class="hljs-meta-string">&lt;sys/reg.h&gt; /*    . */ long ptrace_syscall(pid_t pid) { #ifdef __x86_64__ return ptrace(PTRACE_PEEKUSER, pid, sizeof(long)*ORIG_RAX); #else // ... #endif } /*      . */ uintptr_t ptrace_argument(pid_t pid, int arg) { #ifdef __x86_64__ int reg = 0; switch (arg) { case 0: reg = RDI; break; case 1: reg = RSI; break; case 2: reg = RDX; break; case 3: reg = R10; break; case 4: reg = R8; break; case 5: reg = R9; break; } return ptrace(PTRACE_PEEKUSER, pid, sizeof(long) * reg, NULL); #else // ... #endif }</span></span></span></span></code> </pre><br> 在这种情况下，从调试器的角度来看，已调试过程的两个停止位置-在系统调用的入口处和在系统调用的出口处-都没有任何不同。 因此调试器本身必须记住每个被调试进程的状态：如果有多个，则没有人保证来自一个进程的一对信号将连续出现。 <br><br><h3> 后裔 </h3><br>  <code>ptrace</code>选项之一（即<code>PTRACE_O_TRACECLONE</code> ）确保已调试进程的所有子级在<b>退出</b> <code>fork(2)</code>时都将自动进行调试。 这里的另一个微妙之处在于，用于调试的后代成为调试器的“伪子级”，而<code>waitpid</code>不仅会响应停止“立即子级”，还会停止调试“伪子级”。  Man对此进行了警告： <i>“不建议在调用waitpid（2）时设置WCONTINUED标志：“ continue”状态是按进程运行的，使用该状态可能会使Tracee的真实父项感到困惑。”</i>  -即  “假孩子”有两个父母可以等他们停下来。 对于调试器程序员来说，这意味着<code>waitpid(-1)</code>不仅将等待直接子级停止，还将等待任何已调试的进程。 <br><br><h3> 讯号 </h3><br>  <font color="#aaa"><i>（来自翻译人员的奖励内容：该信息不在英文文章中）</i></font> <br> 如开始时已经提到的，已调试程序和调试器之间的通信是使用信号进行的。 当调试器连接到某个进程时，该进程将接收到<code>SIGSTOP</code> ，然后在每次正在调试的进程中发生一些有趣的事情时，例如系统调用或接收外部信号时，都会接收<code>SIGTRAP</code> 。 相应地，每当其中一个被调试的进程（不一定是直接子进程）“冻结”或“冻结”时，调试器就会收到<code>SIGCHLD</code> 。 <br><br> 通过调用<code>ptrace(PTRACE_SYSCALL)</code> （在第一个信号或系统调用之前）或<code>ptrace(PTRACE_CONT)</code> （在第一个信号之前<code>ptrace(PTRACE_CONT)</code> <code>ptrace(PTRACE_SYSCALL)</code>调试过的过程进行<code>ptrace(PTRACE_SYSCALL)</code> 。 当<code>SIGSTOP/SIGCONT</code>信号也用于与调试无关的目的时， <code>ptrace</code>可能会出现问题：如果调试器“解冻”了接收到<code>SIGSTOP</code>的调试进程，则从外部看，好像该信号被忽略了； 如果调试器未对正在调试的进程进行“解冻”，则外部<code>SIGCONT</code>无法对其进行“解冻”。 <br><br> 现在有趣的部分：Linux禁止进程<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">自行调试</a> ，但是当父级和子级相互调试时，Linux不会阻止创建循环。 在这种情况下，当一个进程接收到任何外部信号时，它会通过<code>SIGTRAP</code> “冻结”-然后将<code>SIGCHLD</code>发送到第二个进程，并且还会通过<code>SIGTRAP</code> “冻结”。 通过从外部发送<code>SIGCONT</code>不可能使这种“协同调试器”摆脱僵局。 唯一的方法是杀死（ <code>SIGKILL</code> ）子级，然后父级退出调试并“冻结”。  （如果杀死父母，孩子将与他同死。）如果孩子打开<code>PTRACE_O_EXITKILL</code>选项，则由他调试的父母也将死亡。 <br><br> 现在，您知道如何实现一对进程，当接收到任何信号时，它们将永久冻结并且仅一起死亡。 为什么在实践中可能有必要这样做，我不会解释:-) </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN439882/">https://habr.com/ru/post/zh-CN439882/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN439870/index.html">视频是进步的动力：监视系统的发展</a></li>
+<li><a href="../zh-CN439874/index.html">SVG过滤效果。 第3部分。使用feComponentTransfer的图像后代化效果</a></li>
+<li><a href="../zh-CN439876/index.html">将数据从Greenplum 4迁移到Greenplum 5时，我们如何克服不兼容性</a></li>
+<li><a href="../zh-CN439878/index.html">在2019年为新的高负载创业公司创建架构</a></li>
+<li><a href="../zh-CN439880/index.html">安全周07：物联网设备的本地漏洞</a></li>
+<li><a href="../zh-CN439884/index.html">如何通过一个按钮拒绝不必要的新闻通讯。 Yandex.Mail团队经验</a></li>
+<li><a href="../zh-CN439886/index.html">我如何在2018年俄罗斯AI Cup CodeBall上教神经网络实现位置评估功能</a></li>
+<li><a href="../zh-CN439890/index.html">技能是100％或更少。</a></li>
+<li><a href="../zh-CN439892/index.html">如何计划一年。 IT公司120人案例研究和两个小团队实践</a></li>
+<li><a href="../zh-CN439894/index.html">如何简单地监视网站状态</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

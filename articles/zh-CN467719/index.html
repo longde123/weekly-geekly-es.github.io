@@ -1,0 +1,168 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏼‍💻 👠 👎🏻 在PostgreSQL中获取锁定历史记录的一种方法 ✴️ 🚃 💆🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="继续文章“ 尝试为PostgreSQL创建ASH的类似物 ”。 
+
+ 本文将进行检查并显示在特定的查询和示例上-使用pg_locks视图的历史记录可以获得哪些有用的信息。 
+ 警告 
+ 由于该主题的新颖性和不完整的测试期限，因此该文章可能包含错误。 强烈鼓励和期望批评和评论。  输入数据 
+ pg_...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>在PostgreSQL中获取锁定历史记录的一种方法</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/467719/">继续文章“ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">尝试为PostgreSQL创建ASH的类似物</a> ”。 <br><br> 本文将进行检查并显示在特定的查询和示例上-使用pg_locks视图的历史记录可以获得哪些有用的信息。 <br><blockquote> 警告 <br> 由于该主题的新颖性和不完整的测试期限，因此该文章可能包含错误。 强烈鼓励和期望批评和评论。 </blockquote><a name="habracut"></a><h2> 输入数据 </h2><br><h3>  pg_locks提交历史 </h3><br><div class="spoiler">  <b class="spoiler_title">archive_locking</b> <div class="spoiler_text"><pre><code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> archive_locking ( timepoint <span class="hljs-type"><span class="hljs-type">timestamp</span></span> <span class="hljs-type"><span class="hljs-type">without time zone</span></span> , locktype <span class="hljs-type"><span class="hljs-type">text</span></span> , relation <span class="hljs-type"><span class="hljs-type">oid</span></span> , mode <span class="hljs-type"><span class="hljs-type">text</span></span> , tid xid , vtid <span class="hljs-type"><span class="hljs-type">text</span></span> , pid <span class="hljs-type"><span class="hljs-type">integer</span></span> , blocking_pids <span class="hljs-type"><span class="hljs-type">integer</span></span>[] , granted <span class="hljs-type"><span class="hljs-type">boolean</span></span> , queryid <span class="hljs-type"><span class="hljs-type">bigint</span></span> );</code> </pre> </div></div><br> 实际上，该表类似于此处更详细描述的<b>archive_pg_stat_activity</b>表<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">-pg_stat_statements + pg_stat_activity + loq_query = pg_ash？</a> 在这里- <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">尝试为PostgreSQL创建ASH的类似物。</a> <br><br> 要填充<b>queryid</b>列<b>，请</b>使用函数 <br><br><div class="spoiler">  <b class="spoiler_title">update_history_locking_by_queryid</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">--update_history_locking_by_queryid.sql CREATE OR REPLACE FUNCTION update_history_locking_by_queryid() RETURNS boolean AS $$ DECLARE result boolean ; current_minute double precision ; start_minute integer ; finish_minute integer ; start_period timestamp without time zone ; finish_period timestamp without time zone ; lock_rec record ; endpoint_rec record ; current_hour_diff double precision ; BEGIN RAISE NOTICE '***update_history_locking_by_queryid'; result = TRUE ; current_minute = extract ( minute from now() ); SELECT * FROM endpoint WHERE is_need_monitoring INTO endpoint_rec ; current_hour_diff = endpoint_rec.hour_diff ; IF current_minute &lt; 5 THEN RAISE NOTICE 'Current time is less than 5 minute.'; start_period = date_trunc('hour',now()) + (current_hour_diff * interval '1 hour'); finish_period = start_period - interval '5 minute' ; ELSE finish_minute = extract ( minute from now() ) / 5 ; start_minute = finish_minute - 1 ; start_period = date_trunc('hour',now()) + interval '1 minute'*start_minute*5+(current_hour_diff * interval '1 hour'); finish_period = date_trunc('hour',now()) + interval '1 minute'*finish_minute*5+(current_hour_diff * interval '1 hour') ; END IF ; RAISE NOTICE 'start_period = %', start_period; RAISE NOTICE 'finish_period = %', finish_period; FOR lock_rec IN WITH act_queryid AS ( SELECT pid , timepoint , query_start AS started , MAX(timepoint) OVER (PARTITION BY pid , query_start ) AS finished , queryid FROM activity_hist.history_pg_stat_activity WHERE timepoint BETWEEN start_period and finish_period GROUP BY pid , timepoint , query_start , queryid ), lock_pids AS ( SELECT hl.pid , hl.locktype , hl.mode , hl.timepoint , MIN ( timepoint ) OVER (PARTITION BY pid , locktype ,mode ) as started FROM activity_hist.history_locking hl WHERE hl.timepoint between start_period and finish_period GROUP BY hl.pid , hl.locktype , hl.mode , hl.timepoint ) SELECT lp.pid , lp.locktype , lp.mode , lp.timepoint , aq.queryid FROM lock_pids lp LEFT OUTER JOIN act_queryid aq ON ( lp.pid = aq.pid AND lp.started BETWEEN aq.started AND aq.finished ) WHERE aq.queryid IS NOT NULL GROUP BY lp.pid , lp.locktype , lp.mode , lp.timepoint , aq.queryid LOOP UPDATE activity_hist.history_locking SET queryid = lock_rec.queryid WHERE pid = lock_rec.pid AND locktype = lock_rec.locktype AND mode = lock_rec.mode AND timepoint = lock_rec.timepoint ; END LOOP; RETURN result ; END $$ LANGUAGE plpgsql;</span></span></code> </pre> </div></div><br>  <b>说明：</b> queryid列<b>的</b>值在history_locking表中更新，然后在为archive_locking表创建新节时，该值将保存在历史值中。 <br><br><h2> 印记 </h2><br> 有关整个过程的一般信息。 <br><br><h3> 等待按锁类型的锁 </h3><br><div class="spoiler">  <b class="spoiler_title">索取</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , count(*) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> total <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> locktype , mode ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , total * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">3</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">例子</b> <div class="spoiler_text"><pre>  | 等待按锁类型的锁
+ + -------------------- + ---------------------------- -+ --------------------
+ | 锁类型| 模式 持续时间
+ + -------------------- + ---------------------------- -+ --------------------
+ |  transactionid | 共享锁|  19:39:26
+ | 元组|  AccessExclusiveLock |  00:03:35
+ + -------------------- + ---------------------------- -+ --------------------
+</pre></div></div><br><h3> 按锁类型进行锁取 </h3><br><div class="spoiler">  <b class="spoiler_title">索取</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , count(*) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> total <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> locktype , mode ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> locktype , mode , total * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> t <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">3</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">例子</b> <div class="spoiler_text"><pre>  | 按锁类型进行锁取
+ + -------------------- + ---------------------------- -+ --------------------
+ | 锁类型| 模式 持续时间
+ + -------------------- + ---------------------------- -+ --------------------
+ | 关系|  RowExclusiveLock |  51:11:10
+ |  virtualxid |  ExclusiveLock |  48:10:43
+ |  transactionid |  ExclusiveLock |  44:24:53
+ | 关系|  AccessShareLock |  20:06:13
+ | 元组|  AccessExclusiveLock |  17:58:47
+ | 元组|  ExclusiveLock |  01:40:41
+ | 关系|  ShareUpdateExclusiveLock |  00:26:41
+ | 对象  RowExclusiveLock |  00:00:01
+ |  transactionid | 共享锁|  00:00:01
+ | 扩展|  ExclusiveLock |  00:00:01
+ + -------------------- + ---------------------------- -+ --------------------
+</pre></div></div><br> 有关特定queryid查询的详细信息 <br><br><h3> 等待按QUERYID按锁类型进行的锁 </h3><br><div class="spoiler">  <b class="spoiler_title">索取</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids , MIN ( timepoint ) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype ,mode ) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> started <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> queryid <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids , COUNT(*) * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">4</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">例子</b> <div class="spoiler_text"><pre>  | 等待按QUERYID按锁类型进行的锁
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ --
+ |  pid | 锁类型| 模式 开始  queryid |  block_pids | 持续时间
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ --
+ |  11288 |  transactionid | 共享锁|  2019-09-17 10：00：00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11626 |  transactionid | 共享锁|  2019-09-17 10:00：21.380921 |  389015618226997618 |  {12380} |  00:00:29
+ |  11626 |  transactionid | 共享锁|  2019-09-17 10：00：21.380921 |  389015618226997618 |  {11092} |  00:03:25
+ |  11626 |  transactionid | 共享锁|  2019-09-17 10：00：21.380921 |  389015618226997618 |  {12213} |  00:01:55
+ |  11626 |  transactionid | 共享锁|  2019-09-17 10：00：21.380921 |  389015618226997618 |  {12751} |  00:00:01
+ |  11629 |  transactionid | 共享锁|  2019-09-17 10：00：24.331935 |  389015618226997618 |  {11092} |  00:03:22
+ |  11629 |  transactionid | 共享锁|  2019-09-17 10：00：24.331935 |  389015618226997618 |  {12007} |  00:00:01
+ |  12007 |  transactionid | 共享锁|  2019-09-17 10：05：03.327933 |  389015618226997618 |  {11629} |  00:00:13
+ |  12007 |  transactionid | 共享锁|  2019-09-17 10：05：03.327933 |  389015618226997618 |  {11092} |  00:01:10
+ |  12007 |  transactionid | 共享锁|  2019-09-17 10：05：03.327933 |  389015618226997618 |  {11288} |  00:00:05
+ |  12213 |  transactionid | 共享锁|  2019-09-17 10：06：07.328019 |  389015618226997618 |  {12007} |  00:00:10 </pre></div></div><br><h3> 按QUERYID按锁类型进行锁 </h3><br><div class="spoiler">  <b class="spoiler_title">索取</b> <div class="spoiler_text"><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids , MIN ( timepoint ) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype ,mode ) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> started <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> activity_hist.archive_locking <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> timepoint <span class="hljs-keyword"><span class="hljs-keyword">between</span></span> pg_stat_history_begin+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> pg_stat_history_end+(current_hour_diff * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 hour'</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> granted <span class="hljs-keyword"><span class="hljs-keyword">AND</span></span> queryid <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NOT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> pid , locktype , mode , timepoint , queryid , blocking_pids ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids , COUNT(*) * <span class="hljs-type"><span class="hljs-type">interval</span></span> <span class="hljs-string"><span class="hljs-string">'1 second'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> duration <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> lt <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> lt.pid , lt.locktype , lt.mode , lt.started , lt.queryid , lt.blocking_pids <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">4</span></span></code> </pre> </div></div><br><div class="spoiler">  <b class="spoiler_title">例子</b> <div class="spoiler_text"><pre>  | 按QUERYID的锁类型进行锁
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ --
+ |  pid | 锁类型| 模式 开始  queryid |  block_pids | 持续时间
+ + ---------- + ------------------------- + ------------ -------- + ------------------------------ + ---------- ---------- + -------------------- + ------------------ --
+ |  11288 | 关系|  RowExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11092 |  transactionid |  ExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {} |  00:03:34
+ |  11288 | 关系|  RowExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {} |  00:00:10
+ |  11092 | 关系|  RowExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {} |  00:03:34
+ |  11092 |  virtualxid |  ExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {} |  00:03:34
+ |  11288 |  virtualxid |  ExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11288 |  transactionid |  ExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {11092} |  00:03:34
+ |  11288 | 元组|  AccessExclusiveLock |  2019-09-17 10：00：00.302936 |  389015618226997618 |  {11092} |  00:03:34 </pre></div></div><br>  <b>分析性能事件时使用锁定历史记录。</b> <br><br><ol><li>  pid = 11288的进程执行的queryid = 389015618226997618的请求预计将在2019-09-17 10:00:00阻止3分钟。 </li><li> 锁由pid = 11092的进程持有 </li><li> 从2019-09-17 10:00:00开始，具有pid = 11092的进程执行带有queryid = 389015618226997618的查询的过程将锁定保持3分钟。 </li></ol><br><h2> 总结 </h2><br> 现在，我希望最有趣和有用的事情开始了-收集统计数据并分析有关期望和锁定历史的案例。 <br><br> 我想相信，将来，它将成为某种形式的笔记（类似于Oracle metalink）。 <br><br> 通常，由于这个原因，所使用的技术会尽可能快地显示出来，以进行一般性的熟悉。 <br><br> 在不久的将来，我将尝试将该项目放在github上。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN467719/">https://habr.com/ru/post/zh-CN467719/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN467701/index.html">类别而不是目录。 方便文件存储的工具</a></li>
+<li><a href="../zh-CN467703/index.html">非洲非洲：欧洲大陆最有趣的技术公司和初创企业</a></li>
+<li><a href="../zh-CN467705/index.html">顺磁性和顺磁性：热能</a></li>
+<li><a href="../zh-CN467707/index.html">如何使用GOST算法将Linux配置为进入域</a></li>
+<li><a href="../zh-CN467711/index.html">物联网，雾霾和云：谈论技术？</a></li>
+<li><a href="../zh-CN467723/index.html">检查点Gaia R80.40。 有什么新东西？</a></li>
+<li><a href="../zh-CN467727/index.html">嗨，SaaS | Blissfully的2019年SaaS趋势</a></li>
+<li><a href="../zh-CN467729/index.html">筹码还是搭车？ 智能手机中独特的小东西</a></li>
+<li><a href="../zh-CN467733/index.html">作为开发人员，我永远不知道自己的价值，因为没有价值。 但是整个系统的构建就像是</a></li>
+<li><a href="../zh-CN467735/index.html">成人挑战</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

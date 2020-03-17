@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙅🏿 👃🏾 🎐 Kubernetes：在集群中构建Docker映像 ♒️ ⤴️ 💽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="您可以在不使用Docker的情况下使用kaniko在容器中构建Docker映像。 让我们了解如何在本地和Kubernetes集群中运行kaniko。 
+
+
+
+ 接下来是多本书 
+
+
+ 假设您决定在Kubernetes集群中构建Docker映像（嗯，您需要这样做）。 方便的是，让我们更清晰地看一个真实...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kubernetes：在集群中构建Docker映像</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/436126/"><p> 您可以在不使用Docker的情况下使用kaniko在容器中构建Docker映像。 让我们了解如何在本地和Kubernetes集群中运行kaniko。 </p><br><p><img src="https://habrastorage.org/getpro/habr/post_images/699/1ac/23b/6991ac23b41241f34ce0ab774a64124d.jpg" alt="图片"><br>  <em>接下来是多本书</em> </p><a name="habracut"></a><br><p> 假设您决定在Kubernetes集群中构建Docker映像（嗯，您需要这样做）。 方便的是，让我们更清晰地看一个真实的例子。 </p><br><p> 我们还将讨论Docker-in-Docker及其替代产品kaniko，使用它们您可以在不使用Docker的情况下构建Docker映像。 最后，我们将学习如何在Kubernetes集群中配置映像组装。 </p><br><p>  Kubernetes的一般描述在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“ Kubernetes in Action”（“ Kubernetes in Action”）一书中</a> 。 </p><br><h3 id="realnyy-primer"> 真实的例子 </h3><br><p> 在本机网络中，我们有许多私有Docker映像需要存储在某个地方。 因此，我们实施了私有<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Docker Hub</a> 。 公共<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Docker Hub</a>具有我们特别感兴趣的两个功能。 </p><br><p> 首先，我们想创建一个队列，该队列将异步收集Kubernetes中的Docker映像。 其次，实现将收集的图像发送到私有<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Docker注册表</a> 。 </p><br><p> 通常，Docker CLI直接用于实现以下功能： </p><br><pre><code class="plaintext hljs">$ docker build ... $ docker push ...</code> </pre> <br><p> 但是在Kubernetes集群中，我们托管基于小型和基本Linux映像的容器，默认情况下不包含Docker。 如果现在我们想在容器中使用Docker（例如<code>docker build...</code> ），我们需要类似Docker-in-Docker的工具。 </p><br><h3 id="chto-ne-tak-s-docker-in-docker">  Docker-in-Docker有什么问题？ </h3><br><p> 要在Docker中收集容器映像，我们需要在容器中运行一个Docker守护程序，即Docker-in-Docker。  Docker守护程序是一个虚拟化的环境，而Kubernetes中的容器是单独进行虚拟化的。 也就是说，如果要在容器中运行Docker守护程序，则需要使用嵌套虚拟化。 为此，请以特权模式运行容器-获得对主机系统的访问权限。 但这带来了安全性问题：例如，您必须使用不同的文件系统（主机和容器）或使用主机系统中的构建缓存。 这就是为什么我们不想接触Docker-in-Docker。 </p><br><h3 id="znakomstvo-s-kaniko"> 与kaniko相识 </h3><br><p> 不仅仅是Docker-in-Docker ...还有另一个解决方案<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">-kaniko</a> 。 这是用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Go</a>编写的工具，它从没有Docker的Dockerfile收集容器映像。 然后将它们发送到指定的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Docker注册表</a> 。 建议配置kaniko-使用现成<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的执行程序映像</a> ，该<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">映像</a>可以作为Docker容器或Kubernetes中的容器运行。 </p><br><p> 请记住，kaniko仍在开发中，并不支持所有Dockerfile命令，例如<code>COPY</code> <code>--chownflag</code> 。 </p><br><h3 id="zapusk-kaniko">  iko子发射 </h3><br><p> 如果要运行kaniko，则需要为kaniko容器指定几个参数。 首先将Dockerfile及其所有依赖项插入kaniko容器。 在本地（在Docker中），- <code>-v &lt;__&gt;:&lt;__&gt;</code>选项用于此操作<code>-v &lt;__&gt;:&lt;__&gt;</code> ，并且Kubernetes具有volume。 </p><br><p> 将依赖项Dockerfile插入kaniko容器后，添加参数<code>--context</code> ，它将指示附加目录的路径（在容器内部）。 下一个参数是<code>--dockerfile</code> 。 它指示Dockerfile的路径（包括名称）。 另一个重要的参数是<code>--destination</code>具有指向Docker注册表的完整URL（包括名称和图像标签）。 </p><br><h3 id="lokalnyy-zapusk"> 本地发布 </h3><br><p> 香子子以几种方式开始。 例如，在使用Docker的本地计算机上（以免弄乱Kubernetes集群）。 使用以下命令运行kaniko： </p><br><pre> <code class="plaintext hljs">$ docker run \ -v $(pwd):/workspace \ gcr.io/kaniko-project/executor:latest \ --dockerfile=&lt;path-to-dockerfile&gt; \ --context=/workspace \ --destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;</code> </pre> <br><p> 如果在Docker注册表中启用了身份验证，则必须首先登录kaniko。 为此，请使用以下命令将具有Docker注册表凭据的本地Docker <code>config.jsonfile</code>连接到kaniko容器： </p><br><pre> <code class="plaintext hljs">$ docker run \ -v $(pwd):/workspace \ -v ~/.docker/config.json:/kaniko/.docker/config.json \ gcr.io/kaniko-project/executor:latest \ --dockerfile=&lt;path-to-dockerfile&gt; \ --context=/workspace \ --destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;</code> </pre> <br><h3 id="zapusk-v-kubernetes"> 在Kubernetes中启动 </h3><br><p> 在示例中，我们想在Kubernetes集群中运行kaniko。 而且我们还需要诸如队列之类的东西来组装图像。 如果在组装映像或将映像发送到Docker注册表时发生故障，最好再次启动该过程。 为此，在Kubernetes中有一个<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">工作</a> 。 通过指定进程应重试的频率来配置<code>backoffLimit</code> 。 </p><br><p> 将具有依赖项的Dockerfile嵌入kaniko容器的最简单方法是使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PersistentVolumeClaim</a>对象（在我们的示例中，它称为<code>kaniko-workspace</code> ）。 它将作为目录绑定到容器，并且所有数据应该已经在<code>kaniko-workspace</code> 。 假设在另一个容器中， <code>kaniko-workspace</code>的<code>/my-build</code> <code>kaniko-workspace</code>中已经有一个依赖项的<code>kaniko-workspace</code> 。 </p><br><p> 不要忘记在AWS中使用PersistentVolumeClaim遇到麻烦。 如果您在AWS中创建PersistentVolumeClaim，则它将仅出现在AWS集群中的一个节点上，并且在那里仅可用。  （更新：实际上，当创建PVC时，将在集群的随机可用性区域中创建一个RDS卷。因此，该卷将对该区域中的所有计算机可用。Kubernetes本身使用该PVC控制在其下将在可用性区域中的节点上启动该卷。因此，如果您运行Job kaniko并且此任务在另一个节点上，则该任务将无法启动，因为PersistentVolumeClaim不可用。 我们希望Amazon Elastic File System不久将在Kubernetes上可用并且问题将消失。  （upd： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">存储</a>预配器支持Kubernetes中的EFS- <em>大约</em> 。） </p><br><p> 用于构建Docker映像的作业资源通常如下所示： </p><br><pre> <code class="plaintext hljs">apiVersion: batch/v1 kind: Job metadata: name: build-image spec: template: spec: containers: - name: build-image image: gcr.io/kaniko-project/executor:latest args: - "--context=/workspace/my-build" - "--dockerfile=/workspace/my-build/Dockerfile" - "--destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;" volumeMounts: - name: workspace mountPath: /workspace volumes: - name: workspace persistentVolumeClaim: claimName: kaniko-workspace restartPolicy: Never backoffLimit: 3</code> </pre> <br><p> 如果目标Docker注册表需要身份验证，请将带有凭据的<code>config.json</code>文件传递给kaniko容器。 最简单的方法是将<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PersistentVolumeClaim</a>连接到已经具有<code>config.json</code>文件的容器。 在这里，PersistentVolumeClaim将不会作为目录挂载，而是作为文件<code>/kaniko/.docker/config.json</code>在kaniko容器中的/kaniko/.docker/config.json路径中： </p><br><pre> <code class="plaintext hljs">apiVersion: batch/v1 kind: Job metadata: name: build-image spec: template: spec: containers: - name: build-image image: gcr.io/kaniko-project/executor:latest args: - "--context=/workspace/my-build" - "--dockerfile=/workspace/my-build/Dockerfile" - "--destination=&lt;repo-url-with-image-name&gt;:&lt;tag&gt;" volumeMounts: - name: config-json mountPath: /kaniko/.docker/config.json subPath: config.json - name: workspace mountPath: /workspace volumes: - name: config-json persistentVolumeClaim: claimName: kaniko-credentials - name: workspace persistentVolumeClaim: claimName: kaniko-workspace restartPolicy: Never backoffLimit: 3</code> </pre> <br><p> 如果要检查<code>kubectl</code>构建作业的状态，请使用<code>kubectl</code> 。 要通过<code>stdout</code>过滤状态，请运行以下命令： </p><br><pre> <code class="plaintext hljs">$ kubectl get job build-image -o go-template='{{(index .status.conditions 0).type}}'</code> </pre> <br><h3 id="itogi"> 总结 </h3><br><p> 您从这篇文章中了解到Docker-in-Docker不适合在Kubernetes中构建Docker映像。 有了kaniko的想法-Docker-in-Docker的替代品，通过它可以组装不带Docker的Docker映像。 我们还学习了如何编写Job资源以在Kubernetes中收集Docker映像。 最后，他们看到了如何找出正在进行的任务的状态。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN436126/">https://habr.com/ru/post/zh-CN436126/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN436116/index.html">PERDIX：自动设计不同几何形状的DNA折纸的算法</a></li>
+<li><a href="../zh-CN436118/index.html">在Arduino上创建第一个机器人的经验（机器人猎人）</a></li>
+<li><a href="../zh-CN436120/index.html">LittleBigPlanet中难以捕获的错误</a></li>
+<li><a href="../zh-CN436122/index.html">英特尔Lakefield：3D凌动+核心混合处理器</a></li>
+<li><a href="../zh-CN436124/index.html">我们方便地阅读了关于哈布雷的评论</a></li>
+<li><a href="../zh-CN436128/index.html">采访包袋猎人Artyom Moscow。 他入侵了Steam，并获得了Valve历史上最大的奖项。</a></li>
+<li><a href="../zh-CN436130/index.html">电信和大众传播部通过俄罗斯站传输互联网流量的项目使OneWeb在俄罗斯的合法化变得复杂</a></li>
+<li><a href="../zh-CN436132/index.html">安装npm软件包后可能发生的12种奇怪的事情</a></li>
+<li><a href="../zh-CN436134/index.html">进口路由器将征收高达20％的弹幕税</a></li>
+<li><a href="../zh-CN436136/index.html">OceanLotus：东南亚的水坑袭击</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

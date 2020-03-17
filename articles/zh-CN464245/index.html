@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔕 🙋 🚲 在Linux上为PostgreSQL配置内存不足杀手 👃🏽 🗂️ 🚧</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="当数据库服务器在Linux上意外关闭时，您需要查找原因。 可能有几个原因。 例如， SIGSEGV-由于后端服务器中的错误而崩溃。 但这是罕见的。 通常，磁盘空间或内存会耗尽。 如果磁盘空间用完，一种解决方法是释放空间并重新启动数据库。 
+ 内存不足的杀手 
+
+
+ 当服务器或进程的内存不足时，Lin...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>在Linux上为PostgreSQL配置内存不足杀手</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/464245/"><p><img src="https://habrastorage.org/webt/xn/ip/86/xnip86u-h8mejjpjkpvpaun7emc.png"></p><br><p> 当数据库服务器在Linux上意外关闭时，您需要查找原因。 可能有几个原因。 例如， <strong>SIGSEGV-</strong>由于后端服务器中的错误而崩溃。 但这是罕见的。 通常，磁盘空间或内存会耗尽。 如果磁盘空间用完，一种解决方法是释放空间并重新启动数据库。 </p><br><h3 id="out-of-memory-killer"> 内存不足的杀手 </h3><br><p> 当服务器或进程的内存不足时，Linux提供了两种解决方案：使整个系统崩溃或终止消耗内存的进程（应用程序）。 当然，最好完成此过程并保存操作系统以免异常终止。 简而言之，Out-Of-Memory Killer是终止应用程序以免崩溃保存内核的过程。 他牺牲了应用程序以保持操作系统运行。 让我们首先讨论OOM如何工作以及如何控制它，然后看看OOM Killer如何决定要结束的应用程序。 </p><a name="habracut"></a><br><p>  Linux的主要任务之一是在需要时为进程分配内存。 通常，进程或应用程序从OS请求内存，但是它们本身并未完全使用它。 如果操作系统将内存分发给要求它的每个人，但不打算使用它，则内存很快就会终止，并且系统将发生故障。 为避免这种情况，操作系统会为该进程保留内存，但实际上不会发出该内存。 仅在进程真正要使用内存时才分配内存。 碰巧OS没有可用内存，而是为进程分配了内存，并且当进程需要时，OS会分配内存。 缺点是，有时OS会保留内存，但在正确的时间没有可用的内存，并且系统崩溃。  OOM在这种情况下起着重要的作用，并终止进程以防止内核崩溃。 强制终止PostgreSQL进程后，日志中将显示一条消息： </p><br><pre><code class="plaintext hljs">Out of Memory: Killed process 12345 (postgres).</code> </pre> <br><p> 如果系统中的内存很少并且无法释放它，则<code>out_of_memory</code>函数。 在此阶段，她只剩下一件事-完成一个或多个过程。  OOM-killer应该立即终止该过程还是我可以等待？ 显然，当调用out_of_memory时，这是由于等待I / O操作或页面交换到磁盘。 因此，OOM杀手必须首先执行检查，然后根据检查结果确定应该完成该过程。 如果以下所有检查均得出肯定的结果，则OOM将终止该过程。 </p><br><h3 id="vybor-processa"> 工艺选择 </h3><br><p> 当内存用完时，将<code>out_of_memory()</code>函数。 它具有一个函数<code>select_bad_process()</code> ，该函数从<code>badness()</code>函数接收一个估计值。 分布最“坏”的过程。  <code>badness()</code>函数根据某些规则选择一个进程。 </p><br><ol><li> 内核本身需要一些最小的内存。 </li><li> 您需要释放大量内存。 </li><li> 无需终止使用很少内存的进程。 </li><li> 您需要完成最少的过程。 </li><li> 复杂的算法增加了用户自己想要完成的那些过程的完成机会。 </li></ol><br><p> 完成所有这些检查后，OOM将检查等级（ <code>oom_score</code> ）。  OOM将<code>oom_score</code>分配<code>oom_score</code>每个进程，然后将该值乘以内存量。 具有较高价值的流程更有可能成为OOM Killer的受害者。 与特权用户关联的进程的评级较低，并且不太可能强制终止。 </p><br><pre> <code class="plaintext hljs">postgres=# SELECT pg_backend_pid(); pg_backend_pid ----------------    3813 (1 row)</code> </pre> <br><p>  Postgres进程的标识符是3813，因此在另一个Shell中，您可以使用以下<code>oom_score</code>内核<code>oom_score</code>获得一个估算值： </p><br><pre> <code class="plaintext hljs">vagrant@vagrant:~$ sudo cat /proc/3813/oom_score 2</code> </pre> <br><p> 如果您根本不希望OOM-Killer完成该过程，则还有另一个内核参数： <code>oom_score_adj</code> 。 添加较大的负值以减少完成您喜欢的过程的机会。 </p><br><pre> <code class="plaintext hljs">sudo echo -100 &gt; /proc/3813/oom_score_adj</code> </pre> <br><p> 要设置值<code>oom_score_adj</code> ，请在服务块中设置OOMScoreAdjust： </p><br><pre> <code class="plaintext hljs">[Service] OOMScoreAdjust=-1000</code> </pre> <br><p> 或在<code>rcctl</code>使用<code>oomprotect</code> 。 </p><br><pre> <code class="plaintext hljs">rcctl set &lt;i&gt;servicename&lt;/i&gt; oomprotect -1000</code> </pre> <br><h3 id="prinuditelnoe-zavershenie-processa"> 强制终止流程 </h3><br><p> 当已经选择一个或多个进程时，OOM-Killer会调用<code>oom_kill_task()</code>函数。 该功能向过程发送终止信号。 如果没有足够的内存，则<code>oom_kill()</code>调用此函数以将SIGKILL信号发送到该进程。 一条消息被写入内核日志。 </p><br><pre> <code class="plaintext hljs">Out of Memory: Killed process [pid] [name].</code> </pre> <br><h3 id="kak-kontrolirovat-oom-killer"> 如何控制OOM-Killer </h3><br><p> 在Linux上，可以启用或禁用OOM-Killer（尽管不建议使用后者）。 要启用和禁用，请使用<code>vm.oom-kill</code>选项。 要在运行时启用OOM-Killer，请运行<code>sysctl</code>命令。 </p><br><pre> <code class="plaintext hljs">sudo -s sysctl -w vm.oom-kill = 1</code> </pre> <br><p> 要禁用OOM-Killer，请在同一命令中指定值0： </p><br><pre> <code class="plaintext hljs">sudo -s sysctl -w vm.oom-kill = 0</code> </pre> <br><p> 此命令的结果将不会永远保存，而只会保存到第一次重新引导。 如果需要更多持久性，请将此行添加到<code>/etc/sysctl.conf</code>文件中： </p><br><pre> <code class="plaintext hljs">echo vm.oom-kill = 1 &gt;&gt;/etc/sysctl.conf</code> </pre> <br><p> 启用和禁用的另一种方法是编写变量<code>panic_on_oom</code> 。 可以始终在<code>/proc</code>检查该值。 </p><br><pre> <code class="plaintext hljs">$ cat /proc/sys/vm/panic_on_oom 0</code> </pre> <br><p> 如果将该值设置为0，则当内存用尽时，内核恐慌不会。 </p><br><pre> <code class="plaintext hljs">$ echo 0 &gt; /proc/sys/vm/panic_on_oom</code> </pre> <br><p> 如果将值设置为1，则当内存用完时，将发生内核崩溃。 </p><br><pre> <code class="plaintext hljs">echo 1 &gt; /proc/sys/vm/panic_on_oom</code> </pre> <br><p>  OOM-Killer不仅可以打开和关闭。 我们已经说过，Linux可以为进程保留更多的内存，但实际上并不能分配，这种行为是由Linux内核参数控制的。  <code>vm.overcommit_memory</code>变量对此负责。 </p><br><p> 您可以为其指定以下值： </p><br><p>  <strong>0：</strong>内核本身决定是否保留太多内存。 这是大多数Linux版本上的默认值。 <br>  <strong>1：</strong>内核将始终保留额外的内存。 这是有风险的，因为内存可能会终止，因为最有可能的一天，进程将要求假定的内容。 <br>  <strong>2：</strong>内核将不会保留超出<code>overcommit_ratio</code>参数指定的内存量。 </p><br><p> 在此参数中，指定允许冗余的内存百分比。 如果没有足够的空间，则不会分配内存，该预留将被拒绝。 这是推荐用于PostgreSQL的最安全的选项。  OOM-Killer受另一个因素-交换功能的影响，该功能由变量<code>cat /proc/sys/vm/swappiness</code> 。 这些值告诉内核如何处理分页。 值越大，OOM终止进程的可能性越小，但是由于I / O，这会对数据库产生负面影响。 反之亦然-值越小，OOM-Killer干预的可能性越高，但是数据库性能也更高。 默认值为60，但是如果整个数据库都适合内存，则最好将该值设置为1。 </p><br><h3 id="itogi"> 总结 </h3><br><p> 不要被OOM-Killer中的杀手吓到。 在这种情况下，杀手will将是您系统的救星。 它“杀死”了最差的进程，并使系统免于异常终止。 为避免必须使用OOM-Killer完成PostgreSQL，请将<code>vm.overcommit_memory</code>为2。这不能保证OOM-Killer不必干预，但可以减少PostgreSQL进程被迫终止的可能性。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN464245/">https://habr.com/ru/post/zh-CN464245/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN464225/index.html">REST保证：使用该工具五年来我们学到了什么</a></li>
+<li><a href="../zh-CN464227/index.html">他们在克拉斯诺达尔的生活和工作方式</a></li>
+<li><a href="../zh-CN464233/index.html">混沌建筑2019即将到来...</a></li>
+<li><a href="../zh-CN464235/index.html">“ S饮”极易上瘾。 如何将阴谋集团变成全球项目</a></li>
+<li><a href="../zh-CN464237/index.html">Pascal Tanchiki：90年代如何教孩子编程，这有什么问题</a></li>
+<li><a href="../zh-CN464249/index.html">全职模式的远程工作：如果您不大年纪，从哪里开始</a></li>
+<li><a href="../zh-CN464253/index.html">停止使用日期时间</a></li>
+<li><a href="../zh-CN464255/index.html">NX JAVA聚会＃14：基于Cassandra的解决方案中Spark的优缺点的性能研究</a></li>
+<li><a href="../zh-CN464257/index.html">UX摘要：重新启动</a></li>
+<li><a href="../zh-CN464259/index.html">云游戏：对在弱PC上玩游戏的服务能力的第一手评估</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

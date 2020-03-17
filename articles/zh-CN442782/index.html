@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎪 👉🏾 😃 VShard-Tarantool中的水平缩放 👶🏻 ⏩ 😨</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="嗨，我叫Vladislav，我是Tarantool开发团队的成员。 Tarantool是一个DBMS和一个应用程序服务器。 今天，我将讲述VShard模块如何在Tarantool中实现水平缩放的故事。 
+
+ 首先了解一些基础知识。 
+
+ 缩放有两种类型：水平缩放和垂直缩放。 水平缩放有两种类型：复制...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>VShard-Tarantool中的水平缩放</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/442782/"><img src="https://habrastorage.org/webt/4p/e8/fo/4pe8foryc_t_l5joliydwpislhm.png"><br><br> 嗨，我叫Vladislav，我是<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Tarantool</a>开发团队的成员。  Tarantool是一个DBMS和一个应用程序服务器。 今天，我将讲述<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">VShard</a>模块如何在Tarantool中实现水平缩放的故事。 <br><br> 首先了解一些基础知识。 <br><br> 缩放有两种类型：水平缩放和垂直缩放。 水平缩放有两种类型：复制和分片。 复制可确保计算扩展，而分片可用于数据扩展。 <br><br> 分片也分为两种：基于范围的分片和基于哈希的分片。 <br><br> 基于范围的分片意味着为每个群集记录计算一些分片键。 分片键投影到一条直线上，该直线分为多个范围并分配给不同的物理节点。 <br><br> 基于散列的分片方式不那么复杂：为集群中的每个记录计算一个散列函数； 具有相同散列函数的记录分配到同一物理节点。 <br><br> 我将重点介绍使用基于哈希的分片的水平缩放。 <br><a name="habracut"></a><br><h2> 较旧的实现 </h2><br>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Tarantool Shard</a>是我们用于水平缩放的原始模块。 它对群集中的所有记录使用基于哈希的简单分片，并通过主键计算分片键。 <br><br><pre><code class="plaintext hljs">function shard_function(primary_key) return guava(crc32(primary_key), shard_count) end</code> </pre> <br> 但是最终，Tarantool Shard变得无法应对新任务。 <br><br> 首先，我们的最终要求之一成为<b>逻辑相关数据</b>的保证<b>位置</b> 。 换句话说，当我们拥有逻辑上相关的数据时，我们总是希望将其存储在单个物理节点上，而不考虑集群拓扑和平衡更改。  Tarantool Shard无法保证。 它仅使用主键来计算散列，因此重新平衡可能导致具有相同散列的记录的临时分隔，因为更改不是原子执行的。 <br><br> 缺乏数据局部性是我们面临的主要问题。 这是一个例子。 假设有一家客户开户的银行。 有关帐户和客户的信息应物理存储在一起，以便可以在单个请求中进行检索，也可以在单个交易中进行更改，例如在汇款期间。 如果我们使用Tarantool Shard的传统分片，则帐户和客户的哈希函数值将不同。 数据可能最终位于单独的物理节点上。 这确实使读取和处理客户数据变得非常复杂。 <br><br><pre> <code class="plaintext hljs">format = {{'id', 'unsigned'}, {'email', 'string'}} box.schema.create_space('customer', {format = format}) format = {{'id', 'unsigned'}, {'customer_id', 'unsigned'}, {'balance', 'number'}} box.schema.create_space('account', {format = format})</code> </pre> <br> 在上面的示例中，帐户和客户的id字段可能不一致。 它们通过帐户的customer_id字段和客户的id字段连接。 相同的id字段将违反帐户主键的唯一性约束。 分片不能以任何其他方式执行分片。 <br><br> 另一个问题是重新分片<b>缓慢</b> ，这是所有哈希分片的根本问题。 最重要的是，在更改集群组件时，分片函数会更改，因为分片函数通常取决于节点数。 因此，当函数更改时，有必要遍历集群中的所有记录并重新计算函数。 可能还需要传输一些记录。 在数据传输过程中，我们甚至不知道是否需要记录？ 在请求中，数据已经被传输或正在被传输。 因此，在重新分片期间，必须同时使用新旧分片功能发出读取请求。 请求的处理速度慢了两倍，这是不可接受的。 <br><br>  Tarantool Shard的另一个问题是，在副本集中出现节点故障的情况下，读取的可用性较低。 <br><br><h2> 新解决方案 </h2><br> 我们创建了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=nl&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Tarantool VShard</a>来解决上述三个问题。 它的主要区别在于其数据存储级别是虚拟化的，即物理存储托管虚拟存储，并且数据记录是在虚拟存储上分配的。 这些存储称为<i>存储桶</i> 。 用户不必担心位于给定物理节点上的内容。 桶是原子不可分割的数据单元，就像传统分片中的元组一样。  VShard始终将整个存储桶存储在一个物理节点上，并且在重新分片期间，它会原子地迁移一个存储桶中的所有数据。 此方法可确保数据局部性。 我们只是将数据放入一个存储桶中，我们始终可以确保在集群更改期间不会将其分离。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/42e/a4f/87b/42ea4f87b5c0f0b05bdf0e0c75b356fe.png"><br><br> 我们如何将数据放入一个存储桶中？ 让我们为银行客户在表中添加一个新的存储区ID字段。 如果此字段的值与相关数据相同，则所有记录将在一个存储桶中。 好处是我们可以将具有相同存储桶ID的记录存储在不同的空间，甚至存储在不同的引擎中。 无论存储方法如何，都可以确保基于存储区ID的数据局部性。 <br><br><pre> <code class="plaintext hljs">format = {{'id', 'unsigned'}, {'email', 'string'}, {'bucket_id', 'unsigned'}} box.schema.create_space('customer', {format = format}) format = {{'id', 'unsigned'}, {'customer_id', 'unsigned'}, {'balance', 'number'}, {'bucket_id', 'unsigned'}} box.schema.create_space('account', {format = format})</code> </pre> <br> 为什么这这么重要？ 使用传统分片时，数据将扩展到各种现有的物理存储。 对于我们的银行示例，当请求给定客户的所有帐户时，我们必须联系每个节点。 因此，我们得到了读取复杂度O（N），其中N是物理存储的数量。 令人疯狂的缓慢。 <br><br> 通过存储桶ID使用存储桶和位置信息，可以使用一个请求从一个节点读取必要的数据-不管集群大小如何。 <br><br><img src="https://habrastorage.org/webt/t7/_r/fm/t7_rfmxoroosmaoqbe8cskpsr0k.png"><br><br> 在VShard中，您可以计算存储桶ID并进行分配。 对于某些人来说，这是一个优势，而另一些人则认为这是一种劣势。 我相信能够选择自己的存储桶ID计算功能是一个优势。 <br><br> 传统分片和带桶虚拟分片之间的主要区别是什么？ <br><br> 在前一种情况下，当我们更改群集组件时，我们有两种状态：当前（旧）状态和要实施的新状态。 在过渡过程中，不仅需要迁移数据，还需要重新计算每个记录的哈希函数。 这不是很方便，因为在任何给定时刻，我们都不知道所需的数据是否已经迁移。 此外，此方法不可靠，更改也不是原子的，因为具有哈希函数值相同的记录集的原子迁移将需要持久存储迁移状态，以防需要恢复。 结果，存在冲突和错误，因此必须多次重新启动该操作。 <br><br> 虚拟分片要简单得多。 我们没有两个不同的群集状态。 我们只有存储桶状态。 集群更加灵活，可以从一种状态平稳地移动到另一种状态。 现在有两个以上的州？  （不清楚）。 通过平稳过渡，可以即时更改平衡或删除新添加的存储。 即，平衡控制已经大大增加并且变得更加精细。 <br><br><h2> 使用方法 </h2><br> 假设我们已经为存储桶ID选择了一个函数，并且已将太多数据上传到集群中，从而没有剩余空间。 现在，我们想添加一些节点并自动将数据移动到它们。 这就是我们在VShard中进行的方式：首先，我们启动新节点并在其中运行Tarantool，然后更新VShard配置。 它包含有关每个群集组件，每个副本，副本集，母版，分配的URI等的信息。 现在，我们将新节点添加到配置文件中，并使用VShard.storage.cfg将其应用于所有群集节点。 <br><br><pre> <code class="plaintext hljs">function create_user(email) local customer_id = next_id() local bucket_id = crc32(customer_id) box.space.customer:insert(customer_id, email, bucket_id) end function add_account(customer_id) local id = next_id() local bucket_id = crc32(customer_id) box.space.account:insert(id, customer_id, 0, bucket_id) end</code> </pre> <br> 您可能还记得，在传统分片中更改节点数时，分片函数本身也会更改。 这在VShard中不会发生。 在这里，我们有固定数量的虚拟存储或存储桶。 这是在启动群集时选择的常数。 因此，似乎可伸缩性受到了限制，但实际上并非如此。 您可以指定大量的存储桶，数以十万计。 要知道的重要一点是，存储桶应该比集群中将拥有的最大副本集数量多至少两个数量级。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/422/499/979/422499979e5b8c5728c3df2b967cf599.gif"><br><br> 由于虚拟存储的数量不会改变，并且分片功能仅取决于此值，因此我们可以根据需要添加任意数量的物理存储，而无需重新计算分片功能。 <br><br> 那么存储桶如何分配给物理存储呢？ 如果调用VShard.storage.cfg，则一个节点上的重新平衡器进程将唤醒。 这是一个分析过程，可为群集计算出完美的平衡。 该过程转到每个物理节点并检索其存储桶数，然后构建其移动路线以平衡分配。 然后，重新平衡器将路由发送到过载的存储，然后依次开始发送存储桶。 稍后，群集已达到平衡。 <br><br> 在现实世界的项目中，可能难以轻易达到完美的平衡。 例如，一个副本集可能包含的数据少于另一副本集，因为它具有较小的存储容量。 在这种情况下，VShard可能会认为一切都平衡了，但实际上第一个存储将要过载。 为了解决这个问题，我们提供了一种通过权重校正平衡规则的机制。 权重可以分配给任何副本集或存储。 当重新平衡器决定应该发送多少个桶以及在哪里发送时，它将考虑<b>所有权</b>重对的<b>关系</b> 。 <br><br> 例如，如果一个存储区的重量为100，而另一个存储区的重量为200，则第二个存储区的存储量将是第一个存储区的两倍。 请注意，我特别在谈论体重<b>关系</b> 。 绝对值没有任何影响。 您可以基于集群中100％的分布来选择权重：因此，一个存储区的权重为30％，另一存储区的权重为70％。 您可以以GB的存储容量为基础，也可以以存储桶数衡量重量。 最重要的是保持必要的比率。 <br><br><img src="https://habrastorage.org/webt/sz/0v/gi/sz0vgicyunfvpamx3ic8enwsl58.png"><br><br> 这种方法有一个有趣的副作用：如果为存储分配了零重量，那么重新平衡器将使该存储重新分配其所有存储桶。 之后，您可以从配置中删除整个副本集。 <br><br><h2> 原子桶迁移 </h2><br> 我们有一个水桶； 它接受一些读取和写入，并且在给定的时刻，重新平衡器请求将其迁移到另一个存储。 存储桶将停止接受写请求，否则它将在迁移期间进行更新，然后在更新迁移期间再次进行更新，然后将进行更新，依此类推。 因此，写请求被阻止，但是仍然可以从存储桶中进行读取。 现在，数据正在迁移到新位置。 迁移完成后，存储桶将再次开始接受请求。 它在旧位置仍然存在，但被标记为垃圾，后来在垃圾收集器上逐段删除。 <br><br> 与每个存储桶关联的磁盘上实际存储了一些元数据。 上述所有步骤都存储在磁盘上，无论存储发生什么情况，存储桶状态都会自动恢复。 <br><br> 您可能有以下一些问题： <br><br><ul><li>  <b>开始迁移时，与存储桶一起使用的请求会发生什么情况？</b> <br><br> 每个存储区的元数据中有两种类型的引用：RO和RW。 当用户向存储桶发出请求时，他指示工作应处于只读还是读写模式。 对于每个请求，相应的参考计数器都会增加。 <br><br> 为什么我们需要引用计数器来进行写请求？ 假设某个存储桶正在迁移，垃圾收集器突然想删除它。 垃圾收集器识别出参考计数器大于零，因此不会删除该存储桶。 当所有请求完成时，垃圾收集器可以完成其工作。 <br><br> 如果有至少一个写入请求在处理中，则用于写入的参考计数器还可以确保不会开始存储区的迁移。 但是话又说回来，写请求可能一个接一个地出现，并且存储桶将永远不会被迁移。 因此，如果重新平衡器希望移动存储桶，则系统将在等待特定超时期间完成当前请求的同时阻止新的写请求。 如果请求未在指定的超时时间内完成，则系统将在延迟存储桶迁移的同时再次开始接受新的写请求。 这样，重新平衡器将尝试迁移存储桶，直到迁移成功为止。 <br><br> 如果您需要的不仅仅是高级功能，VShard会提供一个低级的bucket_ref API。 如果您真的想自己做某事，请参考此API。 </li><li>  <b>是否可以使记录畅通无阻？</b> <br><br> 不行 如果存储桶包含关键数据并需要永久写入权限，那么您将不得不完全阻止其迁移。 我们有一个bucket_pin函数可以做到这一点。 它将存储桶固定到当前副本集，以便重新平衡器无法迁移存储桶。 在这种情况下，相邻的铲斗将能够不受限制地移动。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/b6a/848/fa7/b6a848fa775b0066ac6f69b73d97ed76.png"><br><br> 副本集锁定比bucket_pin甚至更强大。 这不再在代码中完成，而是在配置中完成。 副本集锁定禁止将任何存储区移入/移出副本集。 因此，所有数据将永久可用于写入。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/65b/744/39c/65b74439c5b5743eda1168bdb320f8f4.png"></li></ul><br><h2>  VShard.router </h2><br>  VShard由两个子模块组成：VShard.storage和VShard.router。 我们可以在单个实例上独立创建和扩展它们。 请求群集时，我们不知道给定存储桶的位置，VShard.router会通过存储桶ID为我们搜索它。 <br><br> 让我们回顾一下示例，即具有客户帐户的银行集群。 我希望能够从群集中获取某个客户的所有帐户。 这需要本地搜索的标准功能： <br><br><img src="https://habrastorage.org/webt/q4/om/pp/q4omppscsww5c-cshatc6bnvgky.png"><br><br> 它通过其ID查找客户的所有帐户。 现在，我必须决定应该在哪里运行该函数。 为此，我通过请求中的客户标识符来计算存储桶ID，并要求VShard.router在具有目标存储桶ID的存储桶所在的存储区中调用该函数。 子模块具有一个路由表，该表描述了副本集中存储桶的位置。  VShard.router重定向我的请求。 <br><br> 确实有可能在这个确切的时刻开始分片，并且铲斗开始移动。 后台的路由器通过从存储设备请求当前的存储桶表来逐步大表更新表。 <br><br> 我们甚至可能要求最近迁移的存储桶，从而使路由器尚未更新其路由表。 在这种情况下，它将请求旧存储，该旧存储将把路由器重定向到另一个存储，或者仅响应它没有必要的数据。 然后，路由器将遍历每个存储，以查找所需的存储桶。 而且，我们甚至不会注意到路由表中的错误。 <br><br><h2> 读取故障转移 </h2><br> 让我们回想一下最初的问题： <br><br><ul><li> 没有数据局部性。 用水桶解决。 </li><li> 重新分片过程陷入困境，一切都退缩了。 我们通过存储桶实现了原子数据传输，并且摆脱了碎片函数的重新计算。 </li><li> 读取故障转移。 </li></ul><br> 最后一个问题由VShard.router解决，并由自动读取故障转移子系统支持。 <br><br> 路由器有时会ping通配置中指定的存储。 举例来说，路由器无法ping通其中之一。 路由器具有到每个副本的热备份连接，因此，如果当前副本没有响应，则仅切换到另一个副本。 读取请求将被正常处理，因为我们可以读取副本（但不能写入）。 我们可以指定副本的优先级，作为路由器选择读取故障转移的一个因素。 这是通过分区来完成的。 <br><br><img src="https://habrastorage.org/webt/aw/iz/ry/awizryylhzk9h2rct_kxo1-jvpc.png"><br><br> 我们为每个副本和每个路由器分配一个区域编号，并指定一个表格，在其中指明每对区域之间的距离。 当路由器决定将读取请求发送到何处时，它将在最近的区域中选择一个副本。 <br><br> 这是配置中的样子： <br><br><img src="https://habrastorage.org/webt/2w/jx/cu/2wjxcuidtcghobukd3mxu02ms2y.png"><br><br> 通常，您可以请求任何副本，但是如果群集很大，复杂且分布高度，则分区非常有用。 可以选择不同的服务器机架作为区域，以便网络不会因通信量而过载。 可替代地，可以选择地理上孤立的点。 <br><br> 分区还可以在复制品表现出不同的行为时提供帮助。 例如，每个副本集都有一个备份副本，该副本不应接受请求，而应仅存储数据的副本。 在这种情况下，我们将其放置在远离表中所有路由器的区域中，以便除非绝对必要，否则路由器将不会访问该副本。 <br><br><h2> 写入故障转移 </h2><br> 我们已经讨论过读取故障转移。 更换母版时如何进行写故障转移？ 在VShard中，情况不像以前那么乐观：没有实现主选择，因此我们必须自己做。 当我们以某种方式指定了主机后，指定的实例现在应该接管主机。 然后，我们通过为旧主机指定master = false并为新主机指定master = true来更新配置，通过VShard.storage.cfg应用配置并与每个存储共享。 其他一切都是自动完成的。 旧的主服务器停止接受写请求，并开始与新的主服务器同步，因为可能有一些数据已应用在旧的主服务器上，但尚未应用在新的主服务器上。 之后，新的主服务器负责并开始接受请求，而旧的主服务器是副本。 这就是VShard中写入故障转移的工作方式。 <br><br><pre> <code class="plaintext hljs">replicas = new_cfg.sharding[uud].replicas replicas[old_master_uuid].master = false replicas[new_master_uuid].master = true vshard.storage.cfg(new_cfg)</code> </pre> <br><br><h2> 我们如何跟踪这些各种事件？ </h2><br>  VShard.storage.info和VShard.router.info就足够了。 <br><br>  VShard.storage.info在几个部分中显示信息。 <br><br><pre> <code class="plaintext hljs">vshard.storage.info() --- - replicasets: &lt;replicaset_2&gt;: uuid: &lt;replicaset_2&gt; master: uri: storage@127.0.0.1:3303 &lt;replicaset_1&gt;: uuid: &lt;replicaset_1&gt; master: missing bucket: receiving: 0 active: 0 total: 0 garbage: 0 pinned: 0 sending: 0 status: 2 replication: status: slave Alerts: - ['MISSING_MASTER', 'Master is not configured for ''replicaset &lt;replicaset_1&gt;']</code> </pre> <br> 第一部分用于复制。 在这里，您可以看到正在调用该函数的副本集的状态：其复制滞后，其可用和不可用的连接，其主配置等。 <br><br> 在存储区部分中，您可以实时查看要从当前副本集迁移到/从当前副本集迁移的存储区数量，以常规模式工作的存储区数量，标记为垃圾的存储区数量以及固定存储区数量。 <br><br>  “警报”部分显示VShard能够确定的问题：“未配置主服务器”，“冗余级别不足”，“主服务器在那里，但所有副本失败”等。 <br><br> 最后一部分（问：这是“状态”吗？）当一切都出现问题时，指示灯会变成红色。 它是一个从零到三的数字，数字越大越糟。 <br><br>  VShard.router.info具有相同的部分，但它们的含义有所不同。 <br><br><pre> <code class="plaintext hljs">vshard.router.info() --- - replicasets: &lt;replicaset_2&gt;: replica: &amp;0 status: available uri: storage@127.0.0.1:3303 uuid: 1e02ae8a-afc0-4e91-ba34-843a356b8ed7 bucket: available_rw: 500 uuid: &lt;replicaset_2&gt; master: *0 &lt;replicaset_1&gt;: replica: &amp;1 status: available uri: storage@127.0.0.1:3301 uuid: 8a274925-a26d-47fc-9e1b-af88ce939412 bucket: available_rw: 400 uuid: &lt;replicaset_1&gt; master: *1 bucket: unreachable: 0 available_ro: 800 unknown: 200 available_rw: 700 status: 1 alerts: - ['UNKNOWN_BUCKETS', '200 buckets are not discovered']</code> </pre> <br> 第一部分是关于复制的，尽管它不包含有关复制滞后的信息，但包含有关可用性的信息：路由器与副本集的连接； 在主服务器发生故障时进行热连接和备用连接； 选定的主人； 以及每个副本集上可用的RW桶和RO桶的数量。 <br><br> 桶部分显示该路由器当前可用的读写桶和只读桶的总数； 位置未知的水桶数量； 以及具有已知位置但未连接到必需副本集的存储桶的数量。 <br><br> 警报部分主要介绍连接，故障转移事件和未标识的存储桶。 <br><br> 最后，还有简单的状态吗？ 指标从零到三。 <br><br><h2> 使用VShard需要什么？ </h2><br> 首先，您必须选择恒定数量的存储桶。 为什么不将其设置为int32_max？ 因为元数据与每个存储桶一起存储，所以存储空间为30字节，路由器为16字节。 您拥有的存储桶越多，元数据将占用更多的空间。 但是同时，存储桶的大小将变小，这意味着更高的群集粒度和每个存储桶的更高迁移速度。 因此，您必须选择对您来说更重要的内容和必要的可伸缩性级别。 <br><br> 其次，您必须选择一个分片函数来计算存储桶ID。 这些规则与传统分片中选择分片函数时的规则相同，因为此处的存储区与传统分片中的固定存储数量相同。 该函数应平均分配输出值，否则存储桶大小增长将不平衡，并且VShard仅在存储桶数下运行。 如果您不平衡分片功能，则必须将数据从一个存储桶迁移到另一个存储桶，然后更改分片功能。 因此，您应该谨慎选择。 <br><br><h2> 总结 </h2><br>  VShard确保： <br><br><ul><li> 数据局部性 </li><li> 原子分片 </li><li> 更高的集群灵活性 </li><li> 自动读取故障转移 </li><li> 多个存储桶控制器。 </li></ul><br>  VShard正在积极开发中。 一些计划的任务已经在执行中。 第一项任务是<b>路由器负载平衡</b> 。 如果有大量读取请求，则不总是建议将其发送给主服务器。 路由器应自行平衡对不同只读副本的请求。 <br><br> 第二项任务是无<b>锁存储桶迁移</b> 。 已经实施了一种算法，即使在迁移期间，该算法也有助于使存储桶保持畅通。 仅在最后记录该迁移桶时才将其阻塞。 <br><br> 第三个任务是<b>配置的原子应用</b> 。 单独应用配置是不方便的，也不是原子的，因为某些存储可能不可用，如果不应用配置，下一步该怎么做？ 这就是为什么我们正在研究一种自动配置传输的机制。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN442782/">https://habr.com/ru/post/zh-CN442782/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN442770/index.html">JavaScript条码扫描器概述</a></li>
+<li><a href="../zh-CN442772/index.html">数据科学家数学：必要部分</a></li>
+<li><a href="../zh-CN442776/index.html">PostgreSQL中的索引-3（哈希）</a></li>
+<li><a href="../zh-CN442778/index.html">学习围棋：精选视频报告</a></li>
+<li><a href="../zh-CN442780/index.html">流行物理学中最常见的误解</a></li>
+<li><a href="../zh-CN442784/index.html">通过将受害者AS添加到攻击者的AS-SET中来进行BGP劫持</a></li>
+<li><a href="../zh-CN442786/index.html">7个使用房间的有用技巧</a></li>
+<li><a href="../zh-CN442788/index.html">为什么我们需要片上监控系统</a></li>
+<li><a href="../zh-CN442790/index.html">圣彼得堡的Allure Server聚会活动现已开放注册</a></li>
+<li><a href="../zh-CN442794/index.html">我们邀请您参加“ IT项目和组织中的（IT）架构师”会议</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🗻 👩🏾‍🌾 🔶 Messenger数据库（第2部分）：我们对“利润”进行划分 🧙 🧓🏽 🧥</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我们已经成功地设计了用于存储通信的PostgreSQL数据库结构，一年过去了，用户正在积极地填充它，现在它已拥有数百万条记录 ，并且...事情开始放缓。 
+
+
+
+- 第1部分：设计基础框架 
+- 第2部分：划分“收益” 
+
+ 事实是， 随着表容量的增加，索引的“深度”也增加了 -尽管是对数的。 但是...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Messenger数据库（第2部分）：我们对“利润”进行划分</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/483170/"> 我们已经成功地设计了用于存储通信的PostgreSQL数据库结构，一年过去了，用户正在积极地填充它，现在它已拥有<b>数百万条记录</b> ，并且...事情开始放缓。 <br><br><ul><li>  <a href="https://habr.com/ru/post/483176/">第1部分：设计基础框架</a> </li><li> 第2部分：划分“收益” </li></ul><br><img src="https://habrastorage.org/webt/st/wy/ue/stwyue6afucreci1rnctyj7ents.png"><br> 事实是， <b>随着表容量的增加，索引的“深度”也增加了</b> -尽管是对数的。 但是随着时间的流逝，这迫使服务器要<i>处理许多页面的数据</i>以执行与开始时相同的读/写任务。 <br><br> 这就是<b>分区</b>的解救之道。 <br><a name="habracut"></a><br> 我注意到，这与分片无关，即与不同数据库或服务器之间的数据分配无关。 因为即使将数据分成<b>多个</b>服务器，也无法摆脱索引随时间“膨胀”的问题。 显然，如果您有能力每天调试一台新服务器，那么您的问题将不再只是特定数据库的问题。 <br><br> 我们将不考虑用于“在硬件中”实现分区的特定脚本，而是考虑方法本身-什么以及如何“切成片”，以及这种愿望会导致什么。 <br><br><h2> 概念图 </h2><br> 再次，我们定义我们的目标：我们要确保今天，明天和一年后，在任何读/写操作期间读取的PostgreSQL数据的数量保持大致相同。 <br><br> 对于任何<b>按时间顺序累积的数据</b> （消息，文档，日志，档案等），作为分区键的自然选择是<b>事件</b>的<b>日期/时间</b> 。 在我们的例子中，这种事件是<u>消息发送</u>的<u>时刻</u> 。 <br><br> 请注意，用户几乎总是<b>只使用“最新”</b>此类数据-他们阅读最新消息，分析最新日志……不，当然，他们可以在时间上往回滚动，很少这样做。 <br><br> 从这些限制中，很明显， <b>“每日”部分</b>将是消息的最佳解决方案-毕竟，我们的用户几乎总是会“今天”或“昨天”阅读收到的消息。 <br><br> 如果我们白天几乎只写和读一个节，这将使我们<b>更加有效地使用内存和磁盘</b> -因为与整个表的“大而粗”节不同，所有节索引都容易装入RAM。 <br><br><h2> 循序渐进 </h2><br> 总的来说，以上所有听起来都是一笔可观的利润。 这是可以实现的，但是为此，我们将不得不努力-因为对<u>一个实体进行分区</u>的<u>决定导致需要“切割”并与其关联</u> 。 <br><br><h4> 消息，其属性和预测 </h4><br> 由于我们决定按日期剪切消息，因此根据实体的属性划分实体属性（附件文件，邮件列表）以及消息的日期也是合理的。 <br><br> 由于我们的典型任务之一是仅查看消息寄存器（未读，传入，全部），因此按消息日期将它们“吸引”到分区中也是合乎逻辑的。 <br><br><img src="https://habrastorage.org/webt/28/r5/cb/28r5cbnrcrp7yz_nbpwnou2vvxw.png"><br><blockquote> 将分区键（消息的日期）添加到所有表：收件人，文件，注册表。 您不能添加到消息本身，而是使用现有的DateTime。 </blockquote><br><h4> 主题 </h4><br> 由于主题是多条消息，因此不可能在同一模型中“剪切”，因此必须依靠其他内容。 在我们的情况下， <b>对应的第一个消息</b>的<b>日期</b>是理想的-即主题本身创建的时刻。 <br><br><img src="https://habrastorage.org/webt/ho/jh/a6/hojha6iwdworvrxx8kv-d30xdlm.png"><br><blockquote> 将分区键（主题日期）添加到所有表：主题，参与者。 </blockquote><br> 但是现在我们同时遇到两个问题： <br><br><ul><li> 在哪个部分搜索有关该主题的帖子？ </li><li> 在哪个部分中从消息中搜索主题？ </li></ul><br> 您当然可以继续在所有部分中进行搜索，但这将非常可悲，并且会否定我们所有的收入。 因此，为了知道确切的位置，我们将逻辑链接/指向各节： <br><br><ul><li> 在消息中，添加<b>带有主题日期的字段</b> </li><li> 为此主题添加一<b>组消息日期</b> （您可以使用单独的表，也可以使用日期数组） </li></ul><br><img src="https://habrastorage.org/webt/0r/hk/f_/0rhkf_nfc0y4rfn24_3byaeeu_c.png"><br><br> 由于对每个单独信件的消息日期列表几乎没有修改（毕竟，几乎所有消息都在相邻的1-2天之内），因此我将继续介绍该选项。 <br><br> 总计，考虑到分区，我们的基础结构采用以下形式： <br><br><div class="spoiler">  <b class="spoiler_title">表：RU，如果您不喜欢西里尔字母，则最好不要查看表/字段的名称</b> <div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-comment"><span class="hljs-comment">--     CREATE TABLE "_YYYYMMDD"( "" uuid PRIMARY KEY , "" uuid , "" date , "" uuid , "" --    timestamp , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" uuid , PRIMARY KEY("", "") ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" uuid , "BLOB" uuid , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" smallint , "" timestamp , "" uuid , PRIMARY KEY("", "", "") ); CREATE INDEX ON "_YYYYMMDD"("", "", "" DESC); --     CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" uuid , "" text ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid , "" uuid , PRIMARY KEY("", "") ); CREATE TABLE "_YYYYMMDD"( "" date , "" uuid PRIMARY KEY , "" date );</span></span></code> </pre> <br></div></div><br><h2> 节省一分钱 </h2><br> 好吧，如果我们不是使用基于字段值分布的<a href="https://postgrespro.ru/docs/postgresql/10/ddl-partitioning">经典分区选项</a> （通过触发器和继承或PARTITION BY），而是在应用程序级别上``手动''使用，我们可以看到分区键的值已经存储在表本身的名称中。 <br><br> 因此，如果您非常<b>担心存储的数据量</b> ，则可以摆脱这些“额外”字段并参考特定表。 的确，在这种情况下，来自多个部分的所有样本都必须提交给应用程序侧。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN483170/">https://habr.com/ru/post/zh-CN483170/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN483154/index.html">我花了4万美元，毁了一个初创公司的好主意</a></li>
+<li><a href="../zh-CN483156/index.html">把猫放在脚上</a></li>
+<li><a href="../zh-CN483160/index.html">2020年太空：火星，卫星星座和新火箭</a></li>
+<li><a href="../zh-CN483166/index.html">自动检测文本编码</a></li>
+<li><a href="../zh-CN483168/index.html">如何制作将照片变成漫画的机器人。 第二部分 模型训练</a></li>
+<li><a href="../zh-CN483172/index.html">如何本地化应用或游戏？ 十大免费电子学习资源</a></li>
+<li><a href="../zh-CN483174/index.html">使用Multipeer Connectivity在设备之间录制和传输声音</a></li>
+<li><a href="../zh-CN483176/index.html">Messenger数据库（第1部分）：我们设计基础框架</a></li>
+<li><a href="../zh-CN483178/index.html">这是Flutter 1.9发行版与Dart 2.5编程结合的更新</a></li>
+<li><a href="../zh-CN483182/index.html">使用Array.reduce（）的五种有趣方式（一种无聊的方式）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

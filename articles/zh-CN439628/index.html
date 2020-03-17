@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍰 💴 🐏 ASP.NET Web API中的并行数据刷新 👆🏻 🤚🏽 🤞🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我想告诉您，在对REST服务的请求期间我们如何组织后台数据更新。 
+
+ 任务如下：系统存储用户数据。 该服务是独立运行的，无法直接访问带有此数据的数据库。 为了使服务正常工作，有必要在其内部数据库中包含用户的名称和姓氏。 可以在请求时从当前用户的身份获取它们。 在每个请求期间添加或更新名称所必需。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>ASP.NET Web API中的并行数据刷新</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/439628/"> 我想告诉您，在对REST服务的请求期间我们如何组织后台数据更新。 <br><br> 任务如下：系统存储用户数据。 该服务是独立运行的，无法直接访问带有此数据的数据库。 为了使服务正常工作，有必要在其内部数据库中包含用户的名称和姓氏。 可以在请求时从当前用户的身份获取它们。 在每个请求期间添加或更新名称所必需。 最好在单独的线程中实现此目的，以使这项工作不会影响主请求的执行时间。 <br><a name="habracut"></a><br><h2> 任务细化 </h2><br> 在服务数据库中，我们存储用户的名称和姓氏。 客户需要他们提供有关谁创建或修改资源的信息。 <br><br> 此数据没有系统意义：如果突然在数据库中没有必要的记录，则不会发生任何不良情况。 因此，我们不想使用QueueBackgroundWorkItem在ASP中注册后台工作，以使应用程序域的重载复杂化。 <br> 建议尽可能简单地解决问题。 <br><br> 对于那些想了解有关ASP.NET中的后台任务的更多信息的人，我建议您阅读一篇<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">不错的文章</a> 。 <br><br><h2> 解决方案 </h2><br> 我们有一个DbRefresher类，它在RefreshAsync方法中添加或更改用户数据。 <br><br> 我们的控制器使用Authorize属性。 将我们的后代添加到此类，并重写OnAuthorization方法： <br><br><pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">override</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">OnAuthorization</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">HttpActionContext actionContext</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">base</span></span>.OnAuthorization(actionContext); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (IsAuthorized(actionContext)) DbRefresher.RefreshAsync(actionContext.RequestContext.Principal) .ContinueWith(t =&gt; { LogFactory.For&lt;AuthorizeAndRefreshUserAttribute&gt;() .ErrorException(<span class="hljs-string"><span class="hljs-string">"Error occured"</span></span>, t.Exception); }, TaskContinuationOptions.OnlyOnFaulted); }</code> </pre> <br>  DbRefresher.RefreshAsync是一个异步方法，该方法返回一个Task对象，该对象在另一个线程中继续执行。  OnAuthorize方法将立即退出，而无需等待任务完成。 发生崩溃时，错误消息将添加到日志中。 <br><br> 仅此而已：剩下的就是用新属性的名称替换控制器中的Authorize属性。 在检查了当前用户的权限后，新属性立即返回控制权，此后控制器开始工作。 该数据库将在控制器准备响应的同时进行更新。 <br><br><h2> 测试中 </h2><br> 同时运行多个服务请求的测试将有助于识别可能的问题： <br><br><pre> <code class="cs hljs">[<span class="hljs-meta"><span class="hljs-meta">TestMethod</span></span>] <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">ConcurrentTest</span></span></span><span class="hljs-function">(</span><span class="hljs-params"></span><span class="hljs-function"><span class="hljs-params"></span>)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> threadCount = <span class="hljs-number"><span class="hljs-number">10</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> tasks = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Task[threadCount]; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; threadCount; i++) { <span class="hljs-comment"><span class="hljs-comment">// DoOperations contains several CRUD operations on resources tasks[i] = Task.Factory.StartNew(DoOperations); } Task.WaitAll(tasks); }</span></span></code> </pre> <br><h2> 问题所在 </h2><br> 如果对于控制器的某些操作方法的操作，要求数据库显然包含当前用户的数据，则此方法不合适。 您将必须在方法主体中使用对DbRefresher.RefreshAsync的显式调用。 <br><br> 将新用户添加到具有多个同时请求的数据库时，可能会出现问题。 如果试图将用户添加到具有现有键的表中，则应捕获主键冲突异常并停止工作。 然后，所有有关更新用户数据的工作将仅由一个线程执行。 <br><br><h2> 结论 </h2><br> 这种方法已经在Konfermit的一项服务中成功运行了一年多。 <br> 在我看来，简单而优雅。 了解社区的意见会很有趣。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN439628/">https://habr.com/ru/post/zh-CN439628/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN439616/index.html">Kickstarter第七期有趣的IT项目摘要</a></li>
+<li><a href="../zh-CN439618/index.html">适用于初学者的PHP。 档案连线</a></li>
+<li><a href="../zh-CN439620/index.html">了解JavaScript中的异步[Sukhjinder Arora的翻译]</a></li>
+<li><a href="../zh-CN439624/index.html">为什么要在轨道上存储数据</a></li>
+<li><a href="../zh-CN439626/index.html">有为OpenNumismat收集器开发免费应用程序的经验</a></li>
+<li><a href="../zh-CN439632/index.html">如何为您的项目设置持续部署：个人经验</a></li>
+<li><a href="../zh-CN439636/index.html">改善道路安全的概念危机和解决之道的新概念</a></li>
+<li><a href="../zh-CN439638/index.html">在Python中获取FPGA</a></li>
+<li><a href="../zh-CN439640/index.html">乙烯基又回来了，他与众不同</a></li>
+<li><a href="../zh-CN439642/index.html">Java的陷阱。 第一部分</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙅🏽 🧡 🛀🏻 使用PgQ的PostgreSQL消息队列 🍩 🔇 🍞</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="消息队列用于执行：未决操作，服务之间的交互，“批处理”等。 有专门的组织此类队列的解决方案，例如：RabbitMQ，ActiveMQ，ZeroMQ等，但是经常会遇到它们的需求不大，而且它们的安装和支持所带来的痛苦和痛苦要比带来的收益多。 假设您在注册时有一项服务可以向用户发送电子邮件进行确认，并且如...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>使用PgQ的PostgreSQL消息队列</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/483014/"><img src="https://habrastorage.org/webt/g4/5g/b1/g45gb1ef-etyywuggdsyiyr-lyk.jpeg"><br><br> 消息队列用于执行：未决操作，服务之间的交互，“批处理”等。 有专门的组织此类队列的解决方案，例如：RabbitMQ，ActiveMQ，ZeroMQ等，但是经常会遇到它们的需求不大，而且它们的安装和支持所带来的痛苦和痛苦要比带来的收益多。 假设您在注册时有一项服务可以向用户发送电子邮件进行确认，并且如果您使用Postgres，那么您很幸运-在Postgres中，几乎是开箱即用的，有一个PgQ扩展名将为您完成所有肮脏的工作。 <br><br> 在本文中，我将讨论使用PgQ扩展的PostgreSQL中的消息队列（任务）。 如果您尚未使用PgQ或在Postgres上使用自写队列，那么本文将非常有用。 <br><br> 如果您仅能创建平板电脑并在其中编写任务，为什么根本需要PgQ？ 这似乎是可能的，但是您必须考虑对任务的并行访问，可能的错误（如果处理任务的流程失败，会发生什么？）以及性能（PgQ非常快，而自写解决方案通常不是，尤其是在事务进行中）数据库不会在任务的整个执行过程中关闭），但是在我看来，必须使用PgQ的最重要原因是PgQ已经编写并且可以工作，并且仍然需要编写自写解决方案（UPD：关于为什么不值得使用自写队列的信息） ，例如，您可以<a href="https://habr.com/ru/company/oleg-bunin/blog/455248/">在此处</a>阅读）。 <br>  （UPD：由于PgQ在Postgres之上运行，因此所有交易的乐趣都可以在其中使用） <br><br> 但是PgQ有一个很大的缺点-缺少文档，我试图通过本文弥补这一不足。 <br><a name="habracut"></a><br><h4> 装置 </h4><br>  PgQ包含部分（至少2个部分）：1-用于postgres的pgq扩展，2-pgqd守护程序（稍后再安装）。 <br><br> 与队列的所有交互都是使用Postgres中的函数进行的。 <br><br> 例如，要创建队列，您必须运行 <br><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.create_queue({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br> 创建队列后，可以向其中添加消息。 <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.insert_event({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, {  } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br> 现在我们需要学习如何接收记录的消息。 为此，存在一个诸如“消费者”（我将写一个消费者）之类的实体，它不接收消息（事件），而是接收“批处理”（批处理）。  bach是一组连续的消息，使用pgqd创建了baches。  pgqd定期（配置文件中的“ ticker_period”参数）获取所有累积的消息并写入新的bach。  <b>重要的是，</b>如果pgqd不起作用，那么就不会创建新的bach，这意味着消费者没有什么可阅读的。如果pgqd长时间不起作用然后再打开，它将根据这段时间内积累的消息创建一个大bach，因此pgqd不应只是把它关掉。 <br><br> 消费者的注册（ <b>重要！</b>消费者只有<b>在</b>注册<b>之后</b>才会收到记录的事件，因此您应该首先创建消费者，然后才写事件）： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.register_consumer({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br>  <i>（类似于pgq.unregister_consumer）</i> <br> 每个使用者都将获得创建后<b>绝对</b>发生的<b>所有事件</b> （甚至由另一个使用者处理），这意味着您很可能只需要一个使用者即可处理一个队列。 接下来，我将告诉您如何在多台服务器上分配负载。 <br><br> 要获得单身汉，您首先需要找出其ID： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.next_batch({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br> 如果使用者已经处理了所有bach，则该函数可以返回NULL。 在这种情况下，您只需要等到pgqd创建一个新的bach。 <br><br> 在这种情况下，当不处理bach时，此函数将返回相同的值。 <br> 您可以使用以下命令获取批处理中的所有事件： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.get_batch_events({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>);</code> </pre> <br>  （巴赫可能是空的。） <br><br> 如果在处理其中之一时发生错误，则可以稍后尝试处理此事件： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.event_retry({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>, {<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>, {   } <span class="hljs-built_in"><span class="hljs-built_in">integer</span></span>);</code> </pre> <br> 为了通知bach结束并有机会启动一个新的bach <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq.finish_batch({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>);</code> </pre> <br> 当然，这些不是扩展中的全部功能，我建议阅读<a href="https://pgq.github.io/extension/pgq/files/external-sql.html" rel="nofollow">pgq.github.io/extension/pgq/files/external-sql.html</a>和<a href="https://github.com/pgq/pgq/tree/master/functions" rel="nofollow">github.com/pgq/pgq/tree/master/functions</a> （每个文件均包含定义和说明）相应的功能）。 <br><br><h4> 负载分担 </h4><br> 为了由多个处理程序同时处理事件，有一个pgq_coop扩展名，它与pgq一样工作，并添加了一个称为“子消费者”的新实体，该实体将自父消费者注册后立即接收所有事件，除了已处理的事件。 <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.register_subconsumer({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.next_batch({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>);</code> </pre> <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.next_batch({ } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, { } <span class="hljs-built_in"><span class="hljs-built_in">text</span></span>, {        ,      } <span class="hljs-built_in"><span class="hljs-built_in">interval</span></span>);</code> </pre> <br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">select</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> pgq_coop.finish_batch({<span class="hljs-keyword"><span class="hljs-keyword">id</span></span> } <span class="hljs-built_in"><span class="hljs-built_in">bigint</span></span>);</code> </pre> <br> 在<a href="https://github.com/pgq/pgq-coop/tree/master/functions" rel="nofollow">这里</a>阅读所有功能。 <br><br><h4> 安装方式 </h4><br>  pgq扩展名和pgqd守护程序包含在PGDG存储库中，并且在大多数发行版中都非常简单地安装，例如在Debian中： <br><br>  <code>sudo apt install postgresql-XX-pgq3 pgqd</code> （XX是版本号）。 <br><br>  pgqd是一个小型程序，可以使用<code>pgqd --help</code> ，不要忘记将其添加到自动运行中（ <code>sudo systemctl enable pgqd.service</code> ，默认配置为<code>/etc/pgqd.ini</code> ）。 <br><br> 要开始使用PgQ，只需在数据库中连接扩展名： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> extension <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-keyword"><span class="hljs-keyword">exists</span></span> pgq;</code> </pre> <br><br> 使用pgq_coop，一切都有些复杂，它不在存储库中，但是从源代码编译它并不困难（例如Debian）： <br><br><pre> <code class="plaintext hljs">sudo apt install postgresql-server-dev-XX git clone https://github.com/pgq/pgq-coop.git cd pgq-coop sudo make install</code> </pre><br> 并使用 <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">create</span></span> extension <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> <span class="hljs-keyword"><span class="hljs-keyword">not</span></span> <span class="hljs-keyword"><span class="hljs-keyword">exists</span></span> pgq_coop;</code> </pre> <br><h4> 有用的链接 </h4><br>  <a href="https://pgq.github.io/extension/pgq/files/external-sql.html" rel="nofollow">PGQ文档</a> <br>  <a href="https://github.com/pgq/pgq/tree/master/functions" rel="nofollow">PGQ功能</a> <br>  <a href="https://github.com/pgq/pgq-coop/tree/master/functions" rel="nofollow">pgq_coop函数</a> <br>  <a href="https://github.com/pgq/pgqd" rel="nofollow">pgqd源代码</a> <br>  <a href="https://github.com/pgq" rel="nofollow">github帐户以及所有相关项目</a> <br>  <a href="https://wiki.postgresql.org/wiki/PGQ_Tutorial" rel="nofollow">Wiki Postgres</a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN483014/">https://habr.com/ru/post/zh-CN483014/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN482998/index.html">OpenStreetMap第492号世界的新闻（12/17/2019-12/23/2019）</a></li>
+<li><a href="../zh-CN483000/index.html">Telegram关于TON区块链的官方立场</a></li>
+<li><a href="../zh-CN483004/index.html">迪斯科极乐世界中的库列肖夫效应：上下文如何创造意义</a></li>
+<li><a href="../zh-CN483008/index.html">另一个未来-人类分裂</a></li>
+<li><a href="../zh-CN483012/index.html">古迹：Roland MT-32，DOS游戏的另一种声音</a></li>
+<li><a href="../zh-CN483016/index.html">空间微处理器的简要历史，第二部分</a></li>
+<li><a href="../zh-CN483018/index.html">Mask-R CNN从初学者到专业人士</a></li>
+<li><a href="../zh-CN483024/index.html">“公司如何处理您的隐私？”，Arthur Khachuyan（Tazeros Global）</a></li>
+<li><a href="../zh-CN483026/index.html">Java / Spring：如何使用Speedment完全生成CRUD REST API</a></li>
+<li><a href="../zh-CN483030/index.html">让你哭泣的API</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

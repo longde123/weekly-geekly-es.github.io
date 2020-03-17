@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>♊️ 💪🏻 👩🏻‍✈️ PubSub几乎是免费的：PostgreSQL中的NOTIFY功能 🤪 👐🏼 🏘️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="如果您的微服务已经使用通用的PostgreSQL数据库存储数据，或者同一服务的多个实例在不同的服务器上使用它，则可以在它们之间相对便宜地获得“ PubSub ”消息 ，而无需集成到Redis架构，RabbitMQ集群或嵌入代码中另一个MQ系统的应用。 
+
+ 为此，我们不会将 消息 写入 数据库表 ，...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PubSub几乎是免费的：PostgreSQL中的NOTIFY功能</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/484978/"> 如果您的微服务<u>已经使用通用的PostgreSQL数据库</u>存储数据，或者同一服务的多个实例在不同的服务器上使用它，则可以在它们之间相对便宜地<b>获得“</b> PubSub <b>”消息</b> ，而无需集成到Redis架构，RabbitMQ集群或嵌入代码中<a href="https://habr.com/ru/post/326880/">另一个MQ系统的</a>应用。 <br><br> 为此，我们<b>不会将</b> <a href="https://habr.com/ru/post/483014/">消息</a> <b>写入</b> <a href="https://habr.com/ru/post/483014/">数据库表</a> ，因为这会导致过多的开销，首先要<a href="https://habr.com/ru/company/postgrespro/blog/459250/">写入传输的内容</a> ，然后再<a href="https://habr.com/post/481866/">清除已读取的内容</a> 。 <br><br> 我们将使用<a href="https://postgrespro.ru/docs/postgresql/12/sql-notify">NOTIFY</a> / <a href="https://postgrespro.ru/docs/postgresql/12/sql-listen">LISTEN</a>机制发送和接收数据，并收集Node.js的模型实现。 <br><br><img src="https://habrastorage.org/webt/er/e_/dv/ere_dvhj_y3sjkypbqeezzg_xn4.png"><br><br> 但是以这种方式，必须仔细规避耙子。 <br><a name="habracut"></a><br><h2> 协议功能 </h2><br><h4> 听着 </h4><br><pre><code class="sql hljs">LISTEN </code> </pre> <blockquote> 使用libpq库的应用程序将LISTEN命令作为常规SQL命令执行，然后必须定期调用PQnotify函数以检查是否有新通知。 </blockquote> 如果您不是在编写用于PG的库，而是在编写特定的应用程序，则在大多数情况下，您将无权访问此函数。 <br><br> 但是，如果已经按照处理<a href="https://postgrespro.ru/docs/postgresql/12/libpq-async">异步请求</a>和<a href="https://postgrespro.ru/docs/postgresql/12/libpq-notify">通知</a>的建议为您编写了这样的库，那么您将自动在应用程序代码中收到一条消息。 如果没有，则可以简单<b>地</b>在连接上<b>定期执行<code>SELECT 1</code></b> ，然后将在查询结果中附带一条通知： <blockquote> 在非常老的libpq版本中，只有一种方法可以确保及时接收来自NOTIFY命令的消息-不断发送命令，甚至是空命令，然后在每次PQexec调用之后检查PQnotification。 尽管此方法仍然有效，但由于处理器使用效率低而被认为已过时。 </blockquote> 就<a href="https://postgrespro.ru/docs/postgresql/12/app-psql">psql而言，</a>它看起来像这样： <br><br><pre> <code class="plaintext hljs">_tmp=# LISTEN test; LISTEN _tmp=# SELECT 1; ?column? ---------- 1 (1 row) Asynchronous notification "test" with payload "abc123" received from server process with PID 63991.</code> </pre><br> 如果对于已应用的任务，我们可以同意在1秒钟内以这样的间隔在1秒内传递消息，则需要最大的延迟，然后执行请求。 同时，此方法有助于<b>监视连接的“活动性”</b> ，确保没有人通过<code>pg_terminate_backend</code>从服务器端意外断开<b>连接</b> ，或者确保在没有任何通知客户端的情况下PG不会突然“崩溃”。 <br><br><h4> 通知 </h4><br><pre> <code class="sql hljs">NOTIFY  [ ,  ]</code> </pre> <br><blockquote>  NOTIFY命令将通知事件以及附加的“消息”行发送到以前在当前LISTEN数据库中执行了具有指定通道名称的通道的所有客户端应用程序。 <br>  ... <br> 随通知一起发送的“消息”行必须是一个<a href="https://postgrespro.ru/docs/postgresql/12/sql-syntax-lexical">简单的文本常量</a> 。 在标准配置中，其<b>长度应小于8000个字节</b> 。 </blockquote> 也就是说，如果我们的“消息”突然包含与ASCII完全不同的内容，那么我们<u>将不得不对其进行筛选</u> ，如果它超过了8000字节（不是字符！）的大小， <u>则将其切成块然后粘贴</u> 。 同时，我们应该节省通道带宽和服务器资源，以处理此类块的传输-也就是说，将尽可能少的服务“绑定”添加到有用的内容中，但不要“扼杀”客户端应用程序，从而迫使其打包<code>gzip -9</code> 。 <br><br> 在该机制的其他优点中，还可以注意到绑定到消息的“源” ... <br><blockquote>  ...通过检查<b>信令过程</b>的<b>PID</b> （在事件数据中指示）是否与会话自己的PID相匹配（可以通过与libpq联系找到它）来避免额外的工作。 如果它们匹配，则会话将收到有关其自身操作的通知，因此可以忽略它。 </blockquote>  ...并保证交货单： <br><blockquote> 除了过滤重复通知的后续实例外，NOTIFY还确保来自单个事务的通知始终以发送时的顺序到达。 还可以确保<b>来自不同事务的消息以提交这些事务的顺序到达</b> 。 </blockquote> 我们不会具体组合任何东西，因此我们的每个请求都只会对应一个单独的事务。 <br><br> 但是请记住，如果用于交换的连接上也有应用程序活动，则我们的NOTIFY可能不在我们自由意志的交易之内，因此<u>可能会产生副作用</u> ： <br><blockquote> 交易对NOTIFY有重大影响。 首先，如果在事务内部执行了NOTIFY，则仅在这种情况下，在事务提交后才将通知传递给收件人。 这是合理的，因为<b>在事务中断的情况下，将取消其中的所有命令（包括NOTIFY）的操作</b> 。 </blockquote> 因此，最好在显然没有事务或长查询的地方使用连接。 <br><br><h4> 数据库0类别1262的对象0上的AccessExclusiveLock </h4><br> 如果突然您的NOTIFY通知开始变钝并记录了这种锁定的期望，那么您仍然“从短裤中长出来”，现在该考虑“成人” MQ了。 <br><br> 毕竟，通知队列虽然很大（标准版本为8GB），但仍然是有限的。 根据<a href="">汤姆·莱恩的回答</a> ： <br><blockquote>  <i>在插入事务的通知消息时，将保持此锁，此后，事务将提交并释放该锁。</i> </blockquote> 也就是说，没有太多选择可以解决： <br><br><ul><li>  <b>发送但不经常</b> <br> 也就是说，如果是一些计数器，则在更长的时间间隔内汇总发送的指标。 </li><li>  <b>少发送</b> <br> 例如，从传输的JSON的应用程序键值的角度删除“默认”。 </li><li>  <b>仅发送信号</b> ，完全不<b>发送</b>内容 <br> 作为一种选择-启动多个通道，每个通道的名称本身已经具有某种应用意义。 </li><li> 仍然<b>从数据库中发货</b> </li></ul><br><h2> 发送复杂的消息 </h2><br><h4> 身体编码 </h4><br> 在一般情况下，我们可能希望不仅在消息中传输允许的字符，还传输俄语字母和“任何二进制文件”-因此，使用<u>转换为十六进制表示</u>形式来形成传输的字符串将很方便。 是的，此方法效果很好： <br><br><pre> <code class="sql hljs">NOTIFY test, E'\x20\x21'</code> </pre> <br><pre> <code class="plaintext hljs">Asynchronous notification "test" with payload " !" received from server process with PID 63991.</code> </pre> <br> 但是，让我们再次转到文档： <br><blockquote> 您必须确保以这种方式创建的字节序列（尤其是八进制和十六进制表示法）形成<b>有效的服务器编码字符</b> 。 当服务器使用UTF-8编码而不是字节记录时，请使用Unicode特殊序列或第4.1.2.3节中介绍的替代Unicode语法。  （否则，您将必须手动编码UTF-8字符并按字节写入它们，这非常不方便。） </blockquote> 因此，即使使用了win1251引号中的普通符号，我们也会悲痛欲绝： <br><br><pre> <code class="sql hljs">NOTIFY test, E'\x98' <span class="hljs-comment"><span class="hljs-comment">-- ERROR: invalid byte sequence for encoding "UTF8": 0x98</span></span></code> </pre> <br> 由于我们不想“ <i>手动编码UTF-8字符并按字节写入</i> ”，因此，如果有任何字符不在<code>\x20-\x7E</code>范围内，或者如有必要，则我们将立即同意发送<b>打包在base64中</b>的消息正文。 一方面，这种打包方法不会增加过多的冗余（4：3系数），另一方面，它是在系统库级别以任何语言实现的，并且将提供最小的额外负载。 <br><br> 但是，即使我们没有“奇怪的”字符，并且消息只适合一个段，也仍然存在一项功能- <b>转义撇号</b> ： <br><blockquote> 要在一行中包含撇<u>号，请</u>在其<u>旁边</u>写<u>两个撇号</u> ，例如：'Joan of Arc'。 请注意，这与双引号（“）不同。 </blockquote><br><h4> 细分识别 </h4><br> 下一个任务是，如果消息的大小突然超过此值，则将消息正确“剪切”为允许传输<b>7999字节的块</b> 。 这样，接收者就可以在不破坏订单或不属于“外来”细分链的情况下收集它。 为此，每个人都需要以某种方式进行标识。 <br><br> 实际上，我们已经知道两个“坐标”-这是<u>发送过程</u>的<u>PID</u>和每个通知中<u>包含的通道</u>的<u>名称</u> 。 协议本身保证了分段到达的顺序。 <br><br><div class="spoiler">  <b class="spoiler_title">写作邻居</b> <div class="spoiler_text"> 当<i>连接到数据库</i>的同一时间（也就是说，显然在同一应用程序进程内） <i>同时</i>有<i>多个处于同一通道的编写</i>器处于活动状态时，我们将不考虑这种情况。 从技术上讲，这可以通过在段头中传递一个附加标识符来支持-但最好在应用程序内“共享”单个PubSub对象。 <br></div></div><br><h4> 货柜限额 </h4><br> 要从多个部分组装一个完整的容器，我们需要知道完成的时间。 有两种典型的方法： <br><br><ul><li> 在第一个目标大小中传输目标大小（以字节或段为单位） </li><li> 在每个属性中传递[non] last属性 </li></ul><br> 由于我们毕竟是写PubSub的，所以我们的大多数消息都是简短的，并且保留大量字节用于大小传输是无利可图的。 因此，我们将使用第二种方法， <u>将段数据</u>的<u>第一个字符</u>保留为容器的继续/结束标志。 <br><br><h4> 对象转移 </h4><br> 为了同时将纯文本字符串和JSON对象作为“消息”进行传输，我们在接收方增加了<u>一个符号符号</u>用于逆向转换。 <br><br> 由于我们决定在base64中编码“非格式”，因此对于标志，我们可以采用任何不在此集合中的允许字符。 <br><br> 总计，我们为传输的段提供了以下选项： <br><br><pre> <code class="plaintext hljs">-- ""   !simple string -- "  "  @{"a":1} --    base64 #&lt;segment&gt; --    base64 $&lt;segment&gt;</code> </pre><br> 如您所见，仅在接收到第一个字符时就进行分析就足够了，以便进一步了解需要做什么。 <br><br><h2> 编写PubSub实现 </h2><br> 我们的应用程序将位于Node.js上，因此我们将使用<a href="https://www.npmjs.com/package/pg">node-postgres模块</a>与PostgreSQL一起使用。 <br><br><div class="spoiler">  <b class="spoiler_title">我们写起始帧</b> <div class="spoiler_text"> 首先，让我们创建PubSub作为EventEmitter的继承人，以便能够为订阅特定频道的用户生成事件： <br><br><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> util = <span class="hljs-built_in"><span class="hljs-built_in">require</span></span>(<span class="hljs-string"><span class="hljs-string">'util'</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> EventEmitter = <span class="hljs-built_in"><span class="hljs-built_in">require</span></span>(<span class="hljs-string"><span class="hljs-string">'events'</span></span>).EventEmitter; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PubSub = <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">function</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">connection, interval, skipSelf</span></span></span><span class="hljs-function">) </span></span>{ <span class="hljs-comment"><span class="hljs-comment">//     this.connection = connection; //        this.connection.on('notification', p._onmessage.bind(this)); //         this.skipSelf = skipSelf; //  "" setInterval(() =&gt; { this.connection.query('SELECT 1'); }, interval); //     ""  this.slices = {}; }; util.inherits(PubSub, EventEmitter); const p = PubSub.prototype;</span></span></code> </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">我们与渠道合作</b> <div class="spoiler_text"> 由于重新订阅频道或取消订阅我们未订阅的内容时，LISTEN / UNLISTEN不会发誓，因此我们不会使任何事情复杂化。 <br><br><pre> <code class="javascript hljs"><span class="hljs-comment"><span class="hljs-comment">//     - "",      //     -        const quot = str =&gt; /^[_a-z][0-9a-z_\$]*$/.test(str) ? str : `"${str}"`; p.subscribe = function(channel) { this.connection.query(`LISTEN ${quot(channel)}`); return this; }; p.unsubscribe = function(channel) { this.connection.query(`UNLISTEN ${quot(channel)}`); return this; };</span></span></code> </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">发送和接收消息</b> <div class="spoiler_text"><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PAYLOAD_LIMIT = <span class="hljs-number"><span class="hljs-number">8000</span></span> - <span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PAYLOAD_FL_STR = <span class="hljs-string"><span class="hljs-string">'!'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PAYLOAD_FL_OBJ = <span class="hljs-string"><span class="hljs-string">'@'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PAYLOAD_FL_SEQ = <span class="hljs-string"><span class="hljs-string">'#'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PAYLOAD_FL_FIN = <span class="hljs-string"><span class="hljs-string">'$'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PAYLOAD_SZ_HEAD = <span class="hljs-number"><span class="hljs-number">1</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> PAYLOAD_SZ_DATA = PAYLOAD_LIMIT - PAYLOAD_SZ_HEAD; <span class="hljs-comment"><span class="hljs-comment">//  ""  const reASCII = /^[\x20-\x7E]*$/; //  p.publish = function(channel, payload) { let query = `NOTIFY ${quot(channel)}`; if (payload !== null &amp;&amp; payload !== undefined) { //    -    let str = typeof payload == 'string' ? PAYLOAD_FL_STR + payload : PAYLOAD_FL_OBJ + JSON.stringify(payload); if (str.length &gt; PAYLOAD_LIMIT || !reASCII.test(str)) { //   base64- const b64 = Buffer.from(str).toString('base64'); for (let pos = 0, len = b64.length; pos &lt; len; pos += PAYLOAD_SZ_DATA) { let fin = pos + PAYLOAD_SZ_DATA; let seg = fin &gt;= len ? PAYLOAD_FL_FIN + b64.slice(pos) : PAYLOAD_FL_SEQ + b64.slice(pos, fin); this.connection.query(`${query}, '${seg}'`); } } else { //        ? //     str = str.replace(/'/g, "''"); this.connection.query(`${query}, '${str}'`); } } else { //       this.connection.query(query); } return this; }; //    p._onmessage = function(msg) { const {processId, channel, payload} = msg; //  "" if (processId == this.connection.processID &amp;&amp; this.skipSelf) { return; } // ""  const id = `${processId}:${channel}`; let rv; //   let fl = payload.charAt(0); if (fl == PAYLOAD_FL_SEQ || fl == PAYLOAD_FL_FIN) { // base64 const str = payload.slice(PAYLOAD_SZ_HEAD); const slices = this.slices; let b64; if (fl == PAYLOAD_FL_FIN) { //   if (slices[id]) { slices[id].push(str); b64 = slices[id].join(''); delete slices[id]; } else { b64 = str; } } else { //     if (slices[id]) { slices[id].push(str); } else { slices[id] = [str]; } } if (b64) { rv = Buffer.from(b64, 'base64').toString(); fl = rv.charAt(0); } } else { //  / rv = payload; } if (rv !== undefined) { //   '' let res = { processId , channel }; if (rv) { //       let data = rv.slice(1); res.payload = fl == PAYLOAD_FL_OBJ ? JSON.parse(data) : data; } this.emit(channel, res); } };</span></span></code> </pre></div></div><br><div class="spoiler">  <b class="spoiler_title">一些测试</b> <div class="spoiler_text"><pre> <code class="javascript hljs"><span class="hljs-keyword"><span class="hljs-keyword">const</span></span> pg = <span class="hljs-built_in"><span class="hljs-built_in">require</span></span>(<span class="hljs-string"><span class="hljs-string">'pg'</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">const</span></span> pgsql = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> pg.Client({ <span class="hljs-attr"><span class="hljs-attr">host</span></span> : <span class="hljs-string"><span class="hljs-string">'example-db'</span></span> , <span class="hljs-attr"><span class="hljs-attr">port</span></span> : <span class="hljs-number"><span class="hljs-number">5432</span></span> , <span class="hljs-attr"><span class="hljs-attr">user</span></span> : <span class="hljs-string"><span class="hljs-string">'postgres'</span></span> , <span class="hljs-attr"><span class="hljs-attr">password</span></span> : <span class="hljs-string"><span class="hljs-string">'postgres'</span></span> , <span class="hljs-attr"><span class="hljs-attr">database</span></span> : <span class="hljs-string"><span class="hljs-string">'_tmp'</span></span> }); pgsql.connect(<span class="hljs-function"><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">err</span></span></span><span class="hljs-function"> =&gt;</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">let</span></span> psA = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> PubSub(pgsql, <span class="hljs-number"><span class="hljs-number">1000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">let</span></span> psB = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> PubSub(pgsql, <span class="hljs-number"><span class="hljs-number">1000</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">let</span></span> chA = <span class="hljs-string"><span class="hljs-string">'channel:A'</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">let</span></span> chB = <span class="hljs-string"><span class="hljs-string">'channel:B'</span></span>; psA.subscribe(chA); psB.subscribe(chB); psA.on(chA, (msg) =&gt; { <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.log(<span class="hljs-string"><span class="hljs-string">'A:rcv'</span></span>, msg); }); psB.on(chB, (msg) =&gt; { <span class="hljs-built_in"><span class="hljs-built_in">console</span></span>.log(<span class="hljs-string"><span class="hljs-string">'B:rcv'</span></span>, msg); }); psB.publish(chA); psB.publish(chA, <span class="hljs-string"><span class="hljs-string">'simple string'</span></span>); psB.publish(chA, <span class="hljs-string"><span class="hljs-string">'  '</span></span>); psB.publish(chA, {<span class="hljs-attr"><span class="hljs-attr">a</span></span> : <span class="hljs-number"><span class="hljs-number">1</span></span>}); psA.publish(chB, <span class="hljs-string"><span class="hljs-string">'   100  '</span></span>.repeat(<span class="hljs-number"><span class="hljs-number">100</span></span>)); });</code> </pre></div></div><br> 一切都很简单，因此您可以轻松地在项目中使用的任何其他PL上实现它，以使用异步通知的基础为例： <br><br><ul><li>  <a href="http://initd.org/psycopg/docs/advanced.html">巨蟒</a> </li><li>  <a href="https://tapoueh.org/blog/2018/07/postgresql-listen-notify/">去吧</a> </li><li>  <a href="https://omniti.com/seeds/stop-collaborate-and-listen-notify.html">佩尔</a> </li><li>  <a href="https://blog.lelonek.me/listen-and-notify-postgresql-commands-in-elixir-187c49597851">长生不老药</a> </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN484978/">https://habr.com/ru/post/zh-CN484978/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN484964/index.html">在InfoWatch Traffic Monitor上配置负载平衡</a></li>
+<li><a href="../zh-CN484966/index.html">使用Spring进行测试的现成模板</a></li>
+<li><a href="../zh-CN484968/index.html">WPF数据网格。 为模板而战</a></li>
+<li><a href="../zh-CN484972/index.html">Wine 5.0发布</a></li>
+<li><a href="../zh-CN484974/index.html">图灵机仿真王砖</a></li>
+<li><a href="../zh-CN484982/index.html">为IT专家组织业务很容易</a></li>
+<li><a href="../zh-CN484984/index.html">Unity游戏开发人员。 OTUS的新课程</a></li>
+<li><a href="../zh-CN484990/index.html">Luxoft TechTalks-来自全球IT专家等的视频播客</a></li>
+<li><a href="../zh-CN484992/index.html">在大型项目中更漂亮：花20分钟进行设置，永远不必格式化</a></li>
+<li><a href="../zh-CN484996/index.html">虚拟PBX Beeline。 经理不会告诉你什么</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

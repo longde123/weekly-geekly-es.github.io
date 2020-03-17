@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚴🏻 👨🏽‍🎤 👒 开发单片类Unix操作系统-内核系统日志（3） 🍻 🕴🏻 📱</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在前面的第二篇文章中，我们开发了使用C库中的字符串的必要函数，在本课程中，我们将完整的调试输出实现到屏幕上-内核系统日志。 
+
+ 目录 
+
+
+1. 构建系统（make，gcc，gas）。 初始引导（多次引导）。 启动（qemu）。 C库（strcpy，memcpy，strext）。 
+2. C库（s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>开发单片类Unix操作系统-内核系统日志（3）</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/466765/"> 在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">前面的</a>第二篇文章中，我们开发了使用C库中的字符串的必要函数，在本课程中，我们将完整的调试输出实现到屏幕上-内核系统日志。 <br><a name="habracut"></a><br><h4> 目录 </h4><br><ol><li> 构建系统（make，gcc，gas）。 初始引导（多次引导）。 启动（qemu）。  C库（strcpy，memcpy，strext）。 </li><li>  C库（sprintf，strcpy，strcmp，strtok，va_list ...）。 以内核模式和用户应用程序模式构建库。 </li><li> 内核系统日志。 显存 输出到终端（kprintf，kpanic，kassert）。 </li><li> 动态内存，堆（kmalloc，kfree）。 </li><li> 内存和中断处理的组织（GDT，IDT，PIC，syscall）。 例外情况 </li><li> 虚拟内存（页面目录和页面表）。 </li><li> 过程。 策划人 多任务处理。 系统调用（kill，exit，ps）。 </li><li> 内核（initrd），elf及其内部文件系统。 系统调用（执行）。 </li><li> 字符设备驱动程序。 系统调用（ioctl，fopen，fread，fwrite）。  C库（fopen，fclose，fprintf，fscanf）。 </li><li>  Shell作为内核的完整程序。 </li><li> 用户保护模式（ring3）。 任务状态段（tss）。 </li></ol><br><h4> 内核系统日志 </h4><br> 在开始之前，我们将需要介绍一些使用I / O端口的有用功能。 程序员的I / O端口与内存中的普通单元没有什么不同，除了有单独的命令可操作它们。 在这些端口上运行的设备已连接到内存总线。 还有一个专用的地址空间。 我们将需要两个汇编器功能来使用输入/输出端口，因为您已经记住，我不容许汇编器插入。 <br><br><pre><code class="plaintext hljs">extern u_char asm_read_port(u_char port); extern void asm_write_port(u_int port, u_char data);</code> </pre> <br> 同样，有两个用于控制屏蔽的处理器中断的命令。 <br><br><pre> <code class="plaintext hljs">extern void asm_lock(); extern void asm_unlock();</code> </pre> <br> 好吧，为了在发生致命错误后节省能量，您需要一个处理器停止命令。 <br><br><pre> <code class="plaintext hljs">extern void asm_hlt();</code> </pre> <br> 您还记得，视频内存从0xB8000开始，但是我建议先以纯文本格式将消息写入缓冲区。 然后考虑到颜色属性，只需将该缓冲区复制到视频内存中即可。 为此，我实现了几个实用程序来使用这些缓冲区。 一个缓冲区将用于内核syslog，其余缓冲区将用于虚拟终端。 滚动屏幕也将在缓冲区上执行。 并且只有video_flush函数会将缓冲区复制到视频内存，并使用属性对其进行扩展。 <br><br><pre> <code class="plaintext hljs">extern void video_init(); extern void video_disable_cursor(); extern void* video_scroll(char const* video_buff, char* pos); extern char* video_clear(char const* video_buff); extern void video_flush(char const* video_buff);</code> </pre><br> 现在该介绍最常用的功能了。 当惰性由调试器调试时，最后两个将用于调试内核。 相信我，我在编写此内核时从未使用过调试器。 <br><br><pre> <code class="plaintext hljs">extern void kpanic(char* message, ...); extern void kassert(const char* file, u_int line, bool expr); extern void kunreachable(const char* file, u_int line);</code> </pre><br> 好吧，实际上，是用于内核系统日志的功能。 为了控制屏幕上显示的内容，我在系统日志或用户控制台中输入了kmode功能。 要将系统日志读入缓冲区，将需要klog函数，因为用户进程除非通过系统调用，否则将无法访问内核。 <br><br><pre> <code class="plaintext hljs">extern void kclear(); extern void kprintf(const char* format, ...); extern void kvprintf(const char* format, va_list list); extern void kmode(bool is_early); extern void klog(char* buf, u_int n);</code> </pre><br> 我在这里给出了最有趣的功能： <br><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Api - Scroll video buffer up * Returns new position */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">extern</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function">* </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">video_scroll</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params">* video_buff, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params">* pos)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span>* ptr = (<span class="hljs-keyword"><span class="hljs-keyword">void</span></span>*)video_buff; <span class="hljs-comment"><span class="hljs-comment">/* scroll up */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">1</span></span>; i &lt; VIDEO_SCREEN_HEIGHT; ++i) { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH; ++j) { ptr[(i - <span class="hljs-number"><span class="hljs-number">1</span></span>) * VIDEO_SCREEN_WIDTH + j] = ptr[i * VIDEO_SCREEN_WIDTH + j]; } } <span class="hljs-comment"><span class="hljs-comment">/* empty last line */</span></span> <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH; ++j) { ptr[(VIDEO_SCREEN_HEIGHT - <span class="hljs-number"><span class="hljs-number">1</span></span>) * VIDEO_SCREEN_WIDTH + j] = <span class="hljs-string"><span class="hljs-string">' '</span></span>; } <span class="hljs-comment"><span class="hljs-comment">/* move position up */</span></span> pos -= VIDEO_SCREEN_WIDTH; <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> pos; }</code> </pre><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Api - Print kernel message */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">extern</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">kvprintf</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">const</span></span></span></span><span class="hljs-function"><span class="hljs-params"> </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params">* format, va_list </span></span><span class="hljs-built_in"><span class="hljs-function"><span class="hljs-params"><span class="hljs-built_in">list</span></span></span></span><span class="hljs-function"><span class="hljs-params">)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">char</span></span> buff[VIDEO_SCREEN_WIDTH]; <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> len = <span class="hljs-built_in"><span class="hljs-built_in">vsprintf</span></span>(buff, format, <span class="hljs-built_in"><span class="hljs-built_in">list</span></span>); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; len; ++i) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (buff[i] != <span class="hljs-string"><span class="hljs-string">'\n'</span></span>) { kputc(buff[i]); } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">int</span></span> line_pos = (syslog_pos - syslog) % VIDEO_SCREEN_WIDTH; <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> j = <span class="hljs-number"><span class="hljs-number">0</span></span>; j &lt; VIDEO_SCREEN_WIDTH - line_pos; ++j) { kputc(<span class="hljs-string"><span class="hljs-string">' '</span></span>); } } } kflush(); }</code> </pre><br><pre> <code class="cpp hljs"><span class="hljs-comment"><span class="hljs-comment">/* * Put character to syslog */</span></span> <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">kputc</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(</span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">char</span></span></span></span><span class="hljs-function"><span class="hljs-params"> ch)</span></span></span><span class="hljs-function"> </span></span>{ <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> ((<span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span>)syslog_pos - (<span class="hljs-keyword"><span class="hljs-keyword">size_t</span></span>)syslog + <span class="hljs-number"><span class="hljs-number">1</span></span> &lt; VIDEO_SCREEN_SIZE) { *syslog_pos++ = ch; } <span class="hljs-keyword"><span class="hljs-keyword">else</span></span> { syslog_pos = video_scroll(syslog, syslog_pos); kputc(ch); } }</code> </pre><br> 请参阅视频教程中的详细教程。 <br><br><h4> 参考文献 </h4><br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">本文的视频教程</a> <br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">源代码</a> （您需要一个lesson3分支） <br><br><h4> 参考文献 </h4><br><ol><li> 詹姆斯·莫洛伊（James Molloy）。 滚动自己的玩具UNIX克隆操作系统。 </li><li> 祖布科夫。  DOS，Windows，Unix的汇编器 </li><li> 卡拉什尼科夫。 汇编程序很简单！ </li><li>  Tanenbaum。 操作系统。 实施与开发。 </li><li> 罗伯特·洛夫（Robert Love）。  Linux内核 开发过程的描述。 </li></ol></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN466765/">https://habr.com/ru/post/zh-CN466765/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN466755/index.html">电脑会让你好吃</a></li>
+<li><a href="../zh-CN466757/index.html">圣彼得堡的第一个Flutter mitap-9月26日</a></li>
+<li><a href="../zh-CN466759/index.html">关于托管公司会员计划</a></li>
+<li><a href="../zh-CN466761/index.html">二进制行和神经网络中Pascal三角形与类型“ 000 ... / 111 ...”的链的关系</a></li>
+<li><a href="../zh-CN466763/index.html">DataLine Insight Brut日，10月3日，莫斯科</a></li>
+<li><a href="../zh-CN466769/index.html">匕首2是初级的（第二部分）</a></li>
+<li><a href="../zh-CN466773/index.html">安全周37：Android中的漏洞，Microsoft与Deepfake，Windows 7的普及</a></li>
+<li><a href="../zh-CN466775/index.html">工作原理：5G的频率选择</a></li>
+<li><a href="../zh-CN466777/index.html">在React Native上创建应用程序的建议。 第一部分</a></li>
+<li><a href="../zh-CN466779/index.html">学习英语：8种礼貌地说不的方法</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

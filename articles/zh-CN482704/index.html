@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>☠️ 🏨 💸 Go服务的Redis缓存同步 ♉️ 🚁 🧡</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="引言 
+
+
+ 在优化一个项目的过程中，有必要缓存经常请求的数据。 可以通过不同的方式来实现缓存，但是我想在对原始项目进行最小改动的情况下实现缓存。 结果，其优缺点描述如下。 
+ 一切都好吗？ 
+
+
+ 最初，对于每个包含所请求对象标识符的查询，都在PostgreSQL数据库（DB）中执行了一个查询。 ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Go服务的Redis缓存同步</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/482704/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/wd/5c/31/wd5c31_fbcdgecl9nmma5flqsoy.png" width="300"></div><br><h2 id="vvedenie"> 引言 </h2><br><p> 在优化一个项目的过程中，有必要缓存经常请求的数据。 可以通过不同的方式来实现缓存，但是我想在对原始项目进行最小改动的情况下实现缓存。 结果，其优缺点描述如下。 </p><a name="habracut"></a><br><h2 id="kak-vsyo-bylo"> 一切都好吗？ </h2><br><p> 最初，对于每个包含所请求对象标识符的查询，都在PostgreSQL数据库（DB）中执行了一个查询。 更准确地说，由于要形成完整的答案，因此需要进行多次查询，因此有必要将其应用于多个数据库表。 作为处理请求的结果，形成了一个相当复杂的对象，其中某些字段由接口表示。 在内存中，该对象大约占250 kB。 </p><br><p> 使用1000个竞争线程请求相同数据时，此实现的性能不佳，不超过3500 RPS（每秒请求）。 </p><br><p> 问题立刻出现，但是如何提高RPS：更换路由器，优化数据库，缓存数据？ 路由器使用得很好（ <a href="httprouter" rel="nofollow">github.com/julienschmidt/httprouter</a> ），并且在大型项目中更换路由器将需要大量时间，并且发生故障的风险很高。 为了优化数据库的工作，您还需要重写大部分代码（现在使用<a href="http://github.com/jmoiron/sqlx" rel="nofollow">github.com/jmoiron/sqlx</a> ）。 显然，缓存是提高RPS的最佳方法。 </p><br><h2 id="prostoe-reshenie"> 简单的解决方案 </h2><br><p> 想到的最简单的事情是使用内存缓存。 当使用这样的高速缓存时，获得了大约20,000 RPS。 内存中的缓存性能非常好，但是您不能在许多服务实例中使用这样的缓存。 您永远不会知道请求将转到哪个服务实例，并且可能不仅存在接收数据的请求，而且还存在删除/更新的请求。 </p><br><p> 在进一步寻找解决方案时，将使用内存中缓存获得的性能作为标准。 </p><br><h2 id="ideya-plohaya-ideya"> 想法，坏主意 </h2><br><p> 是否可以将查询结果原样放置在NoSQL Redis数据库中？ 这是用于缓存响应请求的典型解决方案。 数据存储在内存中，当使用服务的多个实例时，它们都可以使用公共缓存。 该解决方案得以快速实施。 测试表明...测试表明性能没有太大提高。 <br> 进一步的研究表明，主要的性能损失与封送和拆封有关。 将结构转换为JSON，反之亦然，需要使用反射，这在性能上非常昂贵。 拒绝封送/取消封送是不可能的，因为必须从缓存中获取具有调用结构方法能力的完整对象，而不仅是获取各个字段的值。 使用各种库优化封送/拆封也无法节省，虽然增长了，但是内存中的缓存距离很远。 因此，决定不与“刺猬和蛇”交朋友，而是建立一个混合缓存。 </p><br><h2 id="gibrid-uzha-i-ezha"> 混合“蛇和刺猬” </h2><br><p> 您不能称其为成熟的混合体（请参见图）。事实上，它原来是内存中的缓存，但是通过Redis进行了同步（使用了<a href="http://github.com/go-redis/redis" rel="nofollow">github.com/go-redis/redis</a>库）。 仅从数据库请求的对象（ID对象）的唯一标识符将存储在Redis中。 在处理创建对象的请求或从数据库中获取现有对象的请求期间，会将其添加到Redis。 对象ID将用作Redis中值的键，并且该值将是生成的UUID（通用唯一标识符，通用唯一标识符）。 仅当将对象添加到Redis时，才会生成UUID。 为何需要此UUID，将在后面说明。 </p><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/jh/nr/x7/jhnrx7d01qxmgll-s4jtcz4cc7g.jpeg"></div><br><p>  <b>通过Redis进行缓存同步的组件交互的框图</b> </p><br><p> 内存中缓存是基于sync.Map实现的。 对于混合高速缓存项，设置了TTL（生存时间，生存期），如果Redis清除了“脏”项，则通过计时器（time.AfterFunc）清除内存中的高速缓存。 它通过缓存的所有元素，并检查该元素是否“烂”。 如果访问缓存元素，则其生存期将延长；对Redis中的键执行类似的操作。 </p><br><p> 所以，现在根据算法。 如果请求到达并且我们需要检索对象，则执行以下操作序列： </p><br><ol><li> 我们看一下Redis中是否有一个具有给定ID对象的对象，如果有，那么我们可以从内存中获取服务实例缓存： <br><ol><li> 如果对象不在内存缓存中，则我们从数据库中获取该对象，并将UUID和Redis中的UUID添加到内存缓存中，并更新Redis中密钥的TTL。 </li><li> 如果对象位于内存缓存中，则我们从缓存中获取该对象，检查缓存和Redis中的UUID是否匹配，如果匹配，则更新缓存和Redis中的TTL。 如果UUID不匹配，则从内存缓存中删除该对象，从数据库中获取该对象，然后将UUID和Redis的缓存从Redis添加到内存中。 </li></ol></li><li> 如果对象不在Redis中，则如果该对象在缓存中，则将其从缓存中删除。 从数据库中获取一个对象，并将其添加到缓存和Redis中。 要消除更新/删除条目比添加到缓存中更快的情况（ <a href="https://habr.com/ru/post/482704/">andreyverbin comment</a> ），请向缓存中添加UUID为零的对象。 然后，在首次访问缓存时，将显示UUID与Redis的差异，并再次请求数据库中的数据。 </li></ol><br><p> 如果删除对象的请求到达，则会立即从数据库中删除该对象，然后进行缓存操作： </p><br><ol><li> 在Redis中删除对象。 </li><li> 删除内存缓存中的对象。 </li></ol><br><p> 现在，如果类似的请求到达了服务的另一个实例，则尽管该对象仍可以在内存中的高速缓存中，但将不会使用该对象。 </p><br><p> 在数据库中更新之后的对象更新： </p><br><ol><li> 在Redis中删除对象。 </li><li> 删除内存缓存中的对象。 </li></ol><br><p> 当您在服务的另一个实例中请求对象时，将显示该对象不在Redis中，因此您需要从数据库中获取它。 如果存在该服务的另一个实例，并且在更新对象之后并在Redis中的第二个实例添加了该请求之后，请求就飞向了它，那么在检查UUID时，将显示一个差异，并且该服务的第三个实例还将从数据库中获取该对象。 </p><br><p> 即 实际上，在任何无法理解的情况下，我们都认为我们的缓存不正确，因此我们需要从数据库中获取数据。 </p><br><h2 id="zaklyuchenie"> 结论 </h2><br><p> 开发的解决方案具有优点和缺点。 </p><br><h3 id="plyusy"> 优点 </h3><br><ul><li> 所开发的缓存方案可以实现大约19000 RPS，这几乎等同于使用内存缓存的测试。 </li><li> 原始项目代码的更改次数最少。 </li></ul><br><h3 id="minusy"> 缺点 </h3><br><ul><li> 如果Redis崩溃，该服务将大大降低性能，并继续使用数据库。 </li><li> 该服务的每个实例将需要更多的内存，因为它具有自己的内存缓存。 </li></ul><br><p> 由于高性能是更重要的，因此我认为这些缺点并不重要。 将来，由于需要在其他项目中使用类似的缓存，因此有一种想法可以编写一个库来简化混合缓存的实现。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN482704/">https://habr.com/ru/post/zh-CN482704/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN482694/index.html">Windows之后有生命吗？或者到2020年在哪里培养Windows系统管理员/工程师？</a></li>
+<li><a href="../zh-CN482696/index.html">Windows Linux安装系统的全磁盘加密。 加密多重启动</a></li>
+<li><a href="../zh-CN482698/index.html">[论文]专用于浮游生物。 我没有受到工作的启发</a></li>
+<li><a href="../zh-CN482700/index.html">如何“操”谷歌和Yandex：网站的黑白SEO促销。 谢斯塔科夫| 人PRO＃74</a></li>
+<li><a href="../zh-CN482702/index.html">2020年我们真的需要TypeScript吗？</a></li>
+<li><a href="../zh-CN482706/index.html">在1C平台上实施并行会计RAS + IFRS的建议</a></li>
+<li><a href="../zh-CN482708/index.html">企业文化的一个特征，是代码库的福祉所必需的</a></li>
+<li><a href="../zh-CN482712/index.html">上古物品：Sony MZ-1或生产原型的故事</a></li>
+<li><a href="../zh-CN482716/index.html">开发用于K1986BE1QI（空气）的调试板</a></li>
+<li><a href="../zh-CN482718/index.html">倒金字塔作为项目的结尾</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

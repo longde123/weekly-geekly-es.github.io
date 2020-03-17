@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚶🏿 🤓 🤱🏿 使用pgbackrest进行Postgresql增量式备份-开发人员提供的年轻战斗机课程 🎶 ➕ 👂🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="免责声明 
+
+ 我是开发人员。 我编写代码，仅以用户身份与数据库进行交互。 我决不假装自己是系统管理员，尤其是dba。 但是... 
+
+ 碰巧我需要组织一个postgresql数据库的备份。 没有云-保持SSH并使一切正常运行，而不是要钱。 在这种情况下我们该怎么办？ 没错，我们将pgdump推送到...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>使用pgbackrest进行Postgresql增量式备份-开发人员提供的年轻战斗机课程</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/476206/">  <b>免责声明</b> <br><br> 我是开发人员。 我编写代码，仅以用户身份与数据库进行交互。 我决不假装自己是系统管理员，尤其是dba。 但是... <br><br> 碰巧我需要组织一个postgresql数据库的备份。 没有云-保持SSH并使一切正常运行，而不是要钱。 在这种情况下我们该怎么办？ 没错，我们将pgdump推送到cron中，每天将所有内容备份到存档中，如果我们已经完全分散了，我们会将存档发送到某个地狱。 <br><br> 这次，困难在于根据计划，该基础应该以每天约+-100 MB的速度增长。 当然，在几周内，使用pgdump备份所有内容的愿望将消失。 在这里，增量备份可以解决。 <br><br> 有意思吗 欢迎来到猫。 <br><a name="habracut"></a><br><blockquote> 增量备份是一种备份类型，当并非所有源文件都被备份时，而是自创建上一个备份以来仅进行新的和更改的备份。 </blockquote> 像任何开发人员一样，当时完全不希望（当时）了解postgres的复杂性，我想找到一个绿色按钮。 好吧，您知道，就像在AWS中一样，DigitalOcean：单击一个按钮-获得复制，单击第二个按钮-设置备份，第三个按钮-几个小时前回滚。 我还没有找到按钮和漂亮的GUI工具。 如果您知道（免费或廉价），请在评论中写下。 <br><br> 谷歌搜索，我发现了两个工具<b>pgbarman</b>和<b>pgbackrest</b> 。 我只是对第一个没有问题（非常贫乏的文档，我试图根据旧手册来完善所有内容），但是第二个却在水平上，但并非没有缺陷。 为了简化那些面临类似任务的人员的工作，本文已写成。 <br><blockquote> 阅读本文之后，您将学习如何进行增量备份，将其保存到远程服务器（带有备份的存储库）中，并在数据丢失或主服务器上出现其他问题时还原它们。 </blockquote><h2> 准备工作 </h2><br> 要播放该手册，您将需要两个VPS。 第一个是存储库（将在其中放置备份的存储库），第二个实际上是具有postgres的服务器本身（在我的情况下，是postgres的版本11）。 <br><br> 假定在具有postgres的服务器上您具有root，sudo用户，postgres用户和postgres本身（安装了postgresql时将自动创建postgres用户），并且在存储库服务器上有root和sudo用户（用户名pgbackrest将在手册中使用） 。 <br><br> 这样，您在重现指令时就不会遇到太多问题-用斜体字写下在编写和检查文章时<i>执行命令的位置，对象，对象和权限</i> 。 <br><br><h3> 安装pgbackrest </h3><br>  <i>存储库（用户pgbackrest）：</i> <br><br>  1.使用pgbackrest下载档案，并将其内容传输到/ build文件夹： <br><br><pre><code class="bash hljs">sudo mkdir /build sudo wget -q -O - \ https://github.com/pgbackrest/pgbackrest/archive/release/2.18.tar.gz | \ sudo tar zx -C /build</code> </pre> <br>  2.安装程序集所需的依赖项： <br><br><pre> <code class="bash hljs">sudo apt-get update sudo apt-get install build-essential libssl-dev libxml2-dev libperl-dev zlib1g-dev \ libpq-dev</code> </pre> <br>  3.我们收集pgbackrest： <br><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">cd</span></span> /build/pgbackrest-release-2.18/src &amp;&amp; sudo ./configure sudo make -s -C /build/pgbackrest-release-2.18/src</code> </pre> <br>  4.将可执行文件复制到/ usr / bin目录： <br><br><pre> <code class="bash hljs">sudo cp /build/pgbackrest-release-2.18/src/pgbackrest /usr/bin sudo chmod 755 /usr/bin/pgbackrest</code> </pre> <br>  5. Pgbackrest需要perl。 安装： <br><br><pre> <code class="bash hljs">sudo apt-get install perl</code> </pre> <br>  6.为日志创建目录，并赋予它们特定的权限： <br><br><pre> <code class="bash hljs">sudo mkdir -p -m 770 /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo chown pgbackrest:pgbackrest /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo mkdir -p /etc/pgbackrest sudo mkdir -p /etc/pgbackrest/conf.d sudo touch /etc/pgbackrest/pgbackrest.conf sudo chmod 640 /etc/pgbackrest/pgbackrest.conf sudo chown pgbackrest:pgbackrest /etc/pgbackrest/pgbackrest.conf</code> </pre> <br>  7.检查： <br><br><pre> <code class="bash hljs">pgbackrest version</code> </pre> <br>  <i>Postgres服务器（sudo用户或root）：</i> <br><br> 在使用postgres的服务器上安装pgbackrest的过程与在存储库上安装的过程类似（是的，pgbackrest应该在两个服务器上都可以）， <b>但是在第6段中，第二个也是最后一个命令：</b> <br><br><pre> <code class="bash hljs">sudo chown pgbackrest:pgbackrest /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo chown pgbackrest:pgbackrest /etc/pgbackrest/pgbackrest.conf</code> </pre> <br>  <b>替换为：</b> <br><br><pre> <code class="bash hljs">sudo chown postgres:postgres /var/<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>/pgbackrest sudo chown postgres:postgres /etc/pgbackrest/pgbackrest.conf</code> </pre> <br><h3> 通过无密码SSH配置服务器之间的通信 </h3><br> 为了使pgbackrest正常工作，您需要使用密钥文件配置postgres服务器和存储库之间的交互。 <br><br>  <i>存储库（用户pgbackrest）：</i> <i><br></i> <br> 创建一个密钥对： <br><br><pre> <code class="bash hljs">mkdir -m 750 /home/pgbackrest/.ssh ssh-keygen -f /home/pgbackrest/.ssh/id_rsa \ -t rsa -b 4096 -N <span class="hljs-string"><span class="hljs-string">""</span></span></code> </pre> <br>  <b>注意！</b> 我们在没有sudo的情况下执行上述命令。 <br><br>  <i>Postgres服务器（sudo用户或root）：</i> <br><br> 创建一个密钥对： <br><br><pre> <code class="bash hljs">sudo -u postgres mkdir -m 750 -p /var/lib/postgresql/.ssh sudo -u postgres ssh-keygen -f /var/lib/postgresql/.ssh/id_rsa \ -t rsa -b 4096 -N <span class="hljs-string"><span class="hljs-string">""</span></span></code> </pre> <br>  <i>存储库（sudo用户）：</i> <br><br> 将postgres服务器的公钥复制到存储库服务器： <br><br><pre> <code class="bash hljs">(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'no-agent-forwarding,no-X11-forwarding,no-port-forwarding,'</span></span> &amp;&amp; \ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'command="/usr/bin/pgbackrest ${SSH_ORIGINAL_COMMAND#* }" '</span></span> &amp;&amp; \ sudo ssh root@&lt;postgres_server_ip&gt; cat /var/lib/postgresql/.ssh/id_rsa.pub) | \ sudo -u pgbackrest tee -a /home/pgbackrest/.ssh/authorized_keys</code> </pre> <br> 在这一步，将要求root用户输入密码。 您需要输入postgres服务器用户的root密码！ <br><br>  <i>Postgres服务器（sudo用户）：</i> <br><br> 使用postgres将存储库的公钥复制到服务器： <br><br><pre> <code class="bash hljs">(<span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'no-agent-forwarding,no-X11-forwarding,no-port-forwarding,'</span></span> &amp;&amp; \ <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -n <span class="hljs-string"><span class="hljs-string">'command="/usr/bin/pgbackrest ${SSH_ORIGINAL_COMMAND#* }" '</span></span> &amp;&amp; \ sudo ssh root@&lt;repository_server_ip&gt; cat /home/pgbackrest/.ssh/id_rsa.pub) | \ sudo -u postgres tee -a /var/lib/postgresql/.ssh/authorized_keys</code> </pre><br> 在这一步，将要求root用户输入密码。 您需要输入存储库用户的根密码！ <br><br> 我们检查： <br><br>  <i>存储库（root用户，出于实验的纯正性）：</i> <br><br><pre> <code class="bash hljs">sudo -u pgbackrest ssh postgres@&lt;postgres_server_ip&gt;</code> </pre> <br>  <i>Postgres服务器（root用户，出于纯粹的实验目的）：</i> <br><br><pre> <code class="bash hljs">sudo -u postgres ssh pgbackrest@&lt;repository_server_ip&gt;</code> </pre> <br> 我们确保获得访问权限没有问题。 <br><br><h3> 设置postgres服务器 </h3><br><br>  <i>Postgres服务器（sudo用户或root）：</i> <br><br>  1.让我们从外部IP“敲响” postgres服务器。 为此，请编辑<u>postgresql.conf</u>文件（位于/ etc / postgresql / 11 / main文件夹中），并在其中添加以下行： <br><br><pre> <code class="bash hljs">listen_addresses = <span class="hljs-string"><span class="hljs-string">'*'</span></span></code> </pre> <br> 如果已经存在这样的行，请取消注释它或将参数值设置为“ *”。 <br><br> 在<u>pg_hba.conf文件</u> （也位于<u>/ etc / postgresql / 11 / main</u>文件夹中）中，添加以下行： <br><br><pre> <code class="bash hljs">hostssl all all 0.0.0.0/0 md5 host all all 0.0.0.0/0 md5</code> </pre> <br> 其中： <br><br><pre> <code class="bash hljs">hostssl/host -   SSL ( ) all -      all -  ,    () 0.0.0.0/0 -       md5 -   </code> </pre> <br>  2.在<u>postgresql.conf</u> （位于文件夹<u>/ etc / postgresql / 11 / main中</u> ）中进行必要的设置，以使pgbackrest能够正常工作： <br><br><pre> <code class="bash hljs">archive_command = <span class="hljs-string"><span class="hljs-string">'pgbackrest --stanza=main archive-push %p'</span></span> <span class="hljs-comment"><span class="hljs-comment">#  main -  .   postgres    main. archive_mode = on max_wal_senders = 3 wal_level = replica</span></span></code> </pre> <br>  3.在pgbackrest配置文件（/etc/pgbackrest/pgbackrest.conf）中进行必要的设置： <br><br><pre> <code class="bash hljs">[main] pg1-path=/var/lib/postgresql/11/main [global] <span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-file=detail repo1-host=&lt;repository_server_ip&gt;</code> </pre> <br>  4.重新启动PostgreSQL： <br><br><pre> <code class="bash hljs">sudo service postgresql restart</code> </pre> <br><h3> 配置存储库服务器 </h3><br>  <i>仓库（pgbackrest用户）：</i> <br><br> 在<u>pgbackrest</u>配置<u>文件中进行</u>必要的设置 <br>  （ <u>/etc/pgbackrest/pgbackrest.conf</u> ）： <br><br><pre> <code class="bash hljs">[main] pg1-host=&lt;postgres_server_ip&gt; pg1-path=/var/lib/postgresql/11/main [global] repo1-path=/var/lib/pgbackrest repo1-retention-full=2 <span class="hljs-comment"><span class="hljs-comment"># ,     . ..            -       . start-fast=y #    ,       https://postgrespro.ru/docs/postgrespro/9.5/continuous-archiving</span></span></code> </pre> <br><h3> 创建存储 </h3><br>  <i>仓库（pgbackrest用户）：</i> <br><br>  <u>为主</u>集群创建一个新的存储： <br><br><pre> <code class="bash hljs">sudo mkdir -m 770 /var/lib/pgbackrest sudo chown -R pgbackrest /var/lib/pgbackrest/ sudo -u pgbackrest pgbackrest --stanza=main stanza-create</code> </pre><br><h3> 检查一下 </h3><br>  <i>Postgres服务器（sudo用户或root）：</i> <br><br> 检查postgres服务器： <br><br><pre> <code class="bash hljs">sudo -u postgres pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-console=info check</code> </pre> <br>  <i>仓库（pgbackrest用户）：</i> <br><br> 检查存储库服务器： <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-console=info check</code> </pre> <br> 我们确保在输出中看到“检查命令结束：成功完成”行。 <br><br>  <b>你累吗</b>  <b>我们传递给最有趣的。</b> <br><br><h3> 进行备份 </h3><br>  <i>仓库（pgbackrest用户）：</i> <i><br></i> <br><br>  1.我们进行备份： <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main backup</code> </pre><br>  2.我们确保已创建备份： <br><br><pre> <code class="bash hljs">ls /var/lib/pgbackrest/backup/main/</code> </pre> <br>  Pgbackrest将创建第一个完整备份。 如果愿意，可以再次运行backup命令，并确保系统创建了增量备份。 <br><br> 如果要再次进行完整备份，请指定其他标志： <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">type</span></span>=full backup</code> </pre> <br> 如果要向控制台输出详细信息，请指定： <br><br><pre> <code class="bash hljs">sudo -u pgbackrest pgbackrest --stanza=main --<span class="hljs-built_in"><span class="hljs-built_in">type</span></span>=full --<span class="hljs-built_in"><span class="hljs-built_in">log</span></span>-level-console=info backup</code> </pre> <br><h3> 恢复备份 </h3><br>  <i>Postgres服务器（sudo用户或root）：</i> <br><br>  1.停止工作集群： <br><br><pre> <code class="bash hljs">sudo pg_ctlcluster 11 main stop</code> </pre> <br>  2.我们从备份中恢复： <br><br><pre> <code class="bash hljs">sudo -u postgres pgbackrest --stanza=main --delta restore</code> </pre> <br>  3.运行集群： <br><br><pre> <code class="bash hljs">sudo pg_ctlcluster 11 main start</code> </pre> <br> 还原备份后，我们需要执行第二次备份： <br><br>  <i>仓库（pgbackrest用户）：</i> <br><br><pre> <code class="bash hljs">sudo pgbackrest --stanza=main backup</code> </pre> <br> 仅此而已。 最后，我想提醒您，无论如何我都不打算自己建立一个高级dba，并且在任何机会下，我都将使用云。 目前，我本人已开始研究各种主题，例如备份，复制，监视等。 我就结果编写了一些小型报告，以便为社区做出一点贡献，并为我自己留些小婴儿床。 <br><br> 在以下文章中，我将尝试讨论其他功能-干净群集上的数据恢复，备份加密和在S3上发布，通过rsync备份。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN476206/">https://habr.com/ru/post/zh-CN476206/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN476186/index.html">PKI实施开发人员帮助</a></li>
+<li><a href="../zh-CN476188/index.html">用于定义仇恨者的神经网络-“不，这是一个禁令”</a></li>
+<li><a href="../zh-CN476192/index.html">重要的延长寿命推文</a></li>
+<li><a href="../zh-CN476194/index.html">《哈伯周刊》第27期/ Chromebooks与Macbooks，如何撰写出色的简历，要问多少薪水，AR点数为3500美元</a></li>
+<li><a href="../zh-CN476198/index.html">我如何创建我的第一个网站以及它的来龙去脉</a></li>
+<li><a href="../zh-CN476208/index.html">Web年历2019：可用性</a></li>
+<li><a href="../zh-CN476210/index.html">基于公钥标准的密码工作站。 配置PKCS＃11令牌</a></li>
+<li><a href="../zh-CN476212/index.html">经实践证明：Veeam Backup＆Replication 9.5 Update 4功能可用于磁带</a></li>
+<li><a href="../zh-CN476214/index.html">吉祥物Slurm的诞生</a></li>
+<li><a href="../zh-CN476216/index.html">网页 用r0ot-mi解决问题。 第二部分</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>☣️ 👩‍❤️‍👩 👨‍👦‍👦 在PostgreSQL中用JSONB替换EAV 👍🏼 🚂 👨🏿‍✈️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="TL DR：JSONB可以大大简化数据库架构的开发，而不会牺牲查询性能。 
+ 引言 
+ 让我们举一个经典的例子，大概是关系数据库（数据库）最古老的用例之一：我们有一个实体，有必要保留该实体的某些属性（属性）。 但是并非所有实例都可能具有相同的属性集，此外，将来可能会添加更多属性。 
+
+ 解决此问题的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>在PostgreSQL中用JSONB替换EAV</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/475178/"><blockquote>  TL  DR：JSONB可以大大简化数据库架构的开发，而不会牺牲查询性能。 </blockquote><br><h3> 引言 </h3><br> 让我们举一个经典的例子，大概是关系数据库（数据库）最古老的用例之一：我们有一个实体，有必要保留该实体的某些属性（属性）。 但是并非所有实例都可能具有相同的属性集，此外，将来可能会添加更多属性。 <br><br> 解决此问题的最简单方法是在数据库表中为每个属性值创建一列，然后只需填写特定实体实例所需的那些列即可。 太好了！ 问题得到解决...直到您的表包含数百万条记录，并且您无需添加新记录。 <br><br> 考虑EAV（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">实体-属性-值</a> ）模式，这很常见。 一个表包含实体（记录），另一个表包含属性名称（属性），第三个表将实体与其属性相关联，并包含当前实体的这些属性的值。 这使您有机会为不同的对象提供不同的属性集，以及在不更改数据库结构的情况下即时添加属性。 <br><a name="habracut"></a><br> 但是，如果使用EVA的方法没有缺点，我不会写这篇说明。 因此，例如，要获得一个或多个每个都具有1个属性的实体，在查询中需要2个join'a（联接）：第一个是与属性表的并集，第二个是与值表的并集。 如果一个实体有2个属性，则已经需要4个联接！ 此外，所有属性通常都存储为字符串，这将导致对结果和WHERE子句进行类型转换。 如果您编写了很多请求，那么就资源使用而言，这是相当浪费的。 <br><br> 尽管存在这些明显的缺陷，但EAV长期以来一直用于解决此类问题。 这些都是不可避免的缺陷，而且没有更好的选择。 <br> 但是后来一种新的“技术”出现在PostgreSQL中... <br><br> 从PostgreSQL 9.4开始，添加了JSONB数据类型以存储二进制JSON数据。 尽管以这种格式存储JSON通常比纯文本JSON占用更多的空间和时间，但使用它的操作要快得多。  JSONB还支持索引编制，这使查询速度更快。 <br><br>  JSONB数据类型使我们可以通过在实体表中仅添加一个JSONB列来替换笨重的EAV模式，从而大大简化了数据库设计。 但是许多人认为这应该伴随生产率的下降。这就是为什么我出现在本文中。 <br><br><h3> 测试数据库设置 </h3><br> 为了进行比较，我在$ 80的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">DigitalOcean</a> Ubuntu 14.04构建上的新安装的PostgreSQL 9.5上创建了一个数据库。 在postgresql.conf中设置一些参数后，我使用psql运行了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">该</a>脚本。 创建了下表以将数据表示为EAV： <br><br><pre><code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, <span class="hljs-type"><span class="hljs-type">name</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span>, description <span class="hljs-type"><span class="hljs-type">TEXT</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity_attribute ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, <span class="hljs-type"><span class="hljs-type">name</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span> ); <span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity_attribute_value ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, entity_id <span class="hljs-type"><span class="hljs-type">INT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REFERENCES</span></span> entity(id), entity_attribute_id <span class="hljs-type"><span class="hljs-type">INT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">REFERENCES</span></span> entity_attribute(id), <span class="hljs-keyword"><span class="hljs-keyword">value</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span> );</code> </pre> <br> 下表是将存储相同数据的表，但表中的属性为JSONB类型column- <i>properties</i> 。 <br><br><pre> <code class="pgsql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> entity_jsonb ( id <span class="hljs-type"><span class="hljs-type">SERIAL</span></span> <span class="hljs-keyword"><span class="hljs-keyword">PRIMARY KEY</span></span>, <span class="hljs-type"><span class="hljs-type">name</span></span> <span class="hljs-type"><span class="hljs-type">TEXT</span></span>, description <span class="hljs-type"><span class="hljs-type">TEXT</span></span>, properties <span class="hljs-type"><span class="hljs-type">JSONB</span></span> );</code> </pre><br> 看起来容易很多，对吧？ 然后，将1000万条记录添加到实体表（ <i>Entity</i> ＆ <i>Entity_jsonb</i> ），因此，使用EAV模式和带有JSONB列的方法-entity_jsonb.properties填充了相同的表数据。 因此，我们在整个属性集中收到了几种不同的数据类型。 样本数据： <br><br><pre> <code class="json hljs">{ id: <span class="hljs-number"><span class="hljs-number">1</span></span> name: <span class="hljs-string"><span class="hljs-string">"Entity1"</span></span> description: <span class="hljs-string"><span class="hljs-string">"Test entity no. 1"</span></span> properties: { color: <span class="hljs-string"><span class="hljs-string">"red"</span></span> lenght: <span class="hljs-number"><span class="hljs-number">120</span></span> width: <span class="hljs-number"><span class="hljs-number">3.1882420</span></span> hassomething: <span class="hljs-literal"><span class="hljs-literal">true</span></span> country: <span class="hljs-string"><span class="hljs-string">"Belgium"</span></span> } }</code> </pre> <br> 因此，对于两个选项，我们现在具有相同的数据。 让我们开始比较工作中的实现！ <br><br><h3> 设计简化 </h3><br> 已经说过，数据库的设计已大大简化：一个表，通过使用JSONB列作为属性，而不是三个表用于EAV。 但这在请求中如何体现？ 更新实体的一个属性如下： <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- EAV UPDATE entity_attribute_value SET value = 'blue' WHERE entity_attribute_id = 1 AND entity_id = 120; -- JSONB UPDATE entity_jsonb SET properties = jsonb_set(properties, '{"color"}', '"blue"') WHERE id = 120;</span></span></code> </pre><br> 如您所见，最后一个请求看起来并不容易。 要更新JSONB对象中属性的值，我们必须使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">jsonb_set（）</a>函数，并且必须将新值作为JSONB对象传递。 但是，我们不需要事先知道任何标识符。 看一下EAV示例，我们需要知道entity_id和entity_attribute_id才能进行更新。 如果要基于对象的名称更新JSONB列中的属性，则只需在一个简单的行中完成所有操作。 <br><br> 现在，根据新颜色的条件选择刚刚更新的实体： <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- EAV SELECT e.name FROM entity e INNER JOIN entity_attribute_value eav ON e.id = eav.entity_id INNER JOIN entity_attribute ea ON eav.entity_attribute_id = ea.id WHERE ea.name = 'color' AND eav.value = 'blue'; -- JSONB SELECT name FROM entity_jsonb WHERE properties -&gt;&gt; 'color' = 'blue';</span></span></code> </pre><br> 我认为我们可以同意，第二个较短（无需加入！），因此更具可读性。 这是JSONB的胜利！ 我们使用JSON-&gt;&gt;运算符从JSONB对象获取颜色作为文本值。 还有第二种使用@&gt;运算符在JSONB模型中实现相同结果的方法： <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- JSONB SELECT name FROM entity_jsonb WHERE properties @&gt; '{"color": "blue"}';</span></span></code> </pre><br> 这有点复杂：我们检查一下属性列中的JSON对象是否包含@&gt;运算符右侧的对象。 可读性较低，生产率更高（请参见下文）。 <br><br> 当您需要一次选择多个属性时，可以进一步简化JSONB的使用。 这就是JSONB方法真正出现的地方：我们只需选择属性作为结果集中的其他列即可，而无需进行连接： <br><br><pre> <code class="pgsql hljs"><span class="hljs-comment"><span class="hljs-comment">-- JSONB SELECT name , properties -&gt;&gt; 'color' , properties -&gt;&gt; 'country' FROM entity_jsonb WHERE id = 120;</span></span></code> </pre><br> 使用EAV时，您要请求的每个属性都需要2个联接。 在我看来，以上查询显示了数据库设计的极大简化。 也在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">这篇</a>文章中查看有关如何编写JSONB请求的更多示例。 <br> 现在该讨论性能了。 <br><br><h3> 性能表现 </h3><br> 为了比较性能，我在查询中使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">EXPLAIN ANALYZE</a>来计算运行时间。 每个请求至少执行了3次，因为查询计划者第一次花费的时间更长。 首先，我运行没有任何索引的查询。 显然，这是JSONB的优势，因为EAV所需的联接无法使用索引（未索引外键字段）。 之后，我为EAV值表中的两列外键创建了索引，并为JSONB列创建了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GIN</a>索引。 <br><br> 数据更新及时显示了以下结果（以毫秒为单位）。 请注意，小数位数是对数的： <br><br><img src="https://habrastorage.org/webt/xr/ma/ij/xrmaijvxbnlu_t5jd0nmg0syuxc.png" alt="图片"><br><br> 由于上述原因，我们发现如果不使用索引，JSONB比EAV快很多（&gt; 50,000-x）。 当我们使用主键索引列时，差异几乎消失了，但是JSONB仍然比EAV快1.3倍。 请注意，JSONB列中的索引在这里无效，因为我们没有在评估标准中使用属性列。 <br><br> 要基于属性值选择数据，我们获得以下结果（正常标度）： <br><br><img src="https://habrastorage.org/webt/e6/fp/vb/e6fpvbgyqlq536wcbpke7_wrz9s.png" alt="图片"><br><br> 您可能会注意到，JSONB再次比没有索引的EAV更快，但是当EAV与索引一起使用时，它仍然比JSONB更快。 但是后来我发现JSONB请求的时间是相同的，这使我想到了GIN索引无效的事实。 显然，当对具有填充属性的列使用GIN索引时，仅当使用包含运算符@&gt;时，该索引才起作用。 我在新测试中使用了此功能，它对时间产生了巨大影响：仅0.153毫秒！ 这比EAV快15,000倍，比操作员-&gt;&gt;快25,000倍。 <br><br> 我认为速度足够快！ <br><br><h3> 数据库表大小 </h3><br> 让我们比较两种方法的表大小。 在psql中，我们可以使用<b>\ dti +命令</b>显示所有表和索引的大小 <br><br><img src="https://habrastorage.org/webt/p6/9m/la/p69mlax6rsctef8sqcu52btxshi.png" alt="图片"><br><br> 对于EAV方法，表大小约为3068 MB，索引最大为3427 MB，总共为6.43 GB。 使用JSONB方法，表使用1817 MB，索引使用318 MB，即2.08 GB。 原来少了3倍！ 这个事实让我有些惊讶，因为我们将属性名称存储在每个JSONB对象中。 <br><br> 但是，数字都是不言而喻的：在EAV中，我们为属性值存储2个整数外键，结果得到8个字节的附加数据。 另外，在EAV中，所有属性值都存储为文本，而JSONB会在可能的情况下在内部使用数字和逻辑值，从而减少体积。 <br><br><h3> 总结 </h3><br> 通常，我认为以JSONB格式存储实体属性可以大大简化数据库的设计和维护。 如果执行大量查询，则与实体存储在同一表中的所有内容实际上将更有效地工作。 而且，这简化了数据之间的交互这一事实已经是一个加分了，但是生成的数据库的容量却小了3倍。 <br><br> 另外，根据测试，我们可以得出结论，性能损失非常小。 在某些情况下，JSONB甚至比EAV更快地工作，这使其变得更好。 但是，此基准当然不能涵盖所有方面（例如，具有大量属性的实体，现有数据的属性数量显着增加...），因此，如果您对如何改进它们有任何建议，请随时发表评论！ </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN475178/">https://habr.com/ru/post/zh-CN475178/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN475162/index.html">在现代C ++代码中使用X-Macro</a></li>
+<li><a href="../zh-CN475164/index.html">讨论：互联网依赖开源-评论家有哪些论点</a></li>
+<li><a href="../zh-CN475170/index.html">在React.JS上创建数据驱动的应用程序的基本模式问题</a></li>
+<li><a href="../zh-CN475172/index.html">有益地使用Raspberry Pi的5种方法 第三部分</a></li>
+<li><a href="../zh-CN475174/index.html">如何起飞电池或电动副动力的一点理论。 第一部分</a></li>
+<li><a href="../zh-CN475180/index.html">如何取下电池或操作SkyMax电动动力伞的做法。 第二部分</a></li>
+<li><a href="../zh-CN475182/index.html">我如何决定类似数据的机器学习竞赛</a></li>
+<li><a href="../zh-CN475188/index.html">基于约束的图块放置算法</a></li>
+<li><a href="../zh-CN475192/index.html">如何在一家有助于应对全球变暖的公司中找到工作？</a></li>
+<li><a href="../zh-CN475194/index.html">通过SOLID编写redux</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

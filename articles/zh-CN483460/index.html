@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😀 😥 👩🏿 SQL HowTo：使用窗口函数构建链 👌 🥜 💇🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="有时，在分析数据时，会出现区分样本中的“链”的问题 ，即区分记录的有序序列 ，每个记录都满足特定条件 。 
+
+ 这可以是记录本身数据的条件，也可以是相对于一个或多个先前记录的复杂表达式-例如，关闭时间样本之间的间隔长度。 
+
+
+
+ 当样本连接到自身时，或者使用“数据之外”的某些事实时，传统的解决方案...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>SQL HowTo：使用窗口函数构建链</h1><div class="post__body post__body_full"><div class="post__text post__text-html" id="post-content-body" data-io-article-url="https://habr.com/ru/post/483460/"> 有时，在分析数据时，会出现<b>区分样本中的“链”</b>的<b>问题</b> ，即<b>区分</b>记录的<u>有序序列</u> ，每个记录<u>都满足特定条件</u> 。 <br><br> 这可以是记录本身数据的条件，也可以是相对于一个或多个先前记录的复杂表达式-例如，关闭时间样本之间的间隔长度。 <br><br><img src="https://habrastorage.org/webt/fx/nc/ld/fxncldmr0bpfaufpa2tosjozqy8.png"><br><br> 当样本连接到自身时，或者使用“数据之外”的某些事实时，传统的解决方案为“自连接”提供了不同的选项-例如，记录必须具有严格定义的步骤（N + 1，“每天”，...） ） <br><br> 第一种选择通常会导致记录数量呈<b>二次方复杂性</b> ，这<a href="https://habr.com/ru/post/479298/">在大样本中</a>是<a href="https://habr.com/ru/post/479298/">不可接受的</a> ，而第二种选择<b>很容易</b>在源数据中突然没有样本的情况下<b>“崩溃”</b> 。 <br><br> 但是此任务将帮助我们有效地解决PostgreSQL中的<a href="https://postgrespro.ru/docs/postgresql/12/functions-window" rel="nofollow">窗口函数</a> 。 <br><a name="habracut"></a><br><h2> 任务：盘点别人的钱 </h2><br> 考虑链的最简单情况-当连续性条件由记录本身的数据确定时。 <br><br> 不必单独执行所有其他操作。 但是为了清楚起见，我将其分解为连续的步骤， <u>最后我将展示优化的内容和方法</u> 。 <br><br> 假设我们有一家小型银行，可以维护表格中客户帐户的余额。 收支交易一旦发生，该日期也会在当天结束时确定总帐单金额。 <br><blockquote> 在漫长的新年假期之后，该银行决定奖励其客户-今年开户的每个人<u>在没有“重置”</u>该<u>帐户</u> <b>的最长连续时间内</b> ，还额外获得了<u>平均每日余额的</u> 1％。 </blockquote> 这是我们“链”的连续性的标准。 好吧，数据的排序将由余额的日期确定。 <br><br> 他们给我们带来了这样的CSV，并要求他们快速计算谁应该从银行获得多少慷慨的捐助： <br><br><pre><code class="plaintext hljs">date;client;balance 01.01.2020;;150 01.01.2020;;100 02.01.2020;;100 02.01.2020;;150 03.01.2020;;200 05.01.2020;;0 06.01.2020;;50 08.01.2020;;0 08.01.2020;;200 09.01.2020;;0 09.01.2020;;0 10.01.2020;;5</code> </pre> <br> 只需注意一些在此数据上值得注意的事实： <br><br><ul><li>  01.01是个假期，银行没有工作。 因此，没有客户记录当天余额的变化，但是他们的帐户中有钱。 也就是说，每天迭代的“蛮力”算法将无法正常工作。 </li><li>  04.01 Alice没有执行任何操作，因此没有任何条目。 但是在05.01之前，她帐户中的金额为非零-在分析中必须考虑到这一点。 </li><li> 我们对01.01-12.01进行了分析，但是在此期间结束时，爱丽丝的帐户余额为非零。 我们还考虑了限制期限的需要。 </li></ul><br><h2>  CSV到表格 </h2><br> 从CSV导入的最佳方法是<a href="https://www.postgresqltutorial.com/import-csv-file-into-posgresql-table/" rel="nofollow">使用COPY运算符</a> 。 但是我们将尝试通过正则表达式来预热： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">CREATE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TEMPORARY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">to_date</span></span>(prt[<span class="hljs-number"><span class="hljs-number">1</span></span>], <span class="hljs-string"><span class="hljs-string">'DD.MM.YYYY'</span></span>) dt , prt[<span class="hljs-number"><span class="hljs-number">2</span></span>] <span class="hljs-keyword"><span class="hljs-keyword">client</span></span> , prt[<span class="hljs-number"><span class="hljs-number">3</span></span>]::<span class="hljs-built_in"><span class="hljs-built_in">numeric</span></span>(<span class="hljs-number"><span class="hljs-number">32</span></span>,<span class="hljs-number"><span class="hljs-number">2</span></span>) balance <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> regexp_split_to_array(<span class="hljs-keyword"><span class="hljs-keyword">str</span></span>, <span class="hljs-string"><span class="hljs-string">';'</span></span>) prt <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> regexp_split_to_table( $$ <span class="hljs-built_in"><span class="hljs-built_in">date</span></span>;client;balance 01.01.2020;;150 01.01.2020;;100 02.01.2020;;100 02.01.2020;;150 03.01.2020;;200 05.01.2020;;0 06.01.2020;;50 08.01.2020;;0 08.01.2020;;200 09.01.2020;;0 09.01.2020;;0 10.01.2020;;5 $$ , E'\\n') str ) T WHERE str &lt;&gt; '' OFFSET 1 ) T;</code> </pre> <br> 从某种意义上说，这是一种“不诚实”的方法，因为它将无法正确地消化，例如，将分隔符屏蔽在了场的主体中。 但对于大多数简单的应用程序-合适。 <br><br><h2> 步骤1：修正申请条件 </h2><br> 在我们的情况下，链连续性条件是非零余额。 为了清楚起见，我们将其显示为单独的字段，以按客户的时间顺序排列： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * , balance &gt; <span class="hljs-number"><span class="hljs-number">0</span></span> cond <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">client</span></span>, dt;</code> </pre><br><pre> <code class="plaintext hljs">dt | client | balance | cond ------------------------------------ 2020-01-01 |  | 150.00 | t 2020-01-02 |  | 100.00 | t 2020-01-03 |  | 200.00 | t 2020-01-05 |  | 0.00 | f 2020-01-06 |  | 50.00 | t 2020-01-08 |  | 0.00 | f 2020-01-09 |  | 0.00 | f 2020-01-10 |  | 5.00 | t 2020-01-01 |  | 100.00 | t 2020-01-02 |  | 150.00 | t 2020-01-08 |  | 200.00 | t 2020-01-09 |  | 0.00 | f</code> </pre><br><h2> 步骤2：计算缺失 </h2><br> 请注意，鲍勃的金额没有从02.01更改为08.01。 并且根据问题的情况，我们必须计算<u>平均每日</u>剩余时间-也就是说，我们需要有关这些“遗漏”天数的信息。 或至少天数保持不变： <br><br><pre> <code class="sql hljs">coalesce(lead(dt) OVER(PARTITION BY client ORDER BY dt), '2020-01-12') - dt days</code> </pre> <br><pre> <code class="plaintext hljs">dt | client | balance | cond | days ------------------------------------------- 2020-01-01 |  | 150.00 | t | 1 2020-01-02 |  | 100.00 | t | 1 2020-01-03 |  | 200.00 | t | 2 2020-01-05 |  | 0.00 | f | 1 2020-01-06 |  | 50.00 | t | 2 2020-01-08 |  | 0.00 | f | 1 2020-01-09 |  | 0.00 | f | 1 2020-01-10 |  | 5.00 | t | 2 2020-01-01 |  | 100.00 | t | 1 2020-01-02 |  | 150.00 | t | 6 2020-01-08 |  | 200.00 | t | 1 2020-01-09 |  | 0.00 | f | 3</code> </pre><br> 使用<a href="https://postgrespro.ru/docs/postgresql/12/functions-window" rel="nofollow">lead（）窗口函数，</a>我们从<u>下</u>一条记录开始按顺序学习日期，并通过<b>合并</b>限制了上一条记录的间隔。 同时，他们使用了有用的属性，即<b>PostgreSQL中两个日期之间</b>的<b>差返回</b>它们之间<b>的整数天数</b> 。 <br><br> 作为几乎免费的奖金，我们获得了零余额记录的所有相同信息。 但是，如果有很多行没有满足我们的条件，我们就不感兴趣了，那么<a href="https://habr.com/ru/post/479508/">在CASE下进行</a>这样的<a href="https://habr.com/ru/post/479508/">计算</a>就很有意义<a href="https://habr.com/ru/post/479508/">，</a>以节省服务器资源。 <br><br><h2> 步骤3：找到断点 </h2><br> 我们感兴趣的每个链的起点是先前计算的条件的值相对于<u>先前的</u>记录发生变化的点。 我们将使用<b>lag（）</b>函数找到这些点： <br><br><pre> <code class="sql hljs">lag(cond) OVER(PARTITION BY client ORDER BY dt) IS DISTINCT FROM cond chain_start</code> </pre> <br><pre> <code class="plaintext hljs">dt | client | balance | cond | days | chain_start --------------------------------------------------------- 2020-01-01 |  | 150.00 | t | 1 | t 2020-01-02 |  | 100.00 | t | 1 | f 2020-01-03 |  | 200.00 | t | 2 | f 2020-01-05 |  | 0.00 | f | 1 | t 2020-01-06 |  | 50.00 | t | 2 | t 2020-01-08 |  | 0.00 | f | 1 | t 2020-01-09 |  | 0.00 | f | 1 | f 2020-01-10 |  | 5.00 | t | 2 | t 2020-01-01 |  | 100.00 | t | 1 | t 2020-01-02 |  | 150.00 | t | 6 | f 2020-01-08 |  | 200.00 | t | 1 | f 2020-01-09 |  | 0.00 | f | 3 | t</code> </pre><br> 使用<b>IS DISTINCT FROM</b>运算符而不是&lt;&gt;，我们避免了将每个客户端的第一个记录与NULL比较的问题。 相应地，值TRUE是新链的开始，FALSE是其延续的所有行。 <br><br><h2> 步骤4：链接链接 </h2><br> 要将数据分组到每个单独的链中，最简单的方法是为其所有记录分配<b>相同的标识符</b> 。 链本身的序列号非常适合它。 它完全等于在样本中发现的较高<b>的链“起点”数目</b> 。 <br><br> 可以通过布尔值总和的“窗口”求和（{boolean} ::整数）来计算它们，也可以通过对与count（*）FILTER匹配的记录数进行计数（在{boolean}条件下）。 我们将使用第二个选项： <br><br><pre> <code class="sql hljs">count(*) FILTER(WHERE chain_start) OVER(PARTITION BY client ORDER BY dt) grpid</code> </pre> <br><pre> <code class="plaintext hljs">dt | client | balance | cond | days | chain_start | grpid ----------------------------------------------------------------- 2020-01-01 |  | 150.00 | t | 1 | t | 1 2020-01-02 |  | 100.00 | t | 1 | f | 1 2020-01-03 |  | 200.00 | t | 2 | f | 1 2020-01-06 |  | 50.00 | t | 2 | t | 2 2020-01-10 |  | 5.00 | t | 2 | t | 3 2020-01-01 |  | 100.00 | t | 1 | t | 1 2020-01-02 |  | 150.00 | t | 6 | f | 1 2020-01-08 |  | 200.00 | t | 1 | f | 1</code> </pre><br> 在这一步，我们已经知道了每个链中所有链接的长度，我们不再需要“无趣的”记录，因此只需将它们过滤掉即可。 <br><br><h2> 步骤5：放置链 </h2><br> 要计算一条链中所有天的平均值，我们需要总天数和“积分”余额： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">client</span></span> , <span class="hljs-keyword"><span class="hljs-keyword">min</span></span>(dt) chain_dt , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">days</span></span> * balance) balance , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">days</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">days</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ... <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>, grpid <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>, grpid;</code> </pre> <br><pre> <code class="plaintext hljs">client | chain_dt | balance | days -------------------------------------  | 2020-01-01 | 650.00 | 4  | 2020-01-06 | 100.00 | 2  | 2020-01-10 | 10.00 | 2  | 2020-01-01 | 1200.00 | 8</code> </pre><br><h2> 步骤6：寻找高点 </h2><br> 使用<b>DISTINCT ON，</b>我们将为每个客户留下一条记录（最大天数）： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DISTINCT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">client</span></span>) * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ... <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">client</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">days</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre> <br><pre> <code class="plaintext hljs">client | chain_dt | balance | days -------------------------------------  | 2020-01-01 | 650.00 | 4  | 2020-01-01 | 1200.00 | 8</code> </pre><br> 实际上，仅此而已... <br><br><h2> 我们结合并优化 </h2><br><div class="spoiler">  <b class="spoiler_title">摘要要求</b> <div class="spoiler_text"><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">WITH</span></span> step123 <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * , <span class="hljs-keyword"><span class="hljs-keyword">CASE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> cond <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> lag(cond) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(w) <span class="hljs-keyword"><span class="hljs-keyword">IS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DISTINCT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> cond <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> chain_start , <span class="hljs-keyword"><span class="hljs-keyword">CASE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">WHEN</span></span> cond <span class="hljs-keyword"><span class="hljs-keyword">THEN</span></span> <span class="hljs-keyword"><span class="hljs-keyword">coalesce</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">lead</span></span>(dt) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(w), <span class="hljs-string"><span class="hljs-string">'2020-01-12'</span></span>) - dt <span class="hljs-keyword"><span class="hljs-keyword">END</span></span> <span class="hljs-keyword"><span class="hljs-keyword">days</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tbl , LATERAL(<span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> balance &gt; <span class="hljs-number"><span class="hljs-number">0</span></span> cond) T WINDOW w <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">client</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> dt) ) , step4 <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * , <span class="hljs-keyword"><span class="hljs-keyword">count</span></span>(*) FILTER(<span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> chain_start) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">client</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> dt) grpid <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> step123 <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> cond ) <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DISTINCT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">client</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">client</span></span> , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">days</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(w) <span class="hljs-keyword"><span class="hljs-keyword">days</span></span> , <span class="hljs-keyword"><span class="hljs-keyword">min</span></span>(dt) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(w) chain_dt , <span class="hljs-keyword"><span class="hljs-keyword">sum</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">days</span></span> * balance) <span class="hljs-keyword"><span class="hljs-keyword">OVER</span></span>(w) balance <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> step4 WINDOW w <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">PARTITION</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">client</span></span>, grpid) <span class="hljs-keyword"><span class="hljs-keyword">ORDER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-number"><span class="hljs-number">2</span></span> <span class="hljs-keyword"><span class="hljs-keyword">DESC</span></span>;</code> </pre></div></div><br> 在这里，我们结合并优化了前三个步骤： <br><br><ul><li>  <b>LATERAL子查询</b>使我们能够计算一个附加字段，而无需不必要地遍历选择并立即在函数中使用它 </li><li> 删除<b>WINDOW</b>下的常规定义有助于PostgreSQL避免进行双重排序以形成“窗口”并在一个WindowAgg节点中计算两个函数 </li><li>  <b>CASE下的</b> “惰性” <b>功能计算</b>减少了执行的操作数量 </li></ul><br> 同样，我们结合了以下两个步骤。 但是用于计算聚合（客户端，grpid）和唯一化（客户端，总和（天））的“窗口”顺序并不重合，因此，最后一个块中仍然有两个Sort节点-WindowAgg之前和Unique之前。 <br><br><img src="https://habrastorage.org/webt/8h/nq/2_/8hnq2_rny7scq8l_lo0qml_oayc.png"><br>  <a href="https://explain.tensor.ru/archive/explain/33705f55485a31a59d37945d63f26696:0:2020-01-12" rel="nofollow">[看explain.tensor.ru]</a> <br><br> 我注意到，在对链进行编号时<b>，首先满足WHERE条件</b> ，因此<u>窗口函数</u>生成的编号原来是连续的。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN483460/">https://habr.com/ru/post/zh-CN483460/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN483444/index.html">DORA报告2019：如何提高DevOps性能</a></li>
+<li><a href="../zh-CN483446/index.html">科学家发现了一种降低饮用水中铁含量的新方法</a></li>
+<li><a href="../zh-CN483448/index.html">迪士尼-人类历史上最伟大的双向</a></li>
+<li><a href="../zh-CN483454/index.html">在Atlassian Bitbucket中从Mercurial切换到GIT，并用西里尔文保存文件</a></li>
+<li><a href="../zh-CN483458/index.html">GreenPig数据库助手</a></li>
+<li><a href="../zh-CN483462/index.html">闭嘴拿我的钱</a></li>
+<li><a href="../zh-CN483466/index.html">反向传播方法介绍</a></li>
+<li><a href="../zh-CN483468/index.html">Flutter集成测试-简单</a></li>
+<li><a href="../zh-CN483470/index.html">有效地放置图块（Pro CSS，SVG，图案等）</a></li>
+<li><a href="../zh-CN483472/index.html">删除所有内容：如何删除数据并将NVMe SSD恢复为出厂设置</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
