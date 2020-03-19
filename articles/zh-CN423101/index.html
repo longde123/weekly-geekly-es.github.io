@@ -1,0 +1,123 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙆🏾 📼 👩🏽‍🏭 为Proxmox部署LINSTOR存储 🍨 👩🏿‍🎓 🛃</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="LINBIT最近发布了他们用于编排和管理多个DRBD阵列的新解决方案。 
+
+
+ 例如，您可以有多个节点，每个节点都有自己的LVM或ZFS池，LINSTOR将在其中自动创建新卷并使用DRBD协议在节点之间复制它们。 
+
+
+ LINSTOR支持精简配置，快照和许多其他有趣的东西。 
+ 该解决方案非常适合...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>为Proxmox部署LINSTOR存储</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/423101/"><p><img src="https://habrastorage.org/getpro/habr/post_images/e47/594/c07/e47594c0721332fb46493d20339bb1be.png" alt="图片"></p><br><p>  LINBIT最近发布了他们用于编排和管理多个DRBD阵列的新解决方案。 </p><br><p> 例如，您可以有多个节点，每个节点都有自己的LVM或ZFS池，LINSTOR将在其中自动创建新卷并使用DRBD协议在节点之间复制它们。 </p><br><p> LINSTOR支持精简配置，快照和许多其他有趣的东西。 <br> 该解决方案非常适合虚拟机和容器。 <a name="habracut"></a></p><br><h1 id="linstor-satellites">  LINSTOR卫星 </h1><br><p>我相信您已经有一个Proxmox集群，我有三个节点<code>pve1</code> ， <code>pve2</code>和<code>pve3</code> 。 </p><br><p> 因此，第一步是安装<strong>drbd-utils</strong>并在每个节点上构建<strong>一个内核模块</strong> 。 </p><br><p> 添加linstor存储库并安装<strong>kernel-headers</strong>以及所有必需的软件包： </p><br><pre> <code class="bash hljs">wget -O- https://packages.linbit.com/package-signing-pubkey.asc | apt-key add - <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"deb http://packages.linbit.com/proxmox/ proxmox-5 drbd-9.0"</span></span> \ &gt; /etc/apt/sources.list.d/linbit.list apt-get update apt-get -y install pve-headers apt-get -y install drbd-dkms drbdtop</code> </pre> <br><p> 安装后，让我们检查您的内核模块版本： </p><br><pre> <code class="bash hljs">modprobe drbd cat /proc/drbd</code> </pre> <br><p> 如果看到版本8，则出问题了，内核树内模块已加载，请检查<code>dkms status</code>以了解有关直接构建dkms模块的更多信息。 <br> 对于LINSTOR，必须使用DRBD版本9。 </p><br><p> 接下来，在每个节点上，安装<strong>linstor-proxmox</strong>和<strong>linstor-satellite</strong>软件包： </p><br><pre> <code class="bash hljs">apt-get -y install linstor-proxmox linstor-satellite systemctl start linstor-satellite.service systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> linstor-satellite.service</code> </pre> <br><h1 id="linstor-controller">  LINSTOR控制器 </h1><br><p> 我们将在LXC容器内部署控制器。 </p><br><p> 下载debian模板： </p><br><pre> <code class="bash hljs">wget http://download.proxmox.com/images/system/debian-9.0-standard_9.3-1_amd64.tar.gz -P /var/lib/vz/template/cache/</code> </pre> <br><p> 现在为控制器创建一个容器： </p><br><pre> <code class="bash hljs">pct create 100 <span class="hljs-built_in"><span class="hljs-built_in">local</span></span>:vztmpl/debian-9.0-standard_9.3-1_amd64.tar.gz \ --hostname=linstor-controller \ --net0=name=eth0,bridge=vmbr0,gw=10.1.0.1,ip=10.1.0.123/16</code> </pre> <br><p> 运行容器并输入： </p><br><pre> <code class="bash hljs">pct start 100 pct <span class="hljs-built_in"><span class="hljs-built_in">exec</span></span> 100 bash</code> </pre> <br><p> 安装更新： </p><br><pre> <code class="bash hljs">apt-get update apt-get -y upgrade</code> </pre> <br><p> 添加linstor存储库并安装<strong>linstor-controller</strong>和<strong>linstor-client</strong> ： </p><br><pre> <code class="bash hljs">wget -O- https://packages.linbit.com/package-signing-pubkey.asc | apt-key add - <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"deb http://packages.linbit.com/proxmox/ proxmox-5 drbd-9.0"</span></span> \ &gt; /etc/apt/sources.list.d/linbit.list apt-get update &amp;&amp; apt-get install -y linstor-controller linstor-client systemctl start linstor-controller.service systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> linstor-controller.service</code> </pre> <br><p>  Linstor需要配置的语言环境。 配置语言环境： </p><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'/en_US.UTF-8 UTF-8/ s/^# //'</span></span> /etc/locale.gen locale-gen</code> </pre> <br><p> 让我们立即设置时区： </p><br><pre> <code class="bash hljs">dpkg-reconfigure tzdata</code> </pre> <br><h1 id="konfigurirovanie-hranilischa"> 保管箱配置 </h1><br><p> 创建节点： </p><br><pre> <code class="bash hljs">linstor node create pve1 10.1.0.11 linstor node create pve2 10.1.0.12 linstor node create pve3 10.1.0.13</code> </pre> <br><p> 对于每个节点，我们描述了一个用于DRBD复制的附加接口： </p><br><pre> <code class="bash hljs">linstor node interface create pve1 data 10.2.0.11 linstor node interface create pve2 data 10.2.0.12 linstor node interface create pve3 data 10.2.0.13</code> </pre> <br><p>  <code>linstor node list</code>命令的示例输出： </p><br><pre> <code class="plaintext hljs">╭──────────────────────────────────────────────────────────────╮ ┊ Node ┊ NodeType ┊ Addresses ┊ State ┊ ╞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╡ ┊ pve1 ┊ SATELLITE ┊ 10.0.1.11,10.0.2.11:3366 (PLAIN) ┊ Online ┊ ┊ pve2 ┊ SATELLITE ┊ 10.0.1.12,10.0.2.12:3366 (PLAIN) ┊ Online ┊ ┊ pve3 ┊ SATELLITE ┊ 10.0.1.13,10.0.2.13:3366 (PLAIN) ┊ Online ┊ ╰──────────────────────────────────────────────────────────────╯</code> </pre> <br><p> 创建池： </p><br><p> 在每个节点上，必须为drbd准备<strong>lvm Thin-pool</strong> ： </p><br><pre> <code class="bash hljs">lvcreate -L 800G --thinpool drbdpool pve</code> </pre> <br><p> 现在，您可以将它们添加到linstor中： </p><br><pre> <code class="bash hljs">linstor storage-pool create lvmthin pve1 drbdpool pve/drbdpool linstor storage-pool create lvmthin pve2 drbdpool pve/drbdpool linstor storage-pool create lvmthin pve3 drbdpool pve/drbdpool</code> </pre> <br><p> 让我们将池配置为使用<code>data</code>接口： </p><br><pre> <code class="bash hljs">linstor storage-pool <span class="hljs-built_in"><span class="hljs-built_in">set</span></span>-property pve1 drbdpool PrefNic data linstor storage-pool <span class="hljs-built_in"><span class="hljs-built_in">set</span></span>-property pve2 drbdpool PrefNic data linstor storage-pool <span class="hljs-built_in"><span class="hljs-built_in">set</span></span>-property pve3 drbdpool PrefNic data</code> </pre> <br><p>  <code>linstor storage-pool list</code>命令的示例输出： </p><br><pre> <code class="plaintext hljs">╭─────────────────────────────────────────────────────────────────────────────────────────── ┊ StoragePool ┊ Node ┊ Driver ┊ PoolName ┊ FreeCapacity ┊ TotalCapacity ┊ Support ╞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ ┊ drbdpool ┊ pve1 ┊ LvmThinDriver ┊ hv1/drbdpool ┊ 800 GiB ┊ 800 GiB ┊ true ┊ drbdpool ┊ pve1 ┊ LvmThinDriver ┊ hv1/drbdpool ┊ 800 GiB ┊ 800 GiB ┊ true ┊ drbdpool ┊ pve3 ┊ LvmThinDriver ┊ hv3/drbdpool ┊ 800 GiB ┊ 800 GiB ┊ true ╰───────────────────────────────────────────────────────────────────────────────────────────</code> </pre> <br><p> 现在，我们可以将新存储添加到Proxmox配置中： </p><br><pre> <code class="bash hljs">cat &gt;&gt; /etc/pve/storage.cfg &lt;&lt;EOF drbd: drbdpool content rootdir,images controller 10.1.0.123 controllervm 100 redundancy 3 EOF</code> </pre> <br><h1 id="nastroyka-ha-dlya-kontrollera"> 控制器的HA设置 </h1><br><p> 现在，我们将把linstor容器转移到linstor存储中。 </p><br><p> 首先，我们需要为其创建一个虚拟磁盘： </p><br><pre> <code class="bash hljs">pct <span class="hljs-built_in"><span class="hljs-built_in">exec</span></span> 100 bash linstor resource-definition create vm-100-disk-0 linstor volume-definition create vm-100-disk-0 4G linstor resource create vm-100-disk-0 --auto-place 3 -s drbdpool</code> </pre> <br><p>  <code>linstor resource list</code>命令的示例输出： </p><br><pre> <code class="plaintext hljs">╭──────────────────────────────────────────╮ ┊ ResourceName ┊ Node ┊ Port ┊ State ┊ ╞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╡ ┊ vm-100-disk-0 ┊ pve1 ┊ 7000 ┊ UpToDate ┊ ┊ vm-100-disk-0 ┊ pve2 ┊ 7000 ┊ UpToDate ┊ ┊ vm-100-disk-0 ┊ pve3 ┊ 7000 ┊ UpToDate ┊ ╰──────────────────────────────────────────╯</code> </pre> <br><p> 默认情况下， <strong>linstor-satellite</strong>会在服务启动时删除所有资源的配置，然后期望<strong>linstor-controller</strong>进行新配置，但是如果我们将<strong>linstor-controller</strong>与数据保留在同一位置，则必须通过添加选项对其资源进行例外处理<code>--keep-res=vm-100</code>用于所有节点上的linstor-satellite： </p><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -e <span class="hljs-string"><span class="hljs-string">"[Service]\nExecStart=\nExecStart=/usr/share/linstor-server/bin/Satellite --logs=/var/log/linstor-satellite --config-directory=/etc/linstor --keep-res=vm-100"</span></span> | SYSTEMD_EDITOR=tee systemctl edit linstor-satellite.service</code> </pre> <br><p> 此操作应防止<code>vm-100-disk-0</code>资源在每次启动时被删除。 </p><br><p> 现在，我们停止<strong>linstor-controller</strong>容器，并将所有数据从本地磁盘传输到drbd磁盘。 </p><br><pre> <code class="bash hljs">pct shutdown 100 dd <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>=/var/lib/vz/images/100/vm-100-disk-0.raw of=/dev/drbd/by-res/vm-100-disk-0/0 bs=8M status=progress e2fsck -f /dev/drbd/by-res/vm-100-disk-0/0 resize2fs /dev/drbd/by-res/vm-100-disk-0/0</code> </pre> <br><p> 更新容器配置： </p><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'/^rootfs:/d'</span></span> /etc/pve/lxc/100.conf <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'rootfs: drbdpool:vm-100-disk-0,size=4G'</span></span> &gt;&gt; /etc/pve/lxc/100.conf</code> </pre> <br><p> 运行容器，如果一切正常，请删除旧磁盘： </p><br><pre> <code class="bash hljs">pct start 100 rm -f /var/lib/vz/images/100/vm-100-disk-0.raw</code> </pre> <br><p> 现在我们只需要将我们的容器添加到proxmox <strong>ha-manager中</strong> ： </p><br><pre> <code class="bash hljs">ha-manager add ct:100 --max_relocate=3 --max_restart=3</code> </pre> <br><p> 获利 </p><br><h1 id="proizvoditelnost-i-tyuning"> 性能和调优 </h1><br><p> 目前，要更改控制器的全局设置，您将需要在控制器上禁用身份验证： </p><br><ul><li>  <a href="">https://github.com/LINBIT/linbit-documentation/blob/master/UG9/en/administration-linstor.adoc#disable-user-security</a> </li></ul><br><p> 要自动解决脑裂情况，请为控制器添加以下选项： </p><br><pre> <code class="bash hljs">linstor controller drbd-options \ --after-sb-0pri=discard-zero-changes \ --after-sb-1pri=discard-secondary \ --after-sb-2pri=disconnect</code> </pre> <br><p> 对于我的10G网络，我发现以下最适合快速同步的设置： </p><br><pre> <code class="bash hljs">linstor controller drbd-options \ --max-buffers=36864 \ --rcvbuf-size=2097152 \ --sndbuf-size=1048576 linstor controller drbd-options \ --c-fill-target=10240 \ --c-max-rate=737280 \ --c-min-rate=20480 \ --c-plan-ahead=10</code> </pre> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN423101/">https://habr.com/ru/post/zh-CN423101/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN423089/index.html">MBLT DEV 2018的程序员</a></li>
+<li><a href="../zh-CN423091/index.html">适用于Android开发人员的Flutter。 如何使用Flutter为活动创建UI</a></li>
+<li><a href="../zh-CN423093/index.html">我们增加了[可能] [几乎]是偶然的事实的随机性</a></li>
+<li><a href="../zh-CN423095/index.html">Apple Presentation上的新功能</a></li>
+<li><a href="../zh-CN423097/index.html">PostgreSQL战斗机的任务和解决方案</a></li>
+<li><a href="../zh-CN423103/index.html">Python播客：仅此而已</a></li>
+<li><a href="../zh-CN423105/index.html">System.IO.Pipelines：.NET中的高性能IO</a></li>
+<li><a href="../zh-CN423107/index.html">我们邀请您参加生产中的会议</a></li>
+<li><a href="../zh-CN423109/index.html">苹果介绍了什么以及iOS开发人员对此有何看法</a></li>
+<li><a href="../zh-CN423115/index.html">CSS背景图层混合模式改善了效果</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

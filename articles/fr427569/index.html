@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👰🏻 🐢 📸 Ajustez OpenStack sous forte charge 🥊 🤱 👆</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Bonjour, je m'appelle Maxim, je suis administrateur système. Il y a trois ans, mes collègues et moi avons commencé à transférer des produits vers des ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Ajustez OpenStack sous forte charge</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yamoney/blog/427569/"><p>  Bonjour, je m'appelle Maxim, je suis administrateur système.  Il y a trois ans, mes collègues et moi avons commencé à transférer des produits vers des microservices et avons décidé d'utiliser Openstack comme plate-forme, et nous avons rencontré un certain nombre de râteaux non évidents lors de l'automatisation des circuits de test.  Cet article porte sur les nuances de la configuration d'OpenStack, que l'on ne trouve guère sur la cinquième page des résultats des moteurs de recherche (ou mieux, elles sont facilement sur la première). </p><br><p><img src="https://habrastorage.org/webt/mq/7k/0o/mq7k0oanmmzmtasnicu6ra237po.png"><br>  <em>La charge sur les noyaux: c'était - c'est devenu</em> </p><br><h3 id="nat">  NAT </h3><br><p>  Dans certains cas, nous utilisons dualstack.  C'est lorsque la machine virtuelle reçoit deux adresses à la fois - IPv4 et IPv6.  Tout d'abord, nous nous sommes assurés que l'adresse v4 «flottante» a été attribuée dans le réseau interne via NAT et la machine a reçu la v6 via BGP, mais cela pose quelques problèmes. </p><br><p> NAT - un nœud supplémentaire dans le réseau, où même sans lui, vous devez surveiller la répartition normale de la charge.  L'apparition de NAT sur le réseau entraîne presque toujours des difficultés de débogage - il y a une IP sur l'hôte, l'autre dans la base de données, et il devient difficile de suivre la demande.  Les recherches en masse commencent et la solution sera toujours dans OpenStack. </p><br><p>  NAT ne permet toujours pas de segmenter normalement l'accès entre les projets.  Tous les projets ont leurs propres sous-réseaux, les IP flottantes migrent constamment et avec NAT, il devient absolument impossible de gérer cela.  Certaines installations parlent d'utiliser NAT 1 en 1 (l'adresse interne ne diffère pas de l'adresse externe), mais cela laisse encore des liens inutiles dans la chaîne d'interaction avec les services externes.  Nous sommes arrivés à la conclusion que pour nous, la meilleure option est un réseau BGP. </p><a name="habracut"></a><br><h2 id="chem-prosche-tem-luchshe">  Plus c'est simple, mieux c'est </h2><br><p>  Nous avons essayé divers outils d'automatisation, mais nous nous sommes installés sur Ansible.  C'est un bon outil, mais ses fonctionnalités standard (même en tenant compte de modules supplémentaires) peuvent ne pas être suffisantes dans certaines situations difficiles. </p><br><p>  Par exemple, via le module Ansible, vous ne pouvez pas spécifier à partir de quelles adresses de sous-réseau allouer.  Autrement dit, vous pouvez spécifier un réseau, mais vous ne pouvez pas définir un pool d'adresses spécifique.  La commande shell qui crée l'IP flottante vous aidera ici: </p><br><pre><code class="bash hljs">openstack floating ip create -c floating_ip_address -f value -project \ {{ project name }} —subnet private-v4 CLOUD_NET</code> </pre> <br><p>  Un autre exemple de fonctionnalité manquante: en raison de la double pile, nous ne pouvons pas créer correctement un routeur avec deux ports pour v4 et v6.  C'est là qu'un script bash est utile: </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#! /bin/bash # $1 - router_name # $2 - router_project # $3 - router_network # echo "${@:4}" - private subnet lists FIXED4_SUBNET="subnet-bgp-nexthop-v4" FIXED6_SUBNET="subnet-bgp-nexthop-v6" openstack --os-project-name $2 router show $1 if [ $? -eq 0 ] then echo "router is exist" exit 0 fi openstack --os-project-name $2 router create --project $2 $1 for subnet in "${@:4}"; do openstack --os-project-name $2 router add subnet $1 $subnet done openstack --os-project-name $2 router set $1 --external-gateway $3 --fixed-ip subnet=$FIXED4_SUBNET --fixed-ip subnet=$FIXED6_SUBNET</span></span></code> </pre> <br><p>  Le script crée un routeur, lui ajoute des sous-réseaux v4 et v6 et lui attribue une passerelle externe. </p><br><h3 id="retry">  Réessayer </h3><br><p>  Dans toute situation incompréhensible - redémarrez.  Réessayez, créez une instance, un routeur ou un enregistrement DNS, car vous ne comprenez pas toujours rapidement quel est votre problème.  Réessayer peut retarder la dégradation du service, et à ce moment, vous pouvez calmement et sans nerfs résoudre le problème. </p><br><p>  Tous les conseils ci-dessus fonctionnent parfaitement avec Terraform, Puppet et tout le reste. </p><br><h2 id="vsemu-svoyo-mesto">  Tout a sa place </h2><br><p>  Tout service important (OpenStack ne fait pas exception) combine de nombreux services plus petits qui peuvent interférer les uns avec les autres.  Voici un exemple. </p><br><p>  Agent réseau Neutron-L2-agent est responsable de la connectivité réseau dans OpenStack.  Si tous les autres agents sont partiellement sur les contrôleurs, alors L2, en raison des spécificités, est présent partout. </p><br><p><img src="https://habrastorage.org/webt/ae/dx/uh/aedxuhggl2u8fyrtqgwkfphjjle.png"><br>  <em>Voici à quoi ressemblait notre infrastructure au tout début, jusqu'à ce que le nombre de projets dépasse 50</em> </p><br><p>  À ce stade, nous avons réalisé qu'en raison de cette disposition des agents, les contrôleurs ne pouvaient pas faire face à la charge, et transféré les agents aux nœuds de calcul.  Ils sont plus puissants que les contrôleurs et, en outre, le contrôleur n'a pas à gérer tout le traitement - il doit confier la tâche au nœud d'exécution et le nœud l'exécutera. </p><br><p><img src="https://habrastorage.org/webt/63/mh/8v/63mh8vrzvrqv3w5exan5tw8npba.png"><br>  <em>Agents transférés aux nœuds de calcul</em> </p><br><p>  Cependant, cela ne suffisait pas, car un tel arrangement avait un mauvais effet sur les performances des machines virtuelles.  Avec une densité de 14 cœurs virtuels par physique, si un agent réseau commençait à charger le flux, cela pouvait affecter plusieurs machines virtuelles à la fois. </p><br><p><img src="https://habrastorage.org/webt/br/z5/zi/brz5ziy4mpmlr2ijectmrezvgtw.png"><br>  <em>Troisième itération.</em>  <em>Des nœuds sélectionnés sont apparus.</em> </p><br><p>  Nous avons pensé et déplacé les agents vers des nœuds de réseau distincts.  Désormais, seuls les services pour les machines virtuelles restent sur les nœuds de calcul, tous les agents travaillent sur les nœuds du réseau et seuls les agents bgp qui traitent du réseau v6 restent sur les contrôleurs (puisqu'un agent bgp ne peut servir qu'un seul type de réseau).  La L2 est restée partout, car sans elle, comme nous l'avons écrit plus haut, il n'y aurait pas de connectivité sur le réseau. </p><br><p><img src="https://habrastorage.org/webt/pu/yg/ie/puygieqmiyz9zi8dlovcu_j88ma.png"><br>  <em>Chargez le graphique des nœuds de calcul avant que tout soit mélangé.</em>  <em>Il était d'environ 60%, mais la charge a chuté de manière insignifiante</em> </p><br><p><img src="https://habrastorage.org/webt/y5/im/t2/y5imt2_c5e-7xoha7crtboepbd4.png"><br>  <em>La charge sur softirq avant que les agents réseau ne suppriment les nœuds de calcul.</em>  <em>3 noyaux sont restés chargés.</em>  <em>A cette époque, nous pensions que c'était normal</em> </p><br><h2 id="code-asdocumentation">  Code comme documentation </h2><br><p>  Parfois, il arrive que le code soit la documentation, en particulier dans des services aussi importants que OpenStack.  Avec un cycle de publication de six mois, les développeurs oublient ou n'ont tout simplement pas le temps de documenter certaines choses, et cela se passe comme dans l'exemple ci-dessous. </p><br><h4 id="pro-taymauty">  À propos des délais </h4><br><p>  Une fois que nous avons vu que les appels de Neutron à Open vSwitch ne tiennent pas en cinq secondes et tombent en timeout. </p><br><pre> <code class="bash hljs">127.0.0.1:29696: no response to inactivity probe after 10 seconds, disconnecting neutron.agent.ovsdb.native.commands TimeoutException: Commands [DbSetCommand(table=Port, col_values=((<span class="hljs-string"><span class="hljs-string">'tag'</span></span>, 11),), record=qtoq69a81c6-e2)] exceeded timeout 5 seconds</code> </pre> <br><p>  Bien sûr, nous avons supposé que quelque part dans les paramètres, cela était fixe.  Nous avons regardé dans les configurations, la documentation et le paquet deb, mais au début, ils n’ont rien trouvé.  En conséquence, la description du paramètre souhaité a été trouvée sur la cinquième page des résultats de la recherche - nous avons réexaminé le code et trouvé le bon endroit.  Le réglage est le suivant: </p><br><pre> <code class="bash hljs">ovs_vsctl_timeout = 30</code> </pre> <br><p>  <em>Nous l'avons réglé pendant 30 secondes (il était de 5), et tout a commencé à fonctionner un peu mieux.</em> </p><br><p>  Voici une autre évidence: lorsque vous redémarrez des composants réseau, certains paramètres d'Open vSwitch peuvent être réinitialisés.  Cela se produit, par exemple, avec ovs-vsctl inactivity_probe.  C'est également un délai d'attente, mais cela affecte les appels d'ovs-vsctl lui-même à sa base de données.  Nous l'avons ajouté à systemd init, ce qui nous a permis de démarrer tous les commutateurs avec les paramètres dont nous avons besoin au démarrage. </p><br><pre> <code class="bash hljs">ovs-vsctl <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> Controller <span class="hljs-string"><span class="hljs-string">"br-int"</span></span> inactivity_probe=30000</code> </pre> <br><h4 id="pro-nastroyki-setevogo-steka">  À propos des paramètres de pile réseau </h4><br><p>  Nous avons également dû nous éloigner un peu des paramètres généralement acceptés dans la pile réseau, que nous utilisons sur nos autres serveurs. </p><br><p>  Voici le paramètre de durée de stockage des enregistrements ARP dans une table: </p><br><pre> <code class="bash hljs">net.ipv4.neigh.default.base_reachable_time = 60 net.ipv4.neigh.default.gc_stale_time=60</code> </pre> <br><p>  La valeur par défaut est 1 jour.  En général, un schéma peut vivre pendant quelques semaines, mais pendant une journée, les schémas peuvent être recréés 4 à 6 fois, tandis que la correspondance de l'adresse MAC et de l'adresse IP change constamment.  Pour que les déchets ne s'accumulent pas, nous avons réglé le temps sur une minute. </p><br><pre> <code class="bash hljs">net.ipv4.conf.default.arp_notify = 1 net.nf_conntrack_max = 1000000 (default 262144) net.netfilter.nf_conntrack_max = 1000000 (default 262144)</code> </pre> <br><p>  De plus, nous avons forcé l'envoi de notifications ARP lors de l'augmentation de l'interface réseau.  Nous avons également augmenté la table conntrack, car lors de l'utilisation de NAT et d'ip flottante, nous n'avions pas la valeur par défaut.  Passé à un million (avec 262 144 par défaut), tout est devenu encore meilleur. </p><br><p>  Nous corrigeons la taille de la table MAC d'Open vSwitch lui-même: </p><br><pre> <code class="bash hljs">ovs-vsctl <span class="hljs-built_in"><span class="hljs-built_in">set</span></span> bridge bt-int other-config:mac-table-size=50000 (default 2048)</code> </pre> <br><p><img src="https://habrastorage.org/webt/px/oi/px/pxoipxvpkzuou-twlr5uf0r28k8.png"><br>  <em>Après tous les réglages, 40% de la charge est devenue presque nulle</em> </p><br><h4 id="rx-flow-hash">  rx-flow-hash </h4><br><p>  Pour répartir le traitement du trafic udp entre toutes les files d'attente et les threads de processeur, nous avons inclus rx-flow-hash.  Sur les cartes réseau Intel, notamment dans le pilote i40e, cette option est désactivée par défaut.  Nous avons des hyperviseurs avec 72 cœurs dans notre infrastructure, et si un seul est occupé, ce n'est pas très optimal. </p><br><p>  C'est fait comme ceci: </p><br><pre> <code class="bash hljs">ethtool -N eno50 rx-flow-hash udp4 sdfn</code> </pre> <br><p><img src="https://habrastorage.org/webt/zj/qp/16/zjqp16xvvxmawd1irfjbwaeia9q.png"></p><br><p>  <strong>Une conclusion importante: vous pouvez tout configurer du tout.</strong>  La configuration par défaut s'intégrera à un moment donné (comme nous l'avons fait), mais le problème avec les délais d'attente a rendu nécessaire la recherche.  Et c'est normal. </p><br><h3 id="pravila-bezopasnosti">  Règles de sécurité </h3><br><p>  Selon les exigences du service de sécurité, tous les projets au sein de l'entreprise ont des règles personnelles et globales - il y en a beaucoup.  Lorsque nous avons déménagé à l'étranger de 300 machines virtuelles vers un seul hyperviseur, tout cela s'est traduit par 80 000 règles pour iptables.  Pour iptables lui-même, ce n'est pas un problème, mais Neutron charge ces règles de RabbitMQ dans un seul flux (car il est écrit en Python, et tout est triste avec le multithreading là-bas).  L'agent Neutron se bloque, perd la connexion avec RabbitMQ et une réaction en chaîne suite à des délais d'attente, et après la récupération, Neutron redemande toutes les règles, démarre la synchronisation et tout recommence. </p><br><p>  Parallèlement à cela, le temps de création des stands est passé de 20 à 40 minutes à, au mieux, une heure. </p><br><p>  Au début, nous avons simplement tout emballé avec des récupérations (déjà à ce stade, nous avons réalisé que le problème ne pouvait pas être résolu si rapidement), puis nous avons commencé à utiliser <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">FWaaS</a> .  Avec lui, nous avons supprimé des règles de sécurité avec des nœuds de calcul pour séparer les nœuds du réseau où se trouve le routeur lui-même. </p><br><p><img src="https://habrastorage.org/webt/ou/dg/r_/oudgr_riwann3smyytraqiommpe.png"><br>  <em>Source - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">docs.openstack.org</a></em> </p><br><p>  Ainsi, à l'intérieur du projet, il y a un accès complet à tout ce qui est nécessaire et des règles de sécurité sont appliquées pour les connexions externes.  Nous avons donc réduit la charge sur Neutron et sommes revenus à 20-30 minutes de création d'un environnement de test. </p><br><h2 id="itog">  Résumé </h2><br><p>  OpenStack est une chose intéressante dans laquelle vous pouvez recycler le fer, créer un cloud interne et créer quelque chose d'autre à partir de celui-ci.  En plus de cela, il y a une grande communauté et un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">groupe</a> actif <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">à Telegram</a> , où ils nous ont informés des temps morts. </p><br><p>  C’est tout.  Posez des questions, mes collègues et moi sommes prêts à répondre et à partager notre expérience. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr427569/">https://habr.com/ru/post/fr427569/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr427557/index.html">Résumé des événements informatiques en novembre (première partie)</a></li>
+<li><a href="../fr427561/index.html">Droit de réparer: les premiers pas dans la bonne direction de Motorola</a></li>
+<li><a href="../fr427563/index.html">Norme SNI cryptée implémentée dans Firefox Nightly</a></li>
+<li><a href="../fr427565/index.html">«Ma réussite est que je suis généralement retourné à la profession» - 10 questions au programmeur, numéro 10</a></li>
+<li><a href="../fr427567/index.html">Cartes hexagonales dans Unity: cycle de l'eau, érosion, biomes, carte cylindrique</a></li>
+<li><a href="../fr427571/index.html">L'union de R et PostgreSQL. Nous analysons le travail des aéroports, calculons les pensions</a></li>
+<li><a href="../fr427573/index.html">Candy or Life: Halloween comme raison pour attirer votre enfant vers la science</a></li>
+<li><a href="../fr427575/index.html">Pourquoi le Wi-Fi ne fonctionnera pas comme prévu et pourquoi savoir quel téléphone l'employé utilise</a></li>
+<li><a href="../fr427577/index.html">Apprentissage automatique vs analyse de signature lors de la détection d'attaques sur une application Web</a></li>
+<li><a href="../fr427579/index.html">Distribution d'applications pour iOS au sein de l'entreprise (Enterprise Distribute iOS App en interne)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

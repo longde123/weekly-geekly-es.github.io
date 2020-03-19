@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>☃️ 🚣🏿 🕵🏾 将真实的应用程序从独立的MySQL迁移到Percona XtraDB集群 🧝🏽 💾 ⏮️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="不幸的是，在Internet上，关于实际应用程序的迁移以及Percona XtraDB群集（以下称为PXC）的生产操作的信息不足。 我将尝试纠正这种情况，并讲述我的经历。 将没有分步安装说明，并且不应将本文视为文档外的替代品，而应将其作为建议的集合。 
+
+ 问题 
+ 我在Ultimate-guita...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>将真实的应用程序从独立的MySQL迁移到Percona XtraDB集群</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/422347/"><img src="https://habrastorage.org/getpro/habr/post_images/2b3/23e/2d3/2b323e2d35539763c7a0d17a4694d5af.png" alt="图片"><br><br> 不幸的是，在Internet上，关于实际应用程序的迁移以及Percona XtraDB群集（以下称为PXC）的生产操作的信息不足。 我将尝试纠正这种情况，并讲述我的经历。 将没有分步安装说明，并且不应将本文视为文档外的替代品，而应将其作为建议的集合。 <br><a name="habracut"></a><br><h3> 问题 </h3><br> 我在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Ultimate-guitar.com</a>担任系统管理员。 由于我们提供Web服务，因此我们自然会有后端和数据库，这是该服务的核心。 服务正常运行时间直接取决于数据库性能。 <br><br>  Percona MySQL 5.7被用作数据库。 保留是使用主复制方案master实现的。 从站用于读取一些数据。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/05a/ca3/bc6/05aca3bc6ba1c357cd98c280e8a07772.png" alt="图片"><br><br> 但是此方案不适合我们，但具有以下缺点： <br><br><ul><li> 由于在MySQL复制中，异步从站可能会无限期滞后。 必须从主机读取所有关键数据。 </li><li> 从上一段可以看出开发的复杂性。 开发人员不仅可以向数据库发出请求，还必须考虑是否在每种情况下都准备好从属服务器的积压工作，如果没有，则从向导中读取数据。 </li><li> 发生事故时进行手动切换。 由于MySQL体系结构没有针对脑裂的内置保护，因此实现自动切换存在问题。 我们将不得不为自己编写一个具有选择主控器复杂逻辑的仲裁器。 当向两个母版写信时，冲突可能同时发生，从而破坏了母版复制并导致经典的裂脑。 </li></ul><br> 一些干燥的数字，以便您了解我们的工作方式： <br><br> 数据库大小：300 GB <br>  QPS：〜10k <br>  RW比率：96/4％ <br> 主服务器配置： <br>  CPU：2个E5-2620 v3 <br> 内存：128 Gb <br> 固态硬盘：英特尔Optane 905p 960 Gb <br> 网络：1 Gbps <br><br> 我们有一个经典的OLTP负载，需要大量阅读，这需要非常快速地完成，并且需要少量的编写。 由于Redis和Memcached中积极使用了缓存，因此数据库的负载很小。 <br><br><h3> 决策选择 </h3><br> 正如您可能从标题中猜到的那样，我们选择了PXC，但在这里我将解释为什么选择它。 <br><br> 我们有4个选择： <br><br><ol><li> 变更DBMS </li><li>  MySQL组复制 </li><li> 在主复制主机上使用脚本自己拧紧必要的功能。 </li><li>  MySQL Galera集群（或其分支，例如PXC） </li></ol><br> 几乎没有考虑过更改数据库的选项，因为 该应用程序很大，在许多地方，它都与mysql功能或语法联系在一起，例如，迁移到PostgreSQL将花费大量时间和资源。 <br><br> 第二个选项是MySQL组复制。 毫无疑问，它是在MySQL的Vanilla分支中开发的，这意味着它将来会变得广泛并且拥有大量的活动用户。 <br><br> 但是他有一些缺点。 首先，它对应用程序和数据库架构施加了更多限制，这意味着迁移将更加困难。 其次，组复制解决了容错和脑裂的问题，但是集群中的复制仍然是异步的。 <br><br> 我们也不喜欢太多自行车的第三种选择，在以这种方式解决问题时，我们不可避免地要实现这一选择。 <br><br>  Galera允许完全解决MySQL故障转移问题，并部分解决与从站上数据相关的问题。 部分原因是维护了复制异步。 在本地节点上提交事务后，更改将异步推送到其余节点，但是群集确保节点不会滞后太多，如果节点开始滞后，则会人为地减慢工作速度。 群集可确保在提交事务后，即使在尚未复制更改的节点上，也没有人可以提交冲突的更改。 <br><br> 迁移后，数据库操作方案应如下所示： <br><br><img src="https://habrastorage.org/getpro/habr/post_images/2d8/435/190/2d8435190207a5bb711d131d852a572f.png" alt="图片"><br><br><h3> 迁移 </h3><br> 为什么选择解决方案后迁移第二个项目？ 这很简单-集群包含应用程序和数据库必须遵循的许多要求，并且我们需要在迁移之前满足它们。 <br><br><ul><li>  <b>所有表的InnoDB引擎。</b> 不支持MyISAM，内存和其他后端。 它很简单地解决了-我们将所有表都转换为InnoDB。 </li><li>  <b>ROW格式的Binlog。</b> 群集不需要二进制日志即可工作，并且如果不需要经典从属，可以将其关闭，但是二进制日志格式应为ROW。 </li><li>  <b>所有表必须具有主键/外键。</b> 这是从不同节点正确并发写入同一表所必需的。 对于那些不包含唯一键的表，可以使用复合主键或自动递增。 </li><li>  <b>请勿对事务使用“ LOCK TABLES”，“ GET_LOCK（）/ RELEASE_LOCK（）”，“ FLUSH TABLES {{table}} WITH READ LOCK”或隔离级别“ SERIALIZABLE”。</b> </li><li>  <b>不要使用“ CREATE TABLE ... AS SELECT”查询</b> ，因为 他们结合了模式和数据更改。 它很容易分为两个查询，第一个查询创建一个表，第二个查询填充数据。 </li><li>  <b>不要使用“ DISCARD TABLESPACE”和“ IMPORT TABLESPACE”</b> ，因为 他们没有被复制 </li><li>  <b>将选项“ innodb_autoinc_lock_mode”设置为“ 2”。</b> 使用STATEMENT复制时，此选项可能会破坏数据，但是由于群集中仅允许ROW复制，因此不会有问题。 </li><li>  <b>作为“ log_output”，仅支持“ FILE”。</b> 如果表中有日志条目，则必须将其删除。 </li><li>  <b>不支持XA事务。</b> 如果使用了它们，则必须在没有它们的情况下重写代码。 </li></ul><br> 我应该注意，如果您设置变量'pxc_strict_mode = PERMISSIVE'，几乎所有这些限制都可以删除，但是如果您的数据对您很重要，那么最好不要这样做。 如果设置了“ pxc_strict_mode = ENFORCING”，则MySQL将不允许您执行上述操作或阻止节点启动。 <br><br> 在满足了数据库的所有要求并在开发环境中全面测试了我们的应用程序的运行之后，我们可以进入下一个阶段。 <br><br><h3> 群集部署和配置 </h3><br> 我们在数据库服务器上运行着几个数据库，其他数据库不需要迁移到集群。 但是带有MySQL群集的软件包可以代替经典的mysql。 对于此问题，我们有几种解决方案： <br><br><ul><li>  <b>使用虚拟化并在VM中启动群集。</b> 我们之所以不喜欢此选项，是因为其开销很大（与其余部分相比），并且需要维修另一个实体 </li><li>  <b>构建您的软件包版本，这会将mysql放在非标准位置。</b> 因此，在一台服务器上可以有多个版本的mysql。 如果您有许多服务器，那么这是一个不错的选择，但是需要定期更新软件包的持续支持会花费大量时间。 </li><li>  <b>使用Docker。</b> </li></ul><br> 我们选择了Docker，但在最小选项中使用了它。 对于数据存储，使用本地卷。  “ --net host”操作模式用于减少网络延迟和CPU负载。 <br><br> 我们还必须构建我们自己的Docker映像版本。 原因是Percona的标准映像在启动时不支持还原位置。 这意味着，每次重新启动实例时，它不会执行快速的IST同步（仅上载必要的更改），而是执行缓慢的SST，从而完全重新加载数据库。 <br><br> 另一个问题是群集大小。 在群集中，每个节点都存储整个数据集。 因此，阅读随着簇大小的增加而完美地缩放。 与记录相反，情况相反-提交时，将验证每个事务在所有节点上是否没有冲突。 自然，节点越多，提交将花费的时间越多。 <br> 在这里，我们还有几种选择： <br><br><ul><li>  <b>2个节点+仲裁器。</b>  2个节点+仲裁器。 测试的好选择。 在部署第二个节点期间，主节点不应记录。 <br></li><li>  <b>3个节点。</b> 经典版本。 速度与可靠性之间的平衡。 请注意，在此配置中，一个节点必须扩展整个负载，因为 在添加第三个节点时，第二个将是施主。 <br></li><li>  <b>4个以上的节点。</b> 对于偶数个节点，有必要添加一个仲裁器以避免裂脑。 一个非常适合大量阅读的选项。 群集的可靠性也在增长。 </li></ul><br> 到目前为止，我们已经选择了具有3个节点的选项。 <br><br> 集群配置几乎完全复制了独立的MySQL配置，并且仅在几个选项上有所不同： <br><br>  <b>“ Wsrep_sst_method = xtrabackup-v2”</b>此选项设置复制节点的方法。 其他选项是mysqldump和rsync，但它们在复制期间会阻塞节点。 我认为没有理由使用non-xtrabackup-v2复制方法。 <br><br>  <b>“ Gcache”</b>是集群binlog的类似物。 它是固定大小的循环缓冲区（在文件中），所有更改都写入其中。 如果关闭群集节点之一，然后再将其重新打开，它将尝试从Gcache读取丢失的更改（IST同步）。 如果它没有节点所需的更改，则将需要完全重新加载节点（SST同步）。  gcache的大小设置如下：wsrep_provider_options ='gcache.size = 20G;'。 <br><br>  <b>wsrep_slave_threads</b>与集群中的经典复制不同，可以将多个“写集”并行应用于同一数据库。 此选项指示应用更改的工作人员数量。 最好不要保留默认值1，因为 在工作者应用大写集的过程中，其余的将在队列中等待，并且节点复制将开始滞后。 有人建议将此参数设置为2 * CPU THREADS，但是我认为您需要查看您具有的并发写入操作的数量。 <br><br> 我们将值定为64。在较低的值上，集群有时无法在负载突发期间（例如，启动重冠时）无法应用队列中的所有写集。 <br><br>  <b>wsrep_max_ws_size</b>集群中单个事务<b>的</b>大小限制为2 GB。 但是，大笔交易与PXC概念不太吻合。 最好完成100个20 MB的事务，而不是每2 GB 1个事务。 因此，我们首先将群集中的事务大小限制为100 MB，然后将限制减小为50 MB。 <br><br> 如果启用了严格模式，则可以将变量“ <b>binlog_row_image</b> ”设置为“ minimal”。 这将使binlog中条目的大小减少数倍（Percona测试中为10倍）。 这样可以节省磁盘空间，并允许不符合“ binlog_row_image = full”限制的事务。 <br><br>  <b>SST的限制。</b> 对于用于填充节点的Xtrabackup，您可以设置网络使用，线程数和压缩方法的限制。 这是必要的，以便在节点被填充时，施主服务器不会开始变慢。 为此，将“ sst”部分添加到my.cnf文件中： <br><br><pre><code class="hljs powershell">[<span class="hljs-type"><span class="hljs-type">sst</span></span>] rlimit = <span class="hljs-number"><span class="hljs-number">80</span></span>m compressor = <span class="hljs-string"><span class="hljs-string">"pigz -3"</span></span> decompressor = <span class="hljs-string"><span class="hljs-string">"pigz -dc"</span></span> backup_threads = <span class="hljs-number"><span class="hljs-number">4</span></span></code> </pre> <br> 我们将复制速度限制为80 Mb / s。 我们使用Pigz进行压缩，这是gzip的多线程版本。 <br><br>  <b>GTID</b>如果您使用经典从站，则建议在集群上启用GTID。 这将允许您将从站连接到群集的任何节点，而无需重新加载从站。 <br><br> 另外，我想谈谈2个集群机制，它们的含义和配置。 <br><br><h4> 流量控制 </h4><br> 流控制是一种管理集群中的写负载的方法。 它不允许节点在复制中滞后太多。 这样，实现了“几乎同步”的复制。 操作机制非常简单-接收队列长度达到设置值后，它将向其他节点发送消息“流控制暂停”，该消息告诉其他节点暂停提交新事务，直到滞后节点完成耙入队列。 <br><br> 由此得出以下几点： <br><br><ol><li> 群集中的记录将以最慢的节点速度进行。  （但是可以收紧。） </li><li> 如果在提交事务时有很多冲突，则可以更积极地配置Flow Control，这将减少它们的数量。 </li><li> 群集中节点的最大延迟是一个常数，但不是时间，而是队列中的事务数。 滞后时间取决于平均事务大小和wsrep_slave_threads的数量。 </li></ol><br> 您可以按以下方式查看流控制设置： <br><br> <code>mysql&gt; SHOW GLOBAL STATUS LIKE 'wsrep_flow_control_interval_%'; <br> wsrep_flow_control_interval_low | 36 <br> wsrep_flow_control_interval_high | 71 <br></code> <br> 首先，我们对wsrep_flow_control_interval_high参数感兴趣。 它控制队列的长度，然后打开FC暂停。 该参数由以下公式计算：gcs.fc_limit *√N（其中N =群集中的节点数。）。 <br><br> 第二个参数是wsrep_flow_control_interval_low。 它负责队列长度的值，到达该值时将关闭FC。 由以下公式计算：wsrep_flow_control_interval_high * gcs.fc_factor。 默认情况下，gcs.fc_factor = 1。 <br><br> 因此，通过更改队列的长度，我们可以控制复制延迟。 减少队列的长度将增加群集花费在FC暂停上的时间，但会减少节点的延迟。 <br><br> 您可以设置会话变量“ <b>wsrep_sync_wait</b> = 7”。 这将强制PXC仅在应用当前队列中的所有写集之后执行读或写请求。 自然，这将增加请求的延迟。 延迟的增加与队列的长度成正比。 <br><br> 还希望将最大交易规模减小到最小，以使长交易不会意外漏掉。 <br><br><h4>  EVS或自动逐出 </h4><br> 此机制使您可以丢弃不稳定（例如，数据包丢失或长时间延迟）或响应缓慢的节点。 多亏了它，与一个节点的通信问题将不会放置整个群集，而是让该节点被禁用并继续以正常模式工作。 当群集通过WAN或不受您控制的网络部分运行时，此机制特别有用。 默认情况下，EVS是关闭的。 <br><br> 要启用它，请将选项“ evs.version = 1;”添加到<b>wsrep_provider_options</b>参数中 和“ evs.auto_evict = 5;”  （节点关闭之后的操作次数。值为0会禁用EVS。）还有几个参数可让您微调EVS： <br><br><ul><li>  <b>evs.delayed_margin</b>节点响应所花费<b>的</b>时间。 默认情况下为1秒，但是在本地网络上工作时，可以将其降低到0.05-0.1秒或更短。 </li><li>  <b>evs.inactive_check_period</b>检查周期。 预设0.5秒 </li></ul><br> 实际上，在触发EVS之前出现问题时，节点可以工作的时间是evs.inactive_check_period * evs.auto_evict。 您还可以设置“ evs.inactive_timeout”，并且默认情况下15秒将立即丢弃不响应的节点。 <br><br> 一个重要的细微差别是，该机制本身在恢复通信时不会将节点返回。 必须手动重新启动。 <br><br> 我们在家里设置了EVS，但我们没有机会在战斗中对其进行测试。 <br><br><h3> 负载均衡 </h3><br> 为了使客户端平均使用每个节点的资源并仅在活动集群节点上执行请求，我们需要一个负载平衡器。  Percona提供2种解决方案： <br><br><ul><li>  <b>ProxySQL。</b> 这是MySQL的L7代理。 </li><li>  <b>happroxy。</b> 但是Haproxy不知道如何检查群集节点的状态并确定它是否准备好执行请求。 为了解决此问题，建议使用附加的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">percona-clustercheck脚本</a> </li></ul><br> 最初，我们想使用ProxySQL，但是在进行基准测试后，即使使用fast_forward模式，延迟也会使Haproxy损失约15-20％（查询重写，路由和许多其他ProxySQL函数在该模式下不起作用，请求按原样被代理） 。 <br><br>  Haproxy更快，但是Percona脚本有一些缺点。 <br><br> 首先，它是用bash编写的，这对其自定义没有帮助。 更严重的问题是它不缓存MySQL检查的结果。 因此，如果我们有100个客户端，每个客户端每1秒钟检查一次节点状态，则脚本将每10毫秒向MySQL发出一次请求。 如果由于某种原因MySQL开始运行缓慢，那么验证脚本将开始创建大量进程，这肯定不会改善这种情况。 <br><br> 决定编写<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">一种解决方案</a> ，其中MySQL状态检查和Haproxy响应彼此不相关。 该脚本会定期检查后台节点的状态，并缓存结果。  Web服务器为Haproxy提供缓存的结果。 <br><br><div class="spoiler">  <b class="spoiler_title">Haproxy配置示例</b> <div class="spoiler_text"> <code>listen db <br> bind 127.0.0.1:3302 <br> mode tcp <br> balance first <br> default-server inter 200 rise 6 fall 6 <br> option httpchk HEAD / <br> server node1 192.168.0.1:3302 check port 9200 id 1 <br> server node2 192.168.0.2:3302 check port 9200 backup id 2 <br> server node3 192.168.0.3:3302 check port 9200 backup id 3 <br> <br> listen db_slave <br> bind 127.0.0.1:4302 <br> mode tcp <br> balance leastconn <br> default-server inter 200 rise 6 fall 6 <br> option httpchk HEAD / <br> server node1 192.168.0.1:3302 check port 9200 backup <br> server node2 192.168.0.2:3302 check port 9200 <br> server node3 192.168.0.3:3302 check port 9200 <br></code> <br> 本示例显示单个向导配置。 其余的群集服务器充当从属服务器。 <br></div></div><br><h3> 监控方式 </h3><br> 为了监视集群状态，我们使用了Prometheus + mysqld_exporter和Grafana来可视化数据。 因为  mysqld_exporter收集了很多指标来自己创建仪表板，这非常繁琐。 您可以<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">从Percona</a>获取现成的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">仪表板，</a>并为自己定制它们。 <br><br> 我们还使用Zabbix收集基本的集群指标和警报。 <br><br> 您要监视的主要群集指标： <br><br><ul><li>  <b>wsrep_cluster_status</b>必须在所有节点上都设置为Primary。 如果值为“ non-Primary”，则此节点已失去与群集仲裁的联系。 </li><li>  <b>wsrep_cluster_size</b>集群中的节点数。 这也包括“丢失”的节点，这些节点必须在群集中，但由于某些原因不可用。 轻轻关闭节点时，此变量的值减小。 </li><li>  <b>wsrep_local_state</b>指示节点是否是集群的活动成员并且准备就绪。 </li><li>  <b>wsrep_evs_state</b>如果已启用“自动逐出”（默认为关闭）， <b>则为</b>重要参数。 此变量表示EVS认为此节点运行状况良好。 </li><li>  <b>wsrep_evs_evict_list</b> EVS从集群抛出的节点列表。 在正常情况下，列表应该为空。 </li><li>  <b>wsrep_evs_delayed</b>除去EVS的候选<b>对象的</b>列表。 还必须为空。 </li></ul><br> 关键绩效指标： <br><br><ul><li>  <b>wsrep_evs_repl_latency</b>显示（最小/平均/最大/高级偏差/数据包大小）集群内的通信延迟。 即，它测量网络延迟。 值增加可能表示网络或群集节点过载。 即使关闭EVS，也会记录此指标。 </li><li>  <b>wsrep_flow_control_paused_ns</b>自节点启动以来在流控制暂停中花费<b>的</b>时间（以ns为单位）。 理想情况下，它应该为0。此参数的增长表明集群性能存在问题或缺少“ wsrep_slave_threads”。 您可以通过参数“ <b>wsrep_flow_control_sent</b> ”确定哪个节点变慢。 </li><li>  <b>wsrep_flow_control_paused</b>自上次执行“ FLUSH STATUS”以来的时间百分比，该节点花费在Flow控制上暂停。 与先前的变量一样，它应趋于零。 </li><li>  <b>wsrep_flow_control_status</b>指示流控制当前是否正在运行。 在FC暂停启动节点上，此变量的值为ON。 </li><li>  <b>wsrep_local_recv_queue_avg</b>平均接收队列长度。 此参数的增加表明节点性能存在问题。 </li><li>  <b>wsrep_local_send_queue_avg</b>发送队列的平均长度。 此参数的增加表示网络性能问题。 </li></ul><br> 这些参数的值没有通用的建议。 显然，它们应该趋于零，但是在实际负载下，情况极有可能并非如此，您必须自己确定群集正常状态的边界通过的位置。 <br><br><h3> 后备 </h3><br> 集群备份实际上与独立的mysql没有什么不同。 对于生产用途，我们有几种选择。 <br><br><ul><li> 使用xtrabackup从“增益”节点之一中删除备份。 最简单的选择，但是在备份群集期间，性能将被浪费。 </li><li> 使用经典从属服务器并从副本进行备份。 </li></ul><br> 具有独立备份和使用xtrabackup创建的群集版本的备份可相互移植。 也就是说，可以将从群集中获取的备份部署到独立的mysql，反之亦然。 自然，MySQL的主要版本应该匹配，最好是次要版本。 使用mysqldump进行的备份自然也可以移植。 <br><br> 唯一的警告是，在部署备份之后，必须运行mysql_upgrade脚本，该脚本将检查并更正某些系统表的结构。 <br><br><h3> 资料迁移 </h3><br> 现在我们已经弄清了配置，监视和其他内容，我们可以开始迁移到产品了。 <br><br> 我们的方案中的数据迁移非常简单，但是有点麻烦；）。 <br> 图例-主机1和主机2通过主机复制主机连接。 记录仅转到主服务器1。主服务器3是一台干净的服务器。 <br><br> 我们的迁移计划（在该计划中，为简单起见，我将省略与从属服务器的操作，而只谈论主服务器）。 <br><br><h4> 尝试1 </h4><br><ol><li> 使用xtrabackup从主机1删除数据库备份。 </li><li> 将备份复制到主服务器3，然后以单节点模式运行群集。 </li><li> 在主机3和主机1之间设置主机复制。 </li><li> 将读写切换到主机3.检查应用程序。 </li><li> 在主服务器2上，关闭复制并启动群集MySQL。 我们正在等待他从主服务器3复制数据库。在复制过程中，我们有一个群集，其中一个节点处于“捐赠者”状态，而另一个节点仍未工作。 在复制期间，我们得到了一堆锁，最后两个节点都因错误而掉线（由于死锁而无法创建新节点）。 这个小实验耗费了我们四分钟的停机时间。 </li><li> 将读写切换回主机1。 </li></ol><br> 由于在数据库上的开发环境中测试电路时，实际上没有写流量，并且在负载下重复同一电路时，出现了问题，因此迁移不起作用。 <br> 为了避免这些问题，我们对迁移方案进行了些微更改，然后第二次成功重试；）。 <br><br><h4> 尝试2 </h4><br><ol><li> 我们重新启动母版3，以便它可以在单节点模式下再次运行。 </li><li> 我们再次在master 2上引发集群MySQL。 目前，来自复制的流量仅流向群集，因此锁没有重复出现的问题，并且第二个节点已成功添加到群集。 </li><li> 再次，将读写切换到主机3。我们检查应用程序的操作。 </li><li> 禁用与master 1的master复制。在master 1上打开集群mysql，并等待其启动。 为了避免踩到相同的耙子，重要的是应用程序不要写入Donor节点（有关详细信息，请参阅负载平衡部分）。 启动第三个节点后，我们将具有三个节点的功能齐全的集群。 </li><li> 您可以从群集的一个节点上删除备份，并创建所需的经典从站数量。 </li></ol><br> 第二种方案与第一种方案的区别在于，仅在提升集群中的第二个节点之后，我们才将流量切换到集群。 <br><br> 这个过程大约花了我们6个小时。 <br><br><h3> 多主机 </h3><br> 迁移之后，我们的集群以单主机模式工作，也就是说，整个记录进入了其中一台服务器，而其余的仅读取了数据。 <br><br> 将生产切换到多主模式后，我们遇到了一个问题-发生事务冲突的频率比我们预期的要高。 这对于修改许多记录的查询尤其不利，例如，更新表中所有记录的值。 那些在群集上的同一节点上依次成功执行的事务将并行执行，较长的事务将收到死锁错误。 在进行了几次尝试以解决应用程序级别的问题之后，我不会再拖延了，我们放弃了多主设备的想法。 <br><br><h3> 其他细微差别 </h3><br><ul><li> 群集可以是从属。 使用此功能时，建议将除从站选项“ skip_slave_start = 1”之外的所有节点添加到配置中。 否则，每个新节点都将从主服务器开始复制，这将导致复制错误或副本上的数据损坏。 </li><li> 正如我所说的捐助者，一个节点不能正确地为客户服务。 必须记住，在一个由三个节点组成的群集中，可能会出现以下情况：一个节点已流出，第二个节点是捐助方，仅剩下一个节点可用于客户服务。 </li></ul><br><h3> 结论 </h3><br> 经过迁移和一些操作时间后，我们得出以下结论。 <br><br><ul><li>  Galera集群可以正常工作并且非常稳定（至少只要没有异常的节点掉落或异常行为即可）。 在容错方面，我们得到了我们想要的。 </li><li>  Percona的多主报表主要是市场营销。 是的，可以在此模式下使用集群，但这将需要对该使用模型的应用程序进行深度改动。 </li><li> 没有同步复制，但是现在我们控制（在事务中）节点的最大延迟。 再加上最大事务大小为50 MB的限制，我们可以相当准确地预测节点的最大延迟时间。 开发人员编写代码变得更加容易。 </li><li> 在监视中，我们观察到复制队列增长的短期峰值。 原因是在我们的1 Gbit / s网络中。 可以在这样的网络上运行群集，但是在负载突发期间会出现问题。 现在我们计划将网络升级到10 Gbit / s。 </li></ul><br> 我们总共收到了三个“愿望清单”，大约一个半。 最重要的要求是容错能力。 <br><br> 对于那些感兴趣的人，我们的PXC配置文件： <br><br><div class="spoiler">  <b class="spoiler_title">my.cnf</b> <div class="spoiler_text"> <code>[mysqld] <br> #Main <br> server-id = 1 <br> datadir = /var/lib/mysql <br> socket = mysql.sock <br> port = 3302 <br> pid-file = mysql.pid <br> tmpdir = /tmp <br> large_pages = 1 <br> skip_slave_start = 1 <br> read_only = 0 <br> secure-file-priv = /tmp/ <br> <br> #Engine <br> innodb_numa_interleave = 1 <br> innodb_flush_method = O_DIRECT <br> innodb_flush_log_at_trx_commit = 2 <br> innodb_file_format = Barracuda <br> join_buffer_size = 1048576 <br> tmp-table-size = 512M <br> max-heap-table-size = 1G <br> innodb_file_per_table = 1 <br> sql_mode = "NO_ENGINE_SUBSTITUTION,NO_AUTO_CREATE_USER,ERROR_FOR_DIVISION_BY_ZERO" <br> default_storage_engine = InnoDB <br> innodb_autoinc_lock_mode = 2 <br> <br> #Wsrep <br> wsrep_provider = "/usr/lib64/galera3/libgalera_smm.so" <br> wsrep_cluster_address = "gcomm://192.168.0.1:4577,192.168.0.2:4577,192.168.0.3:4577" <br> wsrep_cluster_name = "prod" <br> wsrep_node_name = node1 <br> wsrep_node_address = "192.168.0.1" <br> wsrep_sst_method = xtrabackup-v2 <br> wsrep_sst_auth = "USER:PASS" <br> pxc_strict_mode = ENFORCING <br> wsrep_slave_threads = 64 <br> wsrep_sst_receive_address = "192.168.0.1:4444" <br> wsrep_max_ws_size = 50M <br> wsrep_retry_autocommit = 2 <br> wsrep_provider_options = "gmcast.listen_addr=tcp://192.168.0.1:4577; ist.recv_addr=192.168.0.1:4578; gcache.size=30G; pc.checksum=true; evs.version=1; evs.auto_evict=5; gcs.fc_limit=80; gcs.fc_factor=0.75; gcs.max_packet_size=64500;" <br> <br> #Binlog <br> expire-logs-days = 4 <br> relay-log = mysql-relay-bin <br> log_slave_updates = 1 <br> binlog_format = ROW <br> binlog_row_image = minimal <br> log_bin = mysql-bin <br> log_bin_trust_function_creators = 1 <br> <br> #Replication <br> slave-skip-errors = OFF <br> relay_log_info_repository = TABLE <br> relay_log_recovery = ON <br> master_info_repository = TABLE <br> gtid-mode = ON <br> enforce-gtid-consistency = ON <br> <br> #Cache <br> query_cache_size = 0 <br> query_cache_type = 0 <br> thread_cache_size = 512 <br> table-open-cache = 4096 <br> innodb_buffer_pool_size = 72G <br> innodb_buffer_pool_instances = 36 <br> key_buffer_size = 16M <br> <br> #Logging <br> log-error = /var/log/stdout.log <br> log_error_verbosity = 1 <br> slow_query_log = 0 <br> long_query_time = 10 <br> log_output = FILE <br> innodb_monitor_enable = "all" <br> <br> #Timeout <br> max_allowed_packet = 512M <br> net_read_timeout = 1200 <br> net_write_timeout = 1200 <br> interactive_timeout = 28800 <br> wait_timeout = 28800 <br> max_connections = 22000 <br> max_connect_errors = 18446744073709551615 <br> slave-net-timeout = 60 <br> <br> #Static Values <br> ignore_db_dir = "lost+found" <br> <br> [sst] <br> rlimit = 80m <br> compressor = "pigz -3" <br> decompressor = "pigz -dc" <br> backup_threads = 8 <br></code> <br></div></div><br><h3> 来源和有用的链接 </h3><br>  → <a href="">我们的Docker映像</a> <br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Percona XtraDB Cluster 5.7文档</a> <br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">监视群集状态-Galera群集文档</a> <br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Galera状态变量-Galera群集文档</a> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN422347/">https://habr.com/ru/post/zh-CN422347/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN422335/index.html">最小的Linux电脑</a></li>
+<li><a href="../zh-CN422337/index.html">Yandex推出了云</a></li>
+<li><a href="../zh-CN422339/index.html">“我认为JavaScript不适合网络使用。” 给程序员的10个问题，第4个发布（来自柏林）</a></li>
+<li><a href="../zh-CN422341/index.html">物联网-在别人思考的同时进行推广</a></li>
+<li><a href="../zh-CN422345/index.html">云中的服务器：项目摘要</a></li>
+<li><a href="../zh-CN422359/index.html">您完成的任务的结果。 还是不</a></li>
+<li><a href="../zh-CN422361/index.html">企业综合症</a></li>
+<li><a href="../zh-CN422363/index.html">俄罗斯PyCon 2018会议：所有报告和演示的视频</a></li>
+<li><a href="../zh-CN422365/index.html">Yandex针对法院决定删除盗版内容的链接提出了申诉</a></li>
+<li><a href="../zh-CN422367/index.html">如何为“完全油门修复”还原视频。 第二部分</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

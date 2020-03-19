@@ -1,0 +1,120 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌡️ 👨🏾‍🎤 💇🏻 羽ura 高性能GraphQL到SQL Server的体系结构 🤽 ♨️ 👩🏿‍🎨</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="哈Ha！ 我向您介绍了文章“高性能GraphQL到SQL引擎的体系结构”的翻译。 
+
+ 这是一篇文章的翻译，内容涉及Hasura的内部结构，优化和体系结构解决方案的引入-高性能的轻量级GraphQL服务器，充当Web应用程序和PostgreSQL数据库之间的一层。 
+
+ 它允许您基于现有数据库生成G...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>羽ura 高性能GraphQL到SQL Server的体系结构</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/428133/"> 哈Ha！ 我向您介绍了文章<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">“高性能GraphQL到SQL引擎的体系结构”</a>的翻译。 <br><br> 这是一篇文章的翻译，内容涉及Hasura的内部结构，优化和体系结构解决方案的引入-高性能的轻量级GraphQL服务器，充当Web应用程序和PostgreSQL数据库之间的一层。 <br><br> 它允许您基于现有数据库生成GraphQL模式或创建一个新数据库。 它支持基于Postgres触发器的盒装GraphQL订阅，动态访问控制，自动生成联接，解决了N + 1个请求（分批处理）的问题，等等。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/tb/tq/nt/tbtqntldyuxalrgy5wvz9exu5kc.png" width="400"></div><a name="habracut"></a><br> 您可以在PostgreSQL中使用外键约束在单个查询中检索层次结构数据。 例如，您可以执行此查询以获取专辑及其对应的曲目（如果在指向“专辑”表的“曲目”表中创建了外键） <br><br><pre><code class="hljs dos">{ album (where: {year: {_eq: <span class="hljs-number"><span class="hljs-number">2018</span></span>}}) { <span class="hljs-built_in"><span class="hljs-built_in">title</span></span> tracks { id <span class="hljs-built_in"><span class="hljs-built_in">title</span></span> } } }</code> </pre> <br> 您可能已经猜到了，您可以请求任何深度的数据。 该API与访问控制相结合，使Web应用程序可以从PostgreSQL查询数据，而无需编写自己的后端。 它旨在尽快执行查询，具有高带宽，同时节省服务器上的处理器时间和内存消耗。 我们将讨论使我们实现这一目标的体系结构解决方案。 <br><br><h2> 请求生命周期 </h2><br> 发送给Hasura的请求经历以下阶段： <br><br><ol><li>  <b>接收会话</b> ：请求进入网关，网关检查密钥（如果有）并添加各种标头，例如标识符和用户角色。 </li><li>  <b>解析请求</b> ：Hasura接收请求，解析标头以获取有关用户的信息，并基于请求正文创建GraphQL AST。 </li><li>  <b>请求验证</b> ：检查请求在语义上是否正确，然后应用与用户角色相对应的访问权限。 </li><li>  <b>查询执行</b> ：查询被转换为SQL并发送给Postgres。 </li><li>  <b>响应生成</b> ：处理SQL查询的结果并将其发送到客户端（ <i>如果需要</i> ， <i>网关可以使用gzip</i> ）。 </li></ol><br><h2> 目标 </h2><br> 要求大致如下： <br><br><ol><li>  HTTP堆栈应增加最小的开销，并能够处理许多并发请求以实现高吞吐量。 </li><li> 通过GraphQL查询快速生成SQL。 </li><li> 生成的SQL查询对于Postgres应该是有效的。 </li><li>  SQL查询的结果应从Postgres有效地传回。 </li></ol><br><h2>  GraphQL查询处理 </h2><br> 有几种方法可获取GraphQL查询所需的数据： <br><br><h3> 常规解析器 </h3><br> 执行GraphQL查询通常涉及为每个字段调用解析器。 <br> 在示例请求中，我们获得了2018年发行的专辑，然后为每张专辑请求与之对应的曲目-N + 1请求的经典问题。 查询数量随着查询深度的增加而呈指数增长。 <br><br>  Postgres发出的请求将是： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>,title <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> album <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">year</span></span> = <span class="hljs-number"><span class="hljs-number">2018</span></span>;</code> </pre><br> 此请求将把所有专辑退还给我们。 假设请求返回的专辑数量等于N。那么对于每个专辑，我们将执行以下请求： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>,title <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tracks <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> album_id = &lt;album-<span class="hljs-keyword"><span class="hljs-keyword">id</span></span>&gt;</code> </pre><br> 总共，您获得N + 1个查询以获取所有必需的数据。 <br><br><h3> 批处理请求 </h3><br> 诸如数据<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">加载</a>器之类的工具旨在使用批处理解决N + 1个请求的问题。 对嵌入式数据进行SQL查询的次数不再取决于初始样本的大小，因为 现在，它会影响GraphQL查询中的节点数。 在这种情况下，需要2个对Postgres的请求才能获得所需的数据： <br><br> 我们得到相册： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>,title <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> album <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">year</span></span> = <span class="hljs-number"><span class="hljs-number">2018</span></span></code> </pre><br> 我们获得了上一个请求中收到的专辑的曲目： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">id</span></span>, title <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> tracks <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> album_id <span class="hljs-keyword"><span class="hljs-keyword">IN</span></span> {the <span class="hljs-keyword"><span class="hljs-keyword">list</span></span> <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> album ids}</code> </pre><br> 总共收到2个查询。 我们避免在每个专辑的曲目上执行SQL查询；相反，我们使用WHERE运算符一次在一个查询中获取所有必需的曲目。 <br><br><h3> 加入 </h3><br>  Dataloader旨在与不同的数据源一起使用，并且不允许利用特定数据源的功能。 在我们的案例中，Postgres是唯一的数据源，并且像所有关系数据库一样，它提供了使用JOIN运算符通过单个查询从多个表收集数据的功能。 我们可以确定GraphQL查询所需的所有表，并使用JOIN生成单个SQL查询以获取所有数据。 事实证明，使用单个SQL查询可以获取任何GraphQL查询所需的数据。 该数据在发送到客户端之前先进行转换。 <br><br> 这样的要求： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> album.id <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> album_id, album.title <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> album_title, track.id <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> track_id, track.title <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> track_title <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> album <span class="hljs-keyword"><span class="hljs-keyword">LEFT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">OUTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> track <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (album.id = track.album_id) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> album.year = <span class="hljs-number"><span class="hljs-number">2018</span></span></code> </pre><br> 将返回给我们这样的数据： <br><br><pre> <code class="sql hljs">album_id, album_title, track_id, track_title 1, Album1, 1, track1 1, Album1, 2, track2 2, Album2, NULL, NULL</code> </pre><br> 然后将其转换为JSON并发送给客户端： <br><br><pre> <code class="hljs json">[ { <span class="hljs-attr"><span class="hljs-attr">"title"</span></span> : <span class="hljs-string"><span class="hljs-string">"Album1"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"tracks"</span></span>: [ {<span class="hljs-attr"><span class="hljs-attr">"id"</span></span> : <span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-attr"><span class="hljs-attr">"title"</span></span>: <span class="hljs-string"><span class="hljs-string">"track1"</span></span>}, {<span class="hljs-attr"><span class="hljs-attr">"id"</span></span> : <span class="hljs-number"><span class="hljs-number">2</span></span>, <span class="hljs-attr"><span class="hljs-attr">"title"</span></span>: <span class="hljs-string"><span class="hljs-string">"track2"</span></span>} ] }, { <span class="hljs-attr"><span class="hljs-attr">"title"</span></span> : <span class="hljs-string"><span class="hljs-string">"Album2"</span></span>, <span class="hljs-attr"><span class="hljs-attr">"tracks"</span></span> : [] } ]</code> </pre><br><h2> 优化响应生成 </h2><br> 我们发现查询处理中的大部分时间都花在了将SQL查询结果转换为JSON的功能上。 <br><br> 在尝试以各种方式优化此功能后，我们决定将其转移到Postgres。  Postgres 9.4（ <i>在Hasura的第一个版本发布时发布</i> ）添加了JSON聚合功能，可帮助我们完成工作。 经过优化之后，SQL查询开始看起来像这样： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> json_agg(r.*) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> album.title <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> title, json_agg(track.*) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> tracks <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> album <span class="hljs-keyword"><span class="hljs-keyword">LEFT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">OUTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> track <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (album.id = track.album_id) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> album.year = <span class="hljs-number"><span class="hljs-number">2018</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> album.id ) r</code> </pre><br> 该查询的结果将只有一列和一行，并且该值将被发送到客户端，而无需任何进一步的转换。 根据我们的测试，这种方法比Haskell转换函数快3到6倍。 <br><br><h2> 准备好的陈述 </h2><br> 取决于查询的嵌套级别和使用条件，生成的SQL查询可能非常大且复杂。 通常，Web应用程序具有一组查询，这些查询使用不同的参数重复执行。 例如，上一个查询需要在2017年而不是2018年执行。预准备语句最适合于重复的复杂SQL查询（其中仅更改参数）的情况。 <br><br> 假设此查询是第一次执行： <br><br><pre> <code class="hljs dos">{ album (where: {year: {_eq: <span class="hljs-number"><span class="hljs-number">2018</span></span>}}) { <span class="hljs-built_in"><span class="hljs-built_in">title</span></span> tracks { id <span class="hljs-built_in"><span class="hljs-built_in">title</span></span> } } }</code> </pre><br> 我们为SQL查询创建一个准备好的语句，而不是执行它： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">PREPARE</span></span> prep_1 <span class="hljs-keyword"><span class="hljs-keyword">AS</span></span> <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> json_agg(r.*) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> ( <span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> album.title <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> title, json_agg(track.*) <span class="hljs-keyword"><span class="hljs-keyword">as</span></span> tracks <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> album <span class="hljs-keyword"><span class="hljs-keyword">LEFT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">OUTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">JOIN</span></span> track <span class="hljs-keyword"><span class="hljs-keyword">ON</span></span> (album.id = track.album_id) <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> album.year = $<span class="hljs-number"><span class="hljs-number">1</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> album.</code> </pre><br> 之后，我们立即执行它： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> prep_1(<span class="hljs-string"><span class="hljs-string">'2018'</span></span>);</code> </pre><br> 当您需要执行2017年的GraphQL查询时，我们只需使用不同的参数调用相同的预处理语句即可： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">EXECUTE</span></span> prep_1(<span class="hljs-string"><span class="hljs-string">'2017'</span></span>);</code> </pre><br> 根据GraphQL查询的复杂程度，这将使速度提高大约10-20％。 <br><br><h2> 哈斯克尔 </h2><br>  Haskell运作良好的原因有几个： <br><br><ul><li> 具有出色性能的编译语言（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处有更多详细信息</a> ）。 </li><li> 非常高效的HTTP堆栈（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">warp</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">warp的体系结构</a> ）。 </li><li> 我们以前的语言经验。 </li></ul><br><h2> 最后 </h2><br> 上面提到的所有优化都带来了非常明显的性能优势： <br><br><img src="https://habrastorage.org/webt/oq/fl/gj/oqflgjy29zi_ar0amyy6xfggvbc.png"><br><br> 实际上，与直接调用PostgreSQL相比，低内存消耗和微不足道的延迟使大多数情况下，可以通过调用GraphQL API来替换后端中的ORM。 <br><br>  <b>基准测试：</b> <br><br> 测试台： <br><br><ol><li> 配备8GB RAM和i7的笔记本电脑 </li><li> 在同一台计算机上运行的Postgres </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">wrk</a>用作比较工具，针对各种类型的请求，我们尝试“最大化” RPS </li><li>  Hasura GraphQL引擎的一个实例 </li><li> 连接池大小：50 </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">数据集</a> </li></ol><br><br>  <b>请求1：tracks_media_some</b> <br><br><pre> <code class="hljs pgsql">query tracks_media_some { tracks (<span class="hljs-keyword"><span class="hljs-keyword">where</span></span>: {composer: {_eq: "Kurt Cobain"}}){ id <span class="hljs-type"><span class="hljs-type">name</span></span> album { id title } media_type { <span class="hljs-type"><span class="hljs-type">name</span></span> } }}</code> </pre><br><ul><li> 每秒请求数：1375请求/秒 </li><li> 延迟：17.5ms </li><li>  CPU：〜30％ </li><li> 内存：〜30MB（Hasura）+ 90MB（Postgres） </li></ul><br>  <b>请求2：tracks_media_all</b> <br><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">query</span></span> tracks_media_all { <span class="hljs-section"><span class="hljs-section">tracks</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">id</span></span> name media_type { <span class="hljs-attribute"><span class="hljs-attribute">name</span></span> } }}</code> </pre><br><ul><li> 每秒请求数：410 req / s </li><li> 延迟：59ms </li><li>  CPU：〜100％ </li><li> 内存：〜30MB（Hasura）+ 130MB（Postgres） </li></ul><br>  <b>要求3：album_tracks_genre_some</b> <br><br><pre> <code class="hljs pgsql">query albums_tracks_genre_some { albums (<span class="hljs-keyword"><span class="hljs-keyword">where</span></span>: {artist_id: {_eq: <span class="hljs-number"><span class="hljs-number">127</span></span>}}) { id title tracks { id <span class="hljs-type"><span class="hljs-type">name</span></span> genre { <span class="hljs-type"><span class="hljs-type">name</span></span> } } }}</code> </pre><br><ul><li> 每秒请求数：1029个请求/秒 </li><li> 延迟时间：24ms </li><li>  CPU：〜30％ </li><li> 内存：〜30MB（Hasura）+ 90MB（Postgres） </li></ul><br>  <b>要求4：album_tracks_genre_all</b> <br><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">query</span></span> albums_tracks_genre_all { <span class="hljs-section"><span class="hljs-section">albums</span></span> { <span class="hljs-attribute"><span class="hljs-attribute">id</span></span> title tracks { <span class="hljs-attribute"><span class="hljs-attribute">id</span></span> name genre { <span class="hljs-attribute"><span class="hljs-attribute">name</span></span> } } }</code> </pre><br><ul><li> 每秒请求数：328请求/秒 </li><li> 延迟：73毫秒 </li><li>  CPU：100％ </li><li> 内存：〜30MB（Hasura）+ 130MB（Postgres） </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN428133/">https://habr.com/ru/post/zh-CN428133/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN428123/index.html">安全周41：好消息</a></li>
+<li><a href="../zh-CN428125/index.html">谁是产品分析人员，为什么团队需要它们？</a></li>
+<li><a href="../zh-CN428127/index.html">Nginx缓存：一切都是新的-被遗忘的很旧</a></li>
+<li><a href="../zh-CN428129/index.html">简单的模糊逻辑将燃气轮机的“从过去”粘合在一起</a></li>
+<li><a href="../zh-CN428131/index.html">关于RTOS的全部真相。 第十七条 事件标志组：简介和基本服务</a></li>
+<li><a href="../zh-CN428135/index.html">如何在内置代码编辑器中配置或禁用linting</a></li>
+<li><a href="../zh-CN428137/index.html">奥运会，创意大赛，有关IT项目管理和电影放映的讲座：ITMO大学即将举行的10个活动</a></li>
+<li><a href="../zh-CN428141/index.html">前端的后端，或Yandex.Market如何创建没有拐杖的API</a></li>
+<li><a href="../zh-CN428143/index.html">ReactJS RBAC实现方法</a></li>
+<li><a href="../zh-CN428147/index.html">使用Python收集报价和识别视频中的文本的脚本</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

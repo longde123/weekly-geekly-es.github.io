@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>◀️ 📑 🏫 MTA-STS para Postfix 🛩️ 🧚🏽 👨🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="MTA-STS es el estándar RFC8461 propuesto que dejó de ser borrador y se publicó oficialmente el 26 de septiembre de 2018. Este estándar ofrece un mecan...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>MTA-STS para Postfix</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/424961/">  MTA-STS es el estándar <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">RFC8461</a> propuesto que dejó de ser borrador y se publicó oficialmente el 26 de septiembre de 2018.  Este estándar ofrece un mecanismo para detectar la posibilidad de utilizar TLS completo entre servidores de correo, con cifrado de datos y autenticación de servidor.  Es decir, este estándar protege casi por completo contra la interferencia con el tráfico de correo entre servidores. <br><br>  Simplificado, la esencia del estándar es la siguiente: <br><br><ol><li>  Los servicios de correo compatibles publican una política (1 registro TXT y 1 recurso HTTPS para cada dominio). </li><li>  Los servicios de correo al enviar correo a otros dominios detectan la política de dominio del destinatario. </li><li>  Los servicios de correo se conectan al servidor de correo del dominio del destinatario, aplicando restricciones TLS establecidas por la política detectada, si existe. </li></ol><br>  Hay buenos artículos ( <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">por ejemplo</a> ) que hablan sobre el estándar en sí y por qué es necesario, comparando MTA-STS con otras iniciativas similares e incluso mostrando cómo escribir y publicar una política.  Pero encontrar cómo ir más allá del primer paso no fue tan simple. <a name="habracut"></a><br><br><h3>  Empezar de nuevo </h3><br>  Antes de implementar MTA-STS, debe ordenar los certificados del servidor de correo.  De lo contrario, los servidores de correo que tengan en cuenta su política STS rechazarán la conexión a su servidor.  Deben cumplirse las siguientes condiciones: <br><br><ul><li>  El certificado del servidor es emitido por una autoridad de certificación reconocida (Let's Encrypt es bueno). </li><li>  La cadena de certificados enviada por el servidor incluye todos los certificados necesarios de las autoridades de certificación intermedias. </li><li>  El certificado tiene un campo Nombre alternativo del sujeto con el nombre DNS de su servidor MX. </li></ul><br>  Puede verificar el servidor configurado con el certificado con el siguiente comando: <br><br><pre><code class="bash hljs">[ <span class="hljs-string"><span class="hljs-string">"</span><span class="hljs-variable"><span class="hljs-string"><span class="hljs-variable">$(LANG=C openssl s_client -connect MX.EXAMPLE.COM:25 -starttls smtp -verify_hostname MX.EXAMPLE.COM &lt; /dev/null 2&gt;&amp;1 | fgrep 'error')</span></span></span><span class="hljs-string">"</span></span> = <span class="hljs-string"><span class="hljs-string">""</span></span> ] &amp;&amp; <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> OK || <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> FAIL</code> </pre> <br>  donde MX.EXAMPLE.COM es el nombre de dominio de su servidor MX.  Para el pleno cumplimiento de la norma, es aconsejable verificar que el nombre de dominio deseado esté presente no solo en el Nombre común del certificado, sino al menos en el Nombre alternativo del sujeto. <br><br><h3>  Publicación de políticas </h3><br>  Para designar su dominio como compatible con una conexión segura con él, debe publicar la política MTA-STS.  Para hacer esto, realice los siguientes pasos simples en el orden especificado (se dan ejemplos para el dominio example.com). <br><br>  1. Colocar en <br><br><pre>  https://mta-sts.example.com/.well-known/mta-sts.txt </pre><br>  archivo de texto del formulario: <br><br><pre> versión: STSv1
+ modo: hacer cumplir
+ mx: mail.example.com
+ mx: * .example.net
+ mx: backupmx.example.com
+ max_age: 604800
+</pre><br>  El archivo debe entregarse con Content-Type: text / plain.  Los redireccionamientos no están permitidos.  Los avances de línea deben ser LF o CRLF.  No se permiten líneas vacías.  La última línea puede terminar con un avance de línea, o no puede terminar con ella; ambas opciones están permitidas.  No se permite el espacio vacío antes de los dos puntos y al comienzo de la línea.  El espacio vacío después de los dos puntos está permitido en cualquier cantidad.  Se ignora el espacio en blanco (espacios, tabulaciones, etc.) al final de cada línea. <br><br>  Valores de campo: <br><br>  <b>versión</b> : <b>versión de</b> formato.  Siempre debe ser igual a "STSv1". <br>  <b>modo</b> : <b>modo de</b> política.  Posibles opciones: ninguna, prueba, imposición.  El modo de cumplimiento corresponde al funcionamiento normal del estándar: requerir el certificado correcto y una conexión TLS estable cuando se conecta al servidor.  El modo de prueba requiere que intente utilizar una conexión segura, pero en caso de error, envíe un correo con notificación de administrador a través del mecanismo TLSRPT.  El modo Ninguno corresponde a la situación como si la política no se hubiera publicado en absoluto.  Este modo es útil para deshabilitar correctamente una política. <br>  <b>mx</b> : uno o más campos que contienen los nombres de todos los servidores de dominio MX permitidos.  Como puede ver en el ejemplo, las plantillas están permitidas, pero solo como un dominio de nivel inferior. <br>  <b>max_age</b> : el tiempo en segundos que la política puede almacenarse en caché y durante el cual los remitentes pueden continuar usándola si la política ya no está disponible.  Debido a esta característica del estándar, deshabilitar STS es más rápido al publicar una nueva política sin modo ninguno. <br><br>  2. Cree un registro TXT _mta-sts.example.com con el contenido del formulario: <br><br><pre>  v = STSv1;  id = 20160831085700Z; </pre><br>  Los espacios en blanco alrededor de un punto y coma se pueden organizar arbitrariamente en cualquier cantidad.  En otros lugares, el espacio en blanco no está permitido.  El último punto y coma puede estar presente o ausente. <br><br>  Valores de campo: <br><br>  <b>v</b> : versión de formato.  Siempre debe ser el primer campo, siempre debe ser igual a STSv1. <br>  <b>id</b> : identificador único de la política publicada.  Puede ser una cadena con una longitud de 1 a 32 caracteres, que consta de letras de registros y números.  Cambiar el valor de identificación es una señal para los remitentes de que la política se ha actualizado.  Por lo tanto, primero debe actualizar la política y publicar un nuevo archivo de política, y luego cambiar la identificación en el registro TXT. <br><br>  A partir de ahora, los servidores de correo que admiten MTA-STS solo enviarán correo a su dominio a través de una conexión segura autenticada por certificado.  Ahí es donde terminan la mayoría de los manuales, pero la parte más interesante es obtener la política MTA-STS de su propio servidor al enviar correo. <br><br><h3>  Mas interesante </h3><br>  La principal dificultad es que este estándar no es compatible con los servidores de correo, incluido Postfix.  Sin embargo, esta bagatela desagradable no debería detenernos. <br><br>  Encontrar una solución me llevó al archivo de la lista de correo de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">usuarios de postfix</a> discutiendo el momento de este estándar.  En una publicación, Witsa Venema, autora de Postfix, señala la dirección preferida para implementar esta funcionalidad: utilizar un servidor externo para buscar políticas TLS.  Se propone utilizar la directiva de configuración del formulario: <br><br><pre>  smtp_policy_maps = socketmap: inet: host: puerto: nombre </pre><br>  Implementé dicho servidor para obtener la política MTA-STS. <br><br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Código fuente</a> <br>  → <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">Paquete en PyPI</a> <br><br>  La aplicación carece de algunas de las funciones que prescribe RFC8461, tales como: recuperación proactiva de políticas, informes y limitación de la frecuencia de las solicitudes de políticas.  Sin embargo, la función principal, detectar la política TLS y almacenarla en caché, funciona. <br><br>  La aplicación requiere Python 3.5.3+.  La instalación y configuración de este demonio se puede realizar mediante los siguientes pasos. <br><br><h4>  Instalación del paquete </h4><br>  Es suficiente ejecutar el comando: <br><br><pre> <code class="bash hljs">pip3 install postfix-mta-sts-resolver</code> </pre> <br>  <a href="">Aquí</a> se escriben métodos de instalación alternativos. <br><br><h4>  Crear un archivo de configuración </h4><br>  Si está satisfecho con la configuración predeterminada, entonces el comando es suficiente <br><br><pre> <code class="bash hljs">touch /etc/postfix/mta-sts-daemon.yml</code> </pre> <br>  De lo contrario, la configuración puede tomarse del <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">ejemplo</a> y adaptarse a sus necesidades. <br><br>  El parámetro más importante, en mi opinión, es el parámetro estricto_prueba.  Si se establece en verdadero (falso por defecto), la aplicación devolverá una política segura incluso para dominios con una política en modo de prueba.  Este comportamiento es contrario al estándar, pero es aconsejable por razones prácticas: si el propietario del dominio ha publicado la política STS incluso en modo de prueba, entonces probablemente esté listo para ello.  Es decir, hoy el correo de gmail.com se enviará a través de una conexión confiable. <br><br><h4>  Organización de inicio </h4><br>  En el caso de systemd, es suficiente colocar un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">archivo de unidad simple</a> en /etc/systemd/system/mta-sts-daemon.service <br><br>  Después de eso, queda por releer la configuración de systemd, habilitar la ejecución automática del demonio e iniciarla: <br><br><pre> <code class="bash hljs">systemctl daemon-reload systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> mta-sts-daemon.service systemctl start mta-sts-daemon.service</code> </pre> <br><h4>  Control de salud </h4><br>  Suponiendo que se usa el puerto predeterminado, el comando <br><br><pre> <code class="bash hljs">/usr/sbin/postmap -q dismail.de socketmap:inet:127.0.0.1:8461:postfix</code> </pre> <br>  debería traer <br><br><pre>  partido seguro = mx1.dismail.de </pre><br><h4>  Conectarse a Postfix </h4><br>  Agregue una línea a main.cf: <br><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">smtp_policy_maps</span></span> = socketmap:inet:<span class="hljs-number"><span class="hljs-number">127.0.0.1:8461</span></span>:postfix</code> </pre> <br>  Reiniciar Postfix: <br><br><pre> <code class="bash hljs">systemctl reload postfix.service</code> </pre> <br>  Si todo se hace correctamente, para las conexiones STS en el registro /var/log/mail.info en su lugar <br><br><pre>  Conexión TLS confiable establecida </pre><br>  los registros comienzan a aparecer <br><br><pre>  Conexión TLS verificada establecida </pre><br><br><h3>  Conclusión </h3><br>  Si llegas a este lugar, lo más probable es que signifique: <br><br><ul><li>  Lees el artículo sin una sola imagen. </li><li>  Día a día, la probabilidad de intercepción de correo en su dominio disminuirá, ya que otros servicios de correo implementan el nuevo estándar. </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/es424961/">https://habr.com/ru/post/es424961/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es424947/index.html">Reconocimiento de gestos con APDS-9960</a></li>
+<li><a href="../es424949/index.html">PHP Digest No. 140 (17-30 de septiembre de 2018)</a></li>
+<li><a href="../es424951/index.html">¡Hurra! No fue paranoia</a></li>
+<li><a href="../es424955/index.html">El resumen de materiales frescos del mundo del front-end para la última semana No. 332 (24-30 de septiembre de 2018)</a></li>
+<li><a href="../es424957/index.html">Generando imágenes a partir de texto usando AttnGAN</a></li>
+<li><a href="../es424963/index.html">Financiación de Zuckerberg: construyendo herramientas para la ciencia juntos</a></li>
+<li><a href="../es424965/index.html">Reaccionar el desarrollo de aplicaciones usando ReasonReact</a></li>
+<li><a href="../es424967/index.html">Atajos de JavaScript para principiantes</a></li>
+<li><a href="../es424969/index.html">Guía de Node.js, Parte 9: Trabajar con el sistema de archivos</a></li>
+<li><a href="../es424971/index.html">Habrokast "Puesta de sol manual" # 1. Tratando de configurar un entorno para desarrollar un juguete para Windows</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>☝️ 🐇 ⛹🏽 PostgreSQL: Wie und warum schwillt WAL an 👨‍🎓 ➗ 🍮</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Um die Überwachung nützlich zu machen, müssen wir verschiedene Szenarien wahrscheinlicher Probleme erarbeiten und Dashboards und Trigger so gestalten,...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL: Wie und warum schwillt WAL an</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/okmeter/blog/421061/"><p><img width="400" align="left" src="https://habrastorage.org/webt/u-/b7/rk/u-b7rkoa-muxnd3pq0ai7foxhne.png">  Um die Überwachung nützlich zu machen, müssen wir verschiedene Szenarien wahrscheinlicher Probleme erarbeiten und Dashboards und Trigger so gestalten, dass sie die Ursache des Vorfalls sofort verstehen. </p><br><p>  In einigen Fällen wissen wir genau, wie diese oder jene Komponente der Infrastruktur funktioniert, und dann ist im Voraus bekannt, welche Metriken nützlich sind.  Und manchmal entfernen wir fast alle möglichen Metriken mit maximaler Detailgenauigkeit und untersuchen dann, wie bestimmte Probleme auf ihnen sichtbar sind. </p><br><p>  Heute werden wir uns ansehen, wie und warum WAL-Postgres (Write-Ahead Log) anschwellen können.  Wie immer - Beispiele aus dem wirklichen Leben in Bildern. </p><a name="habracut"></a><br><h2 id="nemnogo-teorii-wal-v-postgresql">  Ein bisschen WAL-Theorie in postgresql </h2><br><p>  Jede Änderung in der Datenbank wird zuerst in der WAL aufgezeichnet, und erst danach werden die Daten auf der Seite im Puffercache geändert und als verschmutzt markiert - was auf der Festplatte gespeichert werden muss.  Darüber hinaus wird regelmäßig der <strong>CHECKPOINT-</strong> Prozess gestartet, bei dem alle verschmutzten Seiten auf der Festplatte und die WAL-Segmentnummer gespeichert werden, bis zu der alle geänderten Seiten bereits auf die Festplatte geschrieben wurden. </p><br><p>  Wenn postgresql aus irgendeinem Grund plötzlich abstürzt und erneut startet, werden alle WAL-Segmente vom letzten Prüfpunkt während des Wiederherstellungsprozesses abgespielt. </p><br><p>  Die WAL-Segmente vor dem Prüfpunkt sind für die Datenbankwiederherstellung nach dem Absturz nicht mehr nützlich. In der Postgres-Datei ist WAL jedoch auch am Replikationsprozess beteiligt, und die Sicherung aller Segmente für die Wiederherstellung zu einem bestimmten Zeitpunkt - PITR kann ebenfalls konfiguriert werden. </p><br><p>  Ein erfahrener Ingenieur hat wahrscheinlich schon alles verstanden, wie es im wirklichen Leben kaputt geht :) <br>  Schauen wir uns die Charts an! </p><br><h2 id="wal-raspuh-1">  WAL Schwellung # 1 </h2><br><p>  Unser Überwachungsagent für jede gefundene Instanz von postgres berechnet den Pfad auf der Festplatte zum Verzeichnis mit wal und entfernt sowohl die Gesamtgröße als auch die Anzahl der Dateien (Segmente): </p><br><p><img src="https://habrastorage.org/webt/ec/he/of/echeof-osx8kb4jj9e8na6vo2-u.png"><br><img src="https://habrastorage.org/webt/fd/ts/um/fdtsumlvrsifgg5b-mjvs4vpdtm.png"><br></p><br><p>  Zunächst schauen wir uns an, wie lange wir CHECKPOINT ausgeführt haben. </p><br><p>  Wir nehmen Metriken von pg_stat_bgwriter: </p><br><ul><li>  <strong>checkpoints_timed</strong> - Zähler für Checkpoint-Starts, die unter der Bedingung durchgeführt wurden, dass die Zeit vom letzten Checkpoint um mehr als <em>pg_settings.checkpoint_timeout</em> überschritten wurde </li><li>  <strong>checkpoints_req</strong> - Zähler für den Start des Prüfpunkts durch die Bedingung, dass die Wal-Größe vom letzten Prüfpunkt überschritten wird </li></ul><br><p><img src="https://habrastorage.org/webt/db/ao/2x/dbao2xjzmnkm70a1-foimvos5a4.png"><br></p><br><p> Wir sehen, dass der Checkpoint schon lange nicht mehr gestartet wurde.  In diesem Fall ist es unmöglich, den Grund für das NICHT-Starten dieses Prozesses direkt zu verstehen (aber es wäre natürlich cool), aber wir wissen, dass in Postgres viele Probleme aufgrund langer Transaktionen auftreten! </p><br><p>  Wir prüfen: </p><br><p><img src="https://habrastorage.org/webt/jm/cw/e6/jmcwe6wkzi6ubvyiplkqxlwg1ws.png"><br></p><br><p>  Weiterhin ist klar, was zu tun ist: </p><br><ul><li>  eine Transaktion beenden </li><li>  beschäftigen sich mit den Gründen, warum es lang ist </li><li>  Warten Sie, aber prüfen Sie, ob genügend Platz vorhanden ist </li></ul><br><p>  Ein weiterer wichtiger Punkt: Bei <strong>Replikaten, die mit diesem Server verbunden sind, ist Wal ebenfalls geschwollen</strong> ! </p><br><h2 id="wal-archiver">  WAL-Archivierer </h2><br><p>  Ich erinnere Sie gelegentlich daran: Replikation ist kein Backup! </p><br><p>  Ein gutes Backup sollte es Ihnen ermöglichen, jederzeit eine Wiederherstellung durchzuführen.  Zum Beispiel, wenn jemand "versehentlich" auftrat </p><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DELETE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> very_important_tbl;</code> </pre> <br><p>  Dann sollten wir in der Lage sein, die Datenbank genau vor dieser Transaktion auf den Status zurückzusetzen.  Dies wird als PITR (Point-in-Time Recovery) bezeichnet und in postgresql mit regelmäßigen vollständigen Sicherungen der Datenbank + Speichern aller WAL-Segmente nach dem Dump implementiert. </p><br><p>  Die Einstellung archive_command ist für die Sicherung von wal verantwortlich. Postgres startet nur den von Ihnen angegebenen Befehl. Wenn der Vorgang fehlerfrei ausgeführt wird, gilt das Segment als erfolgreich kopiert.  Wenn ein Fehler auftritt, wird versucht, bis zum Sieg das Segment auf der Festplatte zu liegen. </p><br><p>  Nun, und zur Veranschaulichung - Grafiken der kaputten Archivierung wal: </p><br><p><img src="https://habrastorage.org/webt/wr/7q/j5/wr7qj5c4qheznqxduj-ixjchg3a.png"><br></p><br><p>  Hier gibt es zusätzlich zur Größe aller Wal-Segmente eine nicht <em>archivierte Größe</em> - dies ist die Größe von Segmenten, die noch nicht als erfolgreich gespeichert gelten. </p><br><img src="https://habrastorage.org/webt/bg/ki/lb/bgkilbstwv9ziyw6gtfmscaowsq.png"><br><p><br>  Wir betrachten die Status gemäß den Zählern von pg_stat_archiver.  Für die Anzahl der Dateien haben wir einen automatischen Trigger für alle Clients erstellt, da dieser häufig ausfällt, insbesondere wenn ein Cloud-Speicher als Ziel verwendet wird (z. B. S3). </p><br><h2 id="replication-lag">  Replikationsverzögerung </h2><br><p>  Die laufende Streaming-Replikation funktioniert durch Übertragen und Spielen von Wal auf Replikaten.  Wenn das Replikat aus irgendeinem Grund hinterherhinkt und eine bestimmte Anzahl von Segmenten nicht verliert, speichert der Assistent <em>pg_settings.wal_keep_segments-</em> Segmente dafür.  Wenn das Replikat auf einer größeren Anzahl von Segmenten zurückfällt, kann es keine Verbindung mehr zum Master herstellen (es muss neu gegossen werden). </p><br><p>  Um die Beibehaltung einer beliebigen Anzahl von Segmenten zu gewährleisten, wurde die Funktionalität der Replikationssteckplätze in 9.4 beschrieben, auf die später eingegangen wird. </p><br><h2 id="replication-slots">  Replikationssteckplätze </h2><br><p>  Wenn die Replikation mithilfe des Replikationssteckplatzes konfiguriert wurde und mindestens eine erfolgreiche Replikatverbindung zum Steckplatz bestand, speichert das Postgres alle neuen Wal-Segmente, bis der Platz leer ist, falls das Replikat verschwindet. </p><br><p>  Das heißt, ein vergessener Replikationssteckplatz kann zu Wal-Schwellungen führen.  Glücklicherweise können wir den Status von Slots über pg_replication_slots überwachen. </p><br><p>  So sieht es in einem Live-Beispiel aus: </p><br><p><img src="https://habrastorage.org/webt/ya/vq/pj/yavqpjrilg8mmlkohfrjzh0coic.png"><br><img src="https://habrastorage.org/webt/kx/7b/7k/kx7b7kjrzoybif8abcuxnxsir-8.png"><br></p><br><p>  In der oberen Grafik wird neben der Wal-Größe immer entweder ein Slot mit der maximalen Anzahl akkumulierter Segmente angezeigt, aber es gibt auch eine detaillierte Grafik, die zeigt, welcher Slot geschwollen ist. </p><br><p>  Sobald wir verstanden haben, welche Art von Slot Daten sammelt, können wir entweder die damit verbundenen Replikate reparieren oder einfach löschen. </p><br><p>  Ich habe die häufigsten Fälle von Walschwellungen angeführt, aber ich bin mir sicher, dass es auch andere Fälle gibt (manchmal werden auch Fehler in Postgres gefunden).  Daher ist es wichtig, die Größe des Wal zu überwachen und auf Probleme zu reagieren, bevor der Speicherplatz knapp wird und die Datenbank keine Anforderungen mehr bearbeitet. </p><br><p>  <em>Unser <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">Überwachungsservice</a> weiß bereits, wie man all dies sammelt, richtig visualisiert und alarmiert.</em>  <em>Außerdem haben wir eine lokale Lieferoption für diejenigen, für die die Cloud nicht geeignet ist.</em> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de421061/">https://habr.com/ru/post/de421061/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de421049/index.html">Entwerfen von Anwendungsbildschirmen: von der Planung bis zum Entwurf des Layouts</a></li>
+<li><a href="../de421051/index.html">Wie ich mein erstes SaaS-Projekt für die Einstellung den ganzen Tag gestartet habe</a></li>
+<li><a href="../de421055/index.html">Benutzerdefinierte Webentwicklung: Skalieren eines ständig wachsenden Projekts</a></li>
+<li><a href="../de421057/index.html">So montieren Sie Wagen für Personenzüge</a></li>
+<li><a href="../de421059/index.html">Beschleunigung von Websites mit frühen Tipps</a></li>
+<li><a href="../de421063/index.html">Neue Bücher über Kinderprogrammierung bei Scratch</a></li>
+<li><a href="../de421065/index.html">Wie ich AI beigebracht habe, Tetris für NES zu spielen. Teil 2: KI</a></li>
+<li><a href="../de421067/index.html">Wie wir die AR-Anwendung zur Überprüfung historischer Orte entwickelt haben</a></li>
+<li><a href="../de421069/index.html">Bobby Urban Rucksack: Im Schloss</a></li>
+<li><a href="../de421071/index.html">Mod und Rest sind nicht gleich</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✍🏾 👳🏿 👨🏿‍🤝‍👨🏽 PostgreSQL并发性：非球形，非马，非真空 📋 🤦🏽 ☑️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="扩展DBMS是一个不断前进的未来。 DBMS在硬件平台上进行了改进和扩展，而硬件平台本身提高了生产率，内核数量和内存-阿喀琉斯正在追赶乌龟，但还没有赶上乌龟。 扩展DBMS的问题已全面展开。 
+
+ Postgres Professional不仅在理论上而且在实践上都存在扩展问题：与客户进行扩展。 并...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL并发性：非球形，非马，非真空</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/423685/"><img src="https://habrastorage.org/webt/b0/s3/rq/b0s3rqkffufh7baruji0jc_vbgq.jpeg"><br><br> 扩展DBMS是一个不断前进的未来。  DBMS在硬件平台上进行了改进和扩展，而硬件平台本身提高了生产率，内核数量和内存-阿喀琉斯正在追赶乌龟，但还没有赶上乌龟。 扩展DBMS的问题已全面展开。 <br><br>  Postgres Professional不仅在理论上而且在实践上都存在扩展问题：与客户进行扩展。 并且不止一次。 本文将讨论其中一种情况。 <br><br> 如果PostgreSQL是具有多个处理器和多个数据总线的单个主板，则PostgreSQL在NUMA系统上的扩展性很好。 一些优化可以在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">这里</a>和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">这里</a>阅读。 但是，还有另一类系统，它们具有数个主板，它们之间的数据交换是通过互连进行的，而一个OS实例正在它们上运行，对于用户而言，该设计就像一台机器。 尽管从形式上说，此类系统也可以归因于NUMA，但从本质上讲，它们更接近于超级计算机，例如 对节点本地内存的访问和对相邻节点内存的访问在根本上是不同的。  PostgreSQL社区认为，在这样的架构上运行的唯一Postgres实例是问题的根源，并且还没有系统的方法来解决它们。 <br><a name="habracut"></a><br> 这是因为使用共享内存的软件体系结构从根本上设计用于以下事实：不同进程对其自身和远程内存的访问时间或多或少具有可比性。 在我们使用多个节点的情况下，对共享内存作为快速通信通道的赌注不再证明其合理性，因为由于延迟，将请求执行特定操作的请求发送给节点（节点）非常“便宜”有趣的数据，而不是在总线上发送此数据。 因此，对于超级计算机以及通常具有多个节点的系统而言，群集解决方案至关重要。 <br><br> 这并不意味着需要结束多节点系统和典型的Postgres共享内存体系结构的结合。 毕竟，如果postgres流程大部分时间都在本地进行复杂的计算，那么这种架构甚至会非常高效。 在我们的情况下，客户端已经购买了功能强大的多节点服务器，因此我们不得不解决PostgreSQL的问题。 <br><br> 但是问题很严重：最简单的写请求（在一条记录中更改多个字段值）在几分钟到一个小时的时间内执行。 正如后来证实的那样，这些问题恰恰是由于拥有大量的内核以及相应地在节点之间交换相对较慢的请求的执行过程中的根本并行性而在其全部荣耀中得以体现。 <br><br> 因此，该文章实际上是出于双重目的： <br><br><ul><li> 分享经验：如果在多节点系统中数据库认真运行，该怎么办。 从何处开始，如何诊断向何处移动。 </li><li> 描述如何通过高并发度解决PostgreSQL DBMS本身的问题。 包括获取锁的算法中的更改如何影响PostgreSQL的性能。 </li></ul><br><h3> 服务器和数据库 </h3><br> 该系统由8个刀片组成，每个刀片中有2个插槽。 总共有300多个核心（超跑除外）。 快速轮胎（专有制造商技术）连接叶片。 并不是说它是一台超级计算机，而是一个DBMS实例，其配置令人印象深刻。 <br> 负载也相当大。 超过1 TB的数据。 每秒约3000笔交易。 超过1000个与postgres的连接。 <br><br> 开始处理每小时的录制期望后，我们要做的第一件事是将光盘写入光盘，这是造成延迟的原因。 一旦出现了难以理解的延迟，就开始专门在<code>tmpfs</code>上进行测试。 图片未变。 磁盘与它无关。 <br><br><h3> 诊断入门：视图 </h3><br> 由于问题很可能是由于“敲打”相同对象的过程的激烈竞争而引起的，因此首先要检查的是锁。 在PostgreSQL中，有一个视图<code>pg.catalog.pg_locks</code>和<code>pg_stat_activity</code>用于这种检查。 第二个版本已经在9.6版中，添加了有关进程正在等待什么的信息（ <i>Amit Kapila，Ildus Kurbangaliev</i> ） <code>wait_event_type</code> 。 在此描述该字段的可能值。 <br><br> 但首先，只需数： <br><br><pre> <code class="sql hljs">postgres=<span class="hljs-comment"><span class="hljs-comment"># SELECT COUNT(*) FROM pg_locks; count —---— 88453 (1 row) postgres=# SELECT COUNT(*) FROM pg_stat_activity; count —---— 1826 (1 row) postgres=# SELECT COUNT(*) FROM pg_stat_activity WHERE state ='active'; count —---— 1005</span></span></code> </pre> <br> 这些是实数。 达到200,000个锁。 <br> 同时，这样的锁挂在命运不佳的请求上： <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">COUNT</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">mode</span></span>), <span class="hljs-keyword"><span class="hljs-keyword">mode</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_locks <span class="hljs-keyword"><span class="hljs-keyword">WHERE</span></span> pid =<span class="hljs-number"><span class="hljs-number">580707</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> <span class="hljs-keyword"><span class="hljs-keyword">mode</span></span>; count | mode —<span class="hljs-comment"><span class="hljs-comment">-----+---------------— 93 | AccessShareLock 1 | ExclusiveLock</span></span></code> </pre> <br> 读取缓冲区时，DBMS在写“ <code>exclusive</code>时使用<code>share</code>锁。 也就是说，写锁仅占所有请求的不到1％。 <br> 在<code>pg_locks</code>视图中，锁类型并不总是看起来像用户<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">文档中所述</a> 。 <br><br> 这是火柴板： <br><br><pre> <code class="plaintext hljs">AccessShareLock = LockTupleKeyShare RowShareLock = LockTupleShare ExclusiveLock = LockTupleNoKeyExclusive AccessExclusiveLock = LockTupleExclusive</code> </pre> <br>  SELECT模式FROM pg_locks查询显示，CREATE INDEX（没有CONCURRENTLY）将等待234 INSERT和390 INSERT <code>buffer content lock</code> 。 一种可能的解决方案是“教导”来自不同会话的INSERT，以减少与缓冲区的相交。 <br><br><h3> 是时候使用perf </h3><br>  <b><code>perf</code></b>实用程序收集大量诊断信息。 在<code>record</code>模式下，它将系统事件的统计信息写入文件（默认情况下，它们在<code>./perf_data</code> ），在<code>report</code>模式下，它分析收集的数据，例如，您可以过滤仅涉及<code>postgres</code>或给定<code>pid</code> ： <br><br><pre> <code class="plaintext hljs">$ perf record -u postgres  $ perf record -p 76876  ,  $ perf report &gt; ./my_results</code> </pre> <br> 结果，我们将看到类似 <br><br><img src="https://habrastorage.org/webt/rn/ta/rv/rntarvj2jticq7glciiqockk3-y.jpeg"><br><br> 例如， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处</a>以及<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">pg wiki中</a>都描述了如何使用<code>perf</code>诊断PostgreSQL。 <br><br> 在我们的案例中，即使是最简单的模式也可以为<code>perf top</code>重要信息<code>perf top</code> ，这当然是出于<code>top</code>操作系统的精神。 在<code>perf top</code>我们看到了处理器大部分时间都花在核心<code>PinBuffer()</code>以及<code>PinBuffer()</code>和<code>LWLockAttemptLock().</code>函数上<code>LWLockAttemptLock().</code>  。 <br><br>  <code>PinBuffer()</code>是一个增加对缓冲区引用的计数器（将数据页映射到RAM）的函数，这要归功于postgres进程知道哪些缓冲区可以被强制使用，哪些不能。 <br><br>  <code>LWLockAttemptLock()</code> - <code>LWLock</code>的捕获功能。  <code>LWLock</code>是一种具有<code>shared</code>和<code>exclusive</code>两个级别的锁，无需定义<code>deadlock</code> ，而是将锁预先分配给<code>shared memory</code> ，等待进程在队列中等待。 <br><br> 这些功能已经在PostgreSQL 9.5和9.6中进行了认真的优化。 直接使用原子操作代替了它们内部的自旋锁。 <br><br><h3> 火焰图 </h3><br> 没有它们是不可能的：即使它们没有用，仍然值得一提。它们非常美丽。 但是它们很有用。 这是来自<code>github</code>的说明，不是来自我们的案例（我们和客户都尚未准备好公开细节）。 <br><br><img src="https://habrastorage.org/getpro/habr/post_images/75b/909/e8d/75b909e8de5177a48fa7d73f53eff437.svg"><br><br> 这些精美的图片非常清楚地显示了处理器的周期。 相同的性能可以收集数据，但是<code>flame graph</code>智能地可视化数据，并根据收集的调用堆栈构建树。 例如，您可以<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在此处</a>阅读有关火焰图分析的更多信息，并<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在此处</a>下载所需的一切。 <br><br> 在我们的案例中，火焰图上可见大量的<code>nestloop</code> 。 显然，在众多并发读取请求中大量表的JOIN导致了大量<code>access share</code>锁。 <br><br>  <code>perf</code>收集的统计信息显示了处理器周期的去向。 尽管我们看到处理器的大部分时间都是通过锁来进行的，但是我们并没有看到导致如此长的锁期望的确切原因，因为我们没有确切看到锁期望发生的位置，因为  CPU时间不会浪费在等待上。 <br><br> 为了自己查看期望，您可以向系统视图<code>pg_stat_activity</code>建立一个请求。 <br><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> wait_event_type, wait_event, <span class="hljs-keyword"><span class="hljs-keyword">COUNT</span></span>(*) <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> pg_stat_activity <span class="hljs-keyword"><span class="hljs-keyword">GROUP</span></span> <span class="hljs-keyword"><span class="hljs-keyword">BY</span></span> wait_event_type, wait_event;</code> </pre> <br> 透露： <br><br><pre> <code class="plaintext hljs">LWLockTranche | buffer_content | UPDATE ************* LWLockTranche | buffer_content | INSERT INTO ******** LWLockTranche | buffer_content | \r | | insert into B4_MUTEX | | values (nextval('hib | | returning ID Lock | relation | INSERT INTO B4_***** LWLockTranche | buffer_content | UPDATE ************* Lock | relation | INSERT INTO ******** LWLockTranche | buffer_mapping | INSERT INTO ******** LWLockTranche | buffer_content | \r</code> </pre> <br>  （此处的星号仅替换我们未公开的请求详细信息）。 <br><br> 您可以看到值<code>buffer_content</code> （阻止缓冲区的内容）和<code>buffer_mapping</code> （阻止哈希板的<code>shared_buffers</code>的组件）。 <br><br><h3> 为gdb提供帮助 </h3><br> 但是为什么对这些类型的锁有如此高的期望呢？ 有关期望的更多详细信息，我必须使用<code>GDB</code>调试器。 使用<code>GDB</code>我们可以获得特定过程的调用堆栈。 通过应用采样，即 收集一定数量的随机调用堆栈后，您可以了解哪些堆栈期望值最高。 <br><br> 考虑编译统计信息的过程。 我们将考虑“手动”统计信息收集，尽管在现实生活中使用了自动执行此操作的特殊脚本。 <br><br> 首先，需要将<code>gdb</code>附加到PostgreSQL进程中。 为此，请找到服务器进程的<code>pid</code> ，例如 <br><br><pre> <code class="plaintext hljs">$ ps aux | grep postgres</code> </pre> <br> 假设我们发现： <br><br><pre> <code class="plaintext hljs">postgres 2025 0.0 0.1 172428 1240 pts/17  S   23  0:00 /usr/local/pgsql/bin/postgres -D /usr/local/pgsql/data</code> </pre> <br> 然后将<code>pid</code>插入调试器： <br><br><pre> <code class="plaintext hljs">igor_le:~$gdb -p 2025</code> </pre> <br> 进入调试器后，我们将写入<code>bt</code> [即<code>backtrace</code> ]或<code>where</code> 。 我们获得了有关此类型的很多信息： <br><br><pre> <code class="plaintext hljs">(gdb) bt #0 0x00007fbb65d01cd0 in __write_nocancel () from /lib64/libc.so.6 #1 0x00000000007c92f4 in write_pipe_chunks ( data=0x110e6e8 "2018‐06‐01 15:35:38 MSK [524647]: [392‐1] db=bp,user=bp,app=[unknown],client=192.168.70.163 (http://192.168.70.163) LOG: relation 23554 new block 493: 248.389503\n2018‐06‐01 15:35:38 MSK [524647]: [393‐1] db=bp,user=bp,app=["..., len=409, dest=dest@entry=1) at elog.c:3123 #2 0x00000000007cc07b in send_message_to_server_log (edata=0xc6ee60 &lt;errordata&gt;) at elog.c:3024 #3 EmitErrorReport () at elog.c:1479</code> </pre> <br> 收集了包括所有postgres进程的调用堆栈在内的统计信息后，在不同的时间点重复收集了这些统计信息，我们发现<code>relation extension lock</code>内的<code>buffer partition lock</code> <code>relation extension lock</code>持续了3706秒（约一个小时），即，锁在缓冲区的哈希表中经理，这是取代旧缓冲区所必需的，以便随后用对应于表扩展部分的新缓冲区替换它。 还注意到一定数量的<code>buffer content lock</code>锁定，这与锁定<code>B-tree</code>索引页以进行插入的预期相对应。 <br><br><img src="https://habrastorage.org/webt/6c/y6/cw/6cy6cwmfye29jw84dkzoabjlgvg.jpeg"><br><br> 首先，对于如此可怕的等待时间有两种解释： <br><br><ul><li> 有人拿着这个<code>LWLock</code>卡住了。 但这不太可能。 因为缓冲区分区锁内部没有发生任何复杂的事情。 </li><li> 我们遇到了<code>LWLock</code>某些病理行为。 也就是说，尽管事实上没有人锁得太久，但他的期望却持续了很长时间。 </li></ul><br><h3> 诊断补丁和树木处理 </h3><br> 通过减少同时连接的数量，我们可能会释放对锁的请求流。 但这就像投降。 相反，Postgres Professional的首席架构师<i>Alexander Korotkov</i> （当然，他帮助撰写了这篇文章）提出了一系列补丁。 <br><br> 首先，有必要更详细地了解这场灾难。 无论最终工具的质量如何，它们自己制造的诊断补丁也将很有用。 <br><br> 编写了一个补丁，详细记录了<code>relation extension</code>花费的时间，以及<code>RelationAddExtraBlocks()</code>函数内部发生的事情，因此我们找出了<code>RelationAddExtraBlocks().</code>内部所花费的时间<code>RelationAddExtraBlocks().</code> <br><br> 为了支持他，在<code>pg_stat_activity</code>中写了另一个补丁，报告了我们现在在<code>relation extension</code>正在做的事情。 这样做是这样的： <code>relation</code>扩展时， <code>application_name</code>变为<code>RelationAddExtraBlocks</code> 。 现在可以使用<code>gdb bt</code>和<code>perf</code>方便地分析此过程，并提供最大的详细信息。 <br><br> 实际上，医疗（而非诊断）补丁被写入了两个。 第一个修补程序更改了<code>B‐tree</code>树叶子锁的行为：早些时候，当请求插入时，叶子被作为<code>share</code>被阻止，然后它被<code>exclusive</code> 。 现在他立刻变得<code>exclusive</code> 。 现在，该补丁<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">已提交</a>给<b>PostgreSQL 12</b> 。 幸运的是，今年<i>亚历山大·科罗特科夫（Alexander Korotkov）</i>获得<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">了提交者</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">身份</a> -俄罗斯的第二位PostgreSQL提交者和公司的第二位。 <br><br>  <code>NUM_BUFFER_PARTITIONS</code>值也从128增加到512，以减少映射锁的负载：将缓冲区管理器哈希表分为较小的块，以希望减少每个特定块的负载。 <br><br> 应用此修补程序后，缓冲区内容上的锁定已消失，但是尽管<code>NUM_BUFFER_PARTITIONS</code>增加了，但<code>buffer_mapping</code>仍然存在，也就是说，我们提醒您要阻塞缓冲区管理器哈希表的各个部分： <br><br><pre> <code class="plaintext hljs">locks_count | active_session | buffer_content | buffer_mapping ----‐‐‐--‐‐‐+‐------‐‐‐‐‐‐‐‐‐+‐‐‐------‐‐‐‐‐‐‐+‐‐------‐‐‐ 12549 | 1218 | 0 | 15</code> </pre> <br> 甚至还不多。  B树不再是瓶颈。  <code>heap-</code>扩展脱颖而出。 <br><br><h3> 良心的治疗 </h3><br> 接下来，亚历山大提出以下假设和解决方案： <br><br>  <code>buffer parittion lock</code>缓冲区时，我们会在<code>buffer parittion lock</code>等待很多时间。 也许在同一个<code>buffer parittion lock</code>有一些非常需要的页面，例如某些<code>B‐tree</code>的根。 此时，从读取请求开始有持续不断的<code>shared lock</code>请求流。 <br><br>  <code>LWLock</code>的等待线“不公平”。 由于可以一次获取任意数量的<code>shared lock</code> ，因此，如果已经获取<code>shared lock</code> ，则后续的<code>shared lock</code>将通过而不会排队。 因此，如果共享锁流的强度足够大，以至于它们之间没有“窗口”，那么等待<code>exclusive lock</code>将几乎达到无穷大。 <br><br> 要解决此问题，您可以尝试提供-锁的“绅士”行为补丁。 它唤醒了<code>shared locker</code>的良心，当已经存在<code>exclusive lock</code>时，它们会诚实地排队（有趣的是，沉重的锁<code>hwlock</code>良心没有问题：它们总是诚实地排队） <br><br><pre> <code class="plaintext hljs">locks_count | active_session | buffer_content | buffer_mapping | reladdextra | inserts&gt;30sec ‐‐‐‐‐‐-‐‐‐‐‐+‐‐‐‐‐‐‐‐‐‐‐‐‐‐‐‐+‐‐‐‐‐‐‐‐‐‐‐‐‐‐‐‐+‐‐‐‐‐‐‐‐‐‐‐--‐-‐+‐‐‐‐‐‐-‐‐‐‐‐‐+‐‐‐‐------ 173985 | 1802 | 0 | 569 | 0 | 0</code> </pre> <br> 一切都很好！ 没有长<code>insert</code> 。 尽管在仪表板上的锁仍然存在。 但是要做的是，这些就是我们小型超级计算机轮胎的特性。 <br><br> 此补丁也已<a href="">提供给社区</a> 。 但是，无论社区中这些补丁的命运如何发展，都无法阻止它们进入<b>Postgres Pro Enterprise</b>的下一版本，后者是专为系统负载较重的客户而设计的。 <br><br><h3> 品德 </h3><br> 高道德轻量级<code>share</code>锁-跳过队列的<code>exclusive</code>块解决了多节点系统中每小时延迟的问题。 由于<code>share lock</code>流量过多， <code>buffer manager</code>哈希标记无法正常工作，因此没有机会获得替代旧缓冲区和加载新缓冲区所需的锁。 数据库表的缓冲区扩展问题仅是由此造成的。 在此之前，可以通过访问<code>B-tree</code>来扩展瓶颈。 <br><br>  PostgreSQL不是为NUMA体系结构和超级计算机而设计的。 适应这样的Postgres架构是一项巨大的工作，需要（甚至可能需要）许多人甚至公司的共同努力。 但是，可以缓解这些体系结构问题带来的不愉快后果。 我们必须：导致类似于所描述的延迟的负载类型是非常典型的，来自其他地方的相似求救信号继续传给我们。 类似的问题在较早出现-在内核较少的系统上，其后果并不那么可怕，并且可以使用其他方法和其他补丁来解决症状。 现在出现了另一种药物-不是通用的，但显然有用。 <br><br> 因此，当PostgreSQL将整个系统的内存用作本地内存时，节点之间的高速总线无法与本地内存的访问时间进行比较。 任务的出现是因为这种困难，通常是紧急的，但很有趣。 解决这些问题的经验不仅对决策者有用，而且对整个社区都是有用的。 <br><br><img src="https://habrastorage.org/webt/od/n1/sf/odn1sf_id7l60ezlyo-padxymmi.jpeg"></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN423685/">https://habr.com/ru/post/zh-CN423685/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN423663/index.html">我们用Lisp-III写一个简单的翻译器</a></li>
+<li><a href="../zh-CN423671/index.html">特斯拉竞争对手从沙特阿拉伯获得10亿美元投资</a></li>
+<li><a href="../zh-CN423677/index.html">Jetpack飞行员：Frankie West</a></li>
+<li><a href="../zh-CN423679/index.html">有摩天大楼和鸡蛋的任务-不是牛顿的垃圾箱？</a></li>
+<li><a href="../zh-CN423683/index.html">基于常识：从头开始发展DevOps</a></li>
+<li><a href="../zh-CN423687/index.html">HyperX Pulsefire FPS Pro-更快，更真实，更实惠</a></li>
+<li><a href="../zh-CN423689/index.html">RTOS MAX-免费吗？ 我们计划开放免费商业使用许可</a></li>
+<li><a href="../zh-CN423693/index.html">使用Webpack 4和代码分离的另一种方法</a></li>
+<li><a href="../zh-CN423695/index.html">如何用银行账户中的一百万美元退休40年</a></li>
+<li><a href="../zh-CN423697/index.html">介绍Spring Data JDBC</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

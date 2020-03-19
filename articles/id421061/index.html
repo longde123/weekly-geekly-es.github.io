@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏍️ 🥒 🖕 PostgreSQL: bagaimana dan mengapa WAL membengkak 🤭 🖊️ 👩🏻‍🎓</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Agar pemantauan bermanfaat, kami harus menyusun berbagai skenario masalah yang mungkin terjadi dan merancang dasbor dan pemicu sedemikian rupa sehingg...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL: bagaimana dan mengapa WAL membengkak</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/okmeter/blog/421061/"><p><img width="400" align="left" src="https://habrastorage.org/webt/u-/b7/rk/u-b7rkoa-muxnd3pq0ai7foxhne.png">  Agar pemantauan bermanfaat, kami harus menyusun berbagai skenario masalah yang mungkin terjadi dan merancang dasbor dan pemicu sedemikian rupa sehingga mereka segera memahami penyebab insiden tersebut. </p><br><p>  Dalam beberapa kasus, kami sangat memahami bagaimana komponen infrastruktur ini atau itu berfungsi, dan kemudian diketahui sebelumnya metrik mana yang akan berguna.  Dan terkadang kami menghapus hampir semua metrik yang mungkin dengan detail maksimal dan kemudian melihat bagaimana masalah tertentu terlihat pada mereka. </p><br><p>  Hari ini kita akan melihat bagaimana dan mengapa postgres Write-Ahead Log (WAL) dapat membengkak.  Seperti biasa - contoh dari kehidupan nyata dalam gambar. </p><a name="habracut"></a><br><h2 id="nemnogo-teorii-wal-v-postgresql">  Sedikit teori WAL di postgresql </h2><br><p>  Setiap perubahan dalam database pertama kali dicatat dalam WAL, dan hanya setelah itu data di halaman dalam cache buffer diubah dan ditandai sebagai kotor - yang perlu disimpan ke disk.  Selain itu, proses <strong>CHECKPOINT</strong> secara berkala dimulai, yang menyimpan semua halaman yang kotor ke disk dan menyimpan nomor segmen WAL, hingga semua halaman yang diubah sudah ditulis ke disk. </p><br><p>  Jika tiba-tiba postgresql karena suatu alasan crash dan mulai lagi, semua segmen WAL dari pos pemeriksaan terakhir akan diputar selama proses pemulihan. </p><br><p>  Segmen WAL sebelum pos pemeriksaan tidak lagi berguna bagi kami untuk pemulihan basis data pasca-kecelakaan, tetapi dalam postgres WAL juga berpartisipasi dalam proses replikasi, dan cadangan semua segmen untuk Pemulihan Waktu Titik - PITR juga dapat dikonfigurasi. </p><br><p>  Seorang insinyur yang berpengalaman mungkin sudah mengerti segalanya, bagaimana itu rusak dalam kehidupan nyata :) <br>  Mari kita lihat grafiknya! </p><br><h2 id="wal-raspuh-1">  WAL pembengkakan # 1 </h2><br><p>  Agen pemantau kami untuk setiap instance postgres yang ditemukan menghitung jalur pada disk ke direktori dengan wal dan menghapus ukuran total dan jumlah file (segmen): </p><br><p><img src="https://habrastorage.org/webt/ec/he/of/echeof-osx8kb4jj9e8na6vo2-u.png"><br><img src="https://habrastorage.org/webt/fd/ts/um/fdtsumlvrsifgg5b-mjvs4vpdtm.png"><br></p><br><p>  Pertama-tama, kita melihat berapa lama kita menjalankan CHECKPOINT. </p><br><p>  Kami mengambil metrik dari pg_stat_bgwriter: </p><br><ul><li>  <strong>checkpoints_timed</strong> - counter peluncuran pos pemeriksaan yang terjadi dengan syarat bahwa waktu dari pos pemeriksaan terakhir dilampaui oleh lebih dari <em>pg_settings.checkpoint_timeout</em> </li><li>  <strong>checkpoints_req</strong> - penghitung mulai dari pos pemeriksaan dengan ketentuan bahwa ukuran wal terlampaui dari pos pemeriksaan terakhir </li></ul><br><p><img src="https://habrastorage.org/webt/db/ao/2x/dbao2xjzmnkm70a1-foimvos5a4.png"><br></p><br><p> Kami melihat bahwa pos pemeriksaan belum diluncurkan untuk waktu yang lama.  Dalam hal ini, tidak mungkin untuk secara langsung memahami alasan untuk TIDAK memulai proses ini (tetapi tentu saja akan keren), tetapi kita tahu bahwa dalam postgres banyak masalah muncul karena transaksi yang lama! </p><br><p>  Kami memeriksa: </p><br><p><img src="https://habrastorage.org/webt/jm/cw/e6/jmcwe6wkzi6ubvyiplkqxlwg1ws.png"><br></p><br><p>  Lebih lanjut jelas apa yang harus dilakukan: </p><br><ul><li>  bunuh transaksi </li><li>  berurusan dengan alasan mengapa itu panjang </li><li>  tunggu, tetapi periksa apakah ada cukup ruang </li></ul><br><p>  Poin penting lainnya: <strong>pada replika yang terhubung ke server ini, wal juga bengkak</strong> ! </p><br><h2 id="wal-archiver">  Pengarsip WAL </h2><br><p>  Saya mengingatkan Anda sesekali: replikasi bukan cadangan! </p><br><p>  Cadangan yang baik harus memungkinkan Anda memulihkan pada waktu tertentu.  Misalnya, jika seseorang "tidak sengaja" melakukan </p><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DELETE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> very_important_tbl;</code> </pre> <br><p>  Maka kita harus dapat mengembalikan database ke keadaan tepat sebelum transaksi ini.  Ini disebut PITR (pemulihan point-in-time) dan diimplementasikan dalam postgresql dengan backup penuh berkala dari database + menyimpan semua segmen WAL setelah dump. </p><br><p>  Pengaturan archive_command bertanggung jawab untuk membuat cadangan wal, postgres hanya memulai perintah yang Anda tentukan, dan jika selesai tanpa kesalahan, segmen dianggap berhasil disalin.  Jika kesalahan terjadi, ia akan mencoba sampai kemenangan, segmen akan terletak pada disk. </p><br><p>  Nah, dan sebagai ilustrasi - gambar dari pengarsipan yang rusak wal: </p><br><p><img src="https://habrastorage.org/webt/wr/7q/j5/wr7qj5c4qheznqxduj-ixjchg3a.png"><br></p><br><p>  Di sini, selain ukuran semua segmen wal, ada <em>ukuran yang belum diarsipkan</em> - ini adalah ukuran segmen yang belum dianggap berhasil disimpan. </p><br><img src="https://habrastorage.org/webt/bg/ki/lb/bgkilbstwv9ziyw6gtfmscaowsq.png"><br><p><br>  Kami mempertimbangkan status sesuai dengan penghitung dari pg_stat_archiver.  Untuk jumlah file, kami membuat pemicu otomatis untuk semua klien, karena sering rusak, terutama ketika beberapa penyimpanan cloud digunakan sebagai tujuan (S3, misalnya). </p><br><h2 id="replication-lag">  Tertunda replikasi </h2><br><p>  Streaming replikasi yang sedang berjalan bekerja melalui transfer dan bermain dengan replika.  Jika karena alasan tertentu replika ada di belakang dan belum kehilangan sejumlah segmen, wizard akan menyimpan segmen <em>pg_settings.wal_keep_segments</em> untuknya.  Jika replika jatuh pada jumlah segmen yang lebih besar, itu tidak akan lagi dapat terhubung ke master (itu harus dituangkan kembali). </p><br><p>  Untuk menjamin pelestarian sejumlah segmen yang diinginkan, fungsi slot replikasi muncul di 9.4, yang akan dibahas nanti. </p><br><h2 id="replication-slots">  Slot replikasi </h2><br><p>  Jika replikasi dikonfigurasikan menggunakan slot replikasi dan setidaknya ada satu koneksi replika yang berhasil ke slot, maka jika replika menghilang, postgres akan menyimpan semua segmen wal baru sampai tempat habis. </p><br><p>  Artinya, slot replikasi yang terlupakan dapat menyebabkan pembengkakan.  Namun untungnya, kita dapat memantau status slot melalui pg_replication_slots. </p><br><p>  Inilah yang terlihat dalam contoh langsung: </p><br><p><img src="https://habrastorage.org/webt/ya/vq/pj/yavqpjrilg8mmlkohfrjzh0coic.png"><br><img src="https://habrastorage.org/webt/kx/7b/7k/kx7b7kjrzoybif8abcuxnxsir-8.png"><br></p><br><p>  Pada grafik atas, di sebelah ukuran wal, kami selalu menampilkan slot dengan jumlah maksimum segmen terakumulasi, tetapi ada juga grafik terperinci yang akan menunjukkan slot mana yang bengkak. </p><br><p>  Setelah kami memahami slot apa yang mengumpulkan data, kami dapat memperbaiki replika yang terkait dengannya, atau cukup menghapusnya. </p><br><p>  Saya mengutip kasus pembengkakan wal yang paling umum, tetapi saya yakin ada kasus lain (bug di postgres juga kadang-kadang ditemukan).  Oleh karena itu, penting untuk memantau ukuran wal dan menanggapi masalah sebelum ruang disk habis dan database akan berhenti melayani permintaan. </p><br><p>  <em><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Layanan pemantauan</a> kami sudah tahu cara mengumpulkan semua ini, memvisualisasikan dan mengingatkan dengan benar.</em>  <em>Dan kami juga memiliki opsi pengiriman di tempat bagi mereka yang tidak cocok dengan cloud.</em> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id421061/">https://habr.com/ru/post/id421061/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id421049/index.html">Merancang layar aplikasi: mulai dari perencanaan hingga desain tata letak</a></li>
+<li><a href="../id421051/index.html">Bagaimana Saya Meluncurkan Proyek SaaS Pertama Saya untuk Mempekerjakan Sepanjang Hari</a></li>
+<li><a href="../id421055/index.html">Pengembangan web khusus: bagaimana mengukur proyek yang terus berkembang</a></li>
+<li><a href="../id421057/index.html">Cara merakit kereta untuk kereta penumpang</a></li>
+<li><a href="../id421059/index.html">Mempercepat situs dengan kiat awal</a></li>
+<li><a href="../id421063/index.html">Buku-Buku Baru tentang Pemrograman Anak-Anak di Awal</a></li>
+<li><a href="../id421065/index.html">Bagaimana saya mengajar AI bermain Tetris untuk NES. Bagian 2: AI</a></li>
+<li><a href="../id421067/index.html">Bagaimana kami mengembangkan aplikasi AR untuk meninjau tempat-tempat bersejarah</a></li>
+<li><a href="../id421069/index.html">Bobby Urban Backpack: Inside the Castle</a></li>
+<li><a href="../id421071/index.html">Mod dan sisanya tidak sama</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

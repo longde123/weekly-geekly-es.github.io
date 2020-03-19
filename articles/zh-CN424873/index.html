@@ -1,0 +1,131 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦁 🚠 🌰 NET中HttpClient的陷阱 👊🏾 ↗️ 🛸</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="继续阅读有关“陷阱”的一系列文章，我不能忽略System.Net.HttpClient，它在实践中经常使用，但是它存在一些严重的问题，可能无法立即看到。 
+
+ 编程中一个相当普遍的问题是，开发人员只专注于特定组件的功能，而完全忽略了非常重要的非功能组件，这会影响性能，可伸缩性，发生故障时的恢复容易性...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>NET中HttpClient的陷阱</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/424873/"> 继续阅读有关“陷阱”的一系列文章，我不能忽略System.Net.HttpClient，它在实践中经常使用，但是它存在一些严重的问题，可能无法立即看到。 <br><br> 编程中一个相当普遍的问题是，开发人员只专注于特定组件的功能，而完全忽略了非常重要的非功能组件，这会影响性能，可伸缩性，发生故障时的恢复容易性，安全性等。 例如，同一个HttpClient似乎是基本组件，但是存在几个问题：它创建了到服务器的并行连接的数量，它们的生存时间，如果将先前访问的DNS名称切换到另一个IP地址，它将表现如何？ 让我们尝试在文章中回答这些问题。 <br><a name="habracut"></a><br><ol><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">连接泄漏</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">限制并发服务器连接</a> </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">长期连接和DNS缓存</a> </li></ol><br><a name="1"></a>  HttpClient的第一个问题是非显而易见的<b>连接泄漏</b> 。 很多时候，我不得不在执行每个请求的地方见代码： <br><br><pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">public</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">async</span></span></span><span class="hljs-function"> Task&lt;</span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">string</span></span></span><span class="hljs-function">&gt; </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">GetSomeText</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">Guid textId</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> client = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpClient()) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> client.GetStringAsync(<span class="hljs-string"><span class="hljs-string">$"http://someservice.com/api/v1/some-text/</span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{textId}</span></span></span><span class="hljs-string">"</span></span>); } }</code> </pre> <br> 不幸的是，这种方法导致资源的大量浪费和打开连接列表溢出的可能性很高。 为了清楚地显示问题，执行下面的代码就足够了： <br><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Main</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">[] args</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">for</span></span>(<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">10</span></span>; i++) { <span class="hljs-keyword"><span class="hljs-keyword">using</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> client = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpClient()) { client.GetStringAsync(<span class="hljs-string"><span class="hljs-string">"https://habr.com"</span></span>).Wait(); } } }</code> </pre><br> 最后，通过netstat查看打开的连接列表： <br><br><pre> PS C：\开发\练习&gt; netstat -n | 选择字符串模式“ 178.248.237.68”<font></font>
+<font></font>
+   TCP 192.168.1.13:43684 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13:43685 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13:43686 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13:43687 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13:43689 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13-00-003690 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13-00-003691 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13-00-003692 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13-00-003693 178.248.237.68-00-0043 TIME_WAIT
+   TCP 192.168.1.13-00-003695 178.248.237.68-00-0043 TIME_WAIT
+</pre><br>  <i>在此，-n开关用于加快输出速度，否则在撰写本文时，每个IP的netstat都将查找域名，而178.248.237.68将会查找habr.com IP地址。</i> <br><br> 总的来说，我们看到尽管使用了构造，即使程序已完全完成，但与服务器的连接仍处于“挂起”状态。 并且它们将挂起，直到注册表项HKEY_LOCAL_MACHINE \ SYSTEM \ CurrentControlSet \ Services \ Tcpip \ Parameters \ TcpTimedWaitDelay中指定的时间。 <br><br> 可能会立即产生一个问题-.NET Core在这种情况下的行为如何？  Windows和Linux上的功能完全相同，因为这种连接保留发生在系统级别，而不是应用程序级别。  TIME_WAIT状态是套接字在被应用程序关闭后的特殊状态，这对于处理仍可以通过网络传输的数据包来说是必需的。 对于Linux，此状态的持续时间在/ proc / sys / net / ipv4 / tcp_fin_timeout中以秒为单位指定，并且当然可以根据需要进行更改。 <br><br><a name="2"></a>  HttpClient的第二个问题是<b>到服务器的并发连接</b>的非显而易见的<b>限制</b> 。 假设您使用熟悉的.NET Framework 4.7，并借助它开发了一个高负载的服务，该服务通过HTTP调用其他服务。 解决了连接泄漏的潜在问题，因此所有请求均使用相同的HttpClient实例。 有什么事吗 <br><br> 通过运行以下代码可以很容易地看到此问题： <br><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Main</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">[] args</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> client = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpClient(); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> tasks = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> List&lt;Task&gt;(); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">var</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">10</span></span>; i++) { tasks.Add(SendRequest(client, <span class="hljs-string"><span class="hljs-string">"http://slowwly.robertomurray.co.uk/delay/5000/url/https://habr.com"</span></span>)); } Task.WaitAll(tasks.ToArray()); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">async</span></span></span><span class="hljs-function"> Task </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">SendRequest</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">HttpClient client, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params"> url</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> response = <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> client.GetAsync(url); Console.WriteLine(<span class="hljs-string"><span class="hljs-string">$"Received response </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{response.StatusCode}</span></span></span><span class="hljs-string"> from </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{url}</span></span></span><span class="hljs-string">"</span></span>); }</code> </pre><br>  <i>通过链接中指定的资源，您可以将服务器的响应延迟指定的时间，在这种情况下为5秒。</i> <br><br> 由于执行上述代码后很容易注意到-尽管创建了10个同时请求，但每5秒只有2个响应到达。 这是由于以下事实：在常规.NET框架中与HTTP的交互尤其要通过一个特殊类System.Net.ServicePointManager来控制HTTP连接的各个方面。 此类具有DefaultConnectionLimit属性，该属性指示可以为每个域创建多少个并发连接。 从历史上看，属性的默认值为2。 <br><br> 如果您在一开始就添加了上面的代码示例 <br><br><pre> <code class="cs hljs">ServicePointManager.DefaultConnectionLimit = <span class="hljs-number"><span class="hljs-number">5</span></span>;</code> </pre><br> 那么该示例的执行将明显加快，因为请求将以5个为一批执行。 <br><br> 在继续讲解它在.NET Core中的工作方式之前，应该对ServicePointManager进行更多说明。 上面讨论的属性指示将用于后续到任何域的连接的默认连接数。 但是与此同时，可以单独控制每个域名的参数，这可以通过ServicePoint类完成： <br><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> delayServicePoint = ServicePointManager.FindServicePoint(<span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Uri(<span class="hljs-string"><span class="hljs-string">"http://slowwly.robertomurray.co.uk"</span></span>)); delayServicePoint.ConnectionLimit = <span class="hljs-number"><span class="hljs-number">3</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> habrServicePoint = ServicePointManager.FindServicePoint(<span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Uri(<span class="hljs-string"><span class="hljs-string">"https://habr.com"</span></span>)); habrServicePoint.ConnectionLimit = <span class="hljs-number"><span class="hljs-number">5</span></span>;</code> </pre><br> 执行此代码后，通过同一HttpClient实例与Habr进行的任何交互都将使用5个同时连接，以及3个与“ slowwly”站点的连接。 <br><br> 这里还有另一个有趣的细微差别-本地地址（localhost）的连接数限制默认为int.MaxValue。 只需查看执行此代码的结果，而无需先设置DefaultConnectionLimit： <br><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> habrServicePoint = ServicePointManager.FindServicePoint(<span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Uri(<span class="hljs-string"><span class="hljs-string">"https://habr.com"</span></span>)); Console.WriteLine(habrServicePoint.ConnectionLimit); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> localServicePoint = ServicePointManager.FindServicePoint(<span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Uri(<span class="hljs-string"><span class="hljs-string">"http://localhost"</span></span>)); Console.WriteLine(localServicePoint.ConnectionLimit);</code> </pre><br> 现在，让我们继续.NET Core。 尽管ServicePointManager仍然存在于System.Net命名空间中，但它不会影响.NET Core中HttpClient的行为。 相反，可以使用HttpClientHandler（或SocketsHttpHandler，我们将在后面讨论）来控制HTTP连接参数： <br><br><pre> <code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">void</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">Main</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params">[] args</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> handler = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpClientHandler(); handler.MaxConnectionsPerServer = <span class="hljs-number"><span class="hljs-number">2</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> client = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpClient(handler); <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> tasks = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> List&lt;Task&gt;(); <span class="hljs-keyword"><span class="hljs-keyword">for</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">int</span></span> i = <span class="hljs-number"><span class="hljs-number">0</span></span>; i &lt; <span class="hljs-number"><span class="hljs-number">10</span></span>; i++) { tasks.Add(SendRequest(client, <span class="hljs-string"><span class="hljs-string">"http://slowwly.robertomurray.co.uk/delay/5000/url/https://habr.com"</span></span>)); } Task.WaitAll(tasks.ToArray()); Console.ReadLine(); } <span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">private</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">static</span></span></span><span class="hljs-function"> </span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">async</span></span></span><span class="hljs-function"> Task </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">SendRequest</span></span></span><span class="hljs-function">(</span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">HttpClient client, </span></span><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-params"><span class="hljs-keyword">string</span></span></span></span><span class="hljs-function"><span class="hljs-params"> url</span></span></span><span class="hljs-function">)</span></span> { <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> response = <span class="hljs-keyword"><span class="hljs-keyword">await</span></span> client.GetAsync(url); Console.WriteLine(<span class="hljs-string"><span class="hljs-string">$"Received response </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{response.StatusCode}</span></span></span><span class="hljs-string"> from </span><span class="hljs-subst"><span class="hljs-string"><span class="hljs-subst">{url}</span></span></span><span class="hljs-string">"</span></span>); }</code> </pre><br> 上面的示例的行为与常规.NET Framework的初始示例完全相同-一次仅建立2个连接。 但是，如果删除设置了MaxConnectionsPerServer属性的行，则并发连接的数量将大大增加，因为默认情况下，.NET Core中此属性的值为int.MaxValue。 <br><br><a name="3"></a> 现在，让我们来看一下默认设置的第三个非显而易见的问题，该问题与之前的两个<b>长期连接和DNS缓存一样重要</b> 。 与远程服务器建立连接时，首先将域名解析为相应的IP地址，然后将接收到的地址放入缓存中一段时间​​，以加快后续连接的速度。 另外，为了节省资源，大多数情况下，连接在每次请求后都不关闭，而是保持打开状态很长时间。 <br><br> 想象一下，如果与之交互的服务器已更改为其他IP地址，那么我们正在开发的系统应该可以正常工作而不会强制重启。 例如，如果由于当前数据中心故障而切换到另一个数据中心。 即使由于第一个数据中心发生故障而导致永久性连接断开（这也可能很快发生），DNS缓存也将不允许我们的系统快速响应此类更改。 对于通过DNS循环进行负载平衡的地址的调用也是如此。 <br><br> 对于“普通” .NET框架，可以通过ServicePointManager和ServicePoint控制此行为（下面列出的所有参数都以毫秒为单位）： <br><br><ul><li>  ServicePointManager.DnsRefreshTimeout-指示每个域名的接收IP地址将被缓存多长时间，默认值为2分钟（120000）。 </li><li>  ServicePoint.ConnectionLeaseTimeout-指示连接可以保持打开状态的时间。 默认情况下，连接没有时间限制；由于此参数为-1，所以任何连接都可以保持任意长时间。 将其设置为0将导致每个连接在请求完成后立即关闭。 </li><li>  ServicePoint.MaxIdleTime-指示在不活动时间之后将关闭连接。 不活动表示没有通过连接的数据传输。 默认情况下，此参数的值为100秒（100000）。 </li></ul><br> 现在，为了更好地理解这些参数，我们将它们全部组合在一个场景中。 假设没有人更改DnsRefreshTimeout和MaxIdleTime，它们分别为120秒和100秒。 这样，ConnectionLeaseTimeout设置为60秒。 该应用程序仅建立一个连接，通过该连接每10秒发送一次请求。 <br><br> 使用这些设置，即使周期性地传输数据，连接也会每60秒关闭一次（ConnectionLeaseTimeout）。 关闭和重新创建的方式不会干扰请求的正确执行-如果时间已到，并且在仍在执行请求的那一刻，连接将在请求完成后关闭。 每次重新建立连接时，都将首先从缓存中获取相应的IP地址，并且只有在其解析到期（120秒）后，系统才会向DNS服务器发送请求。 <br><br>  MaxIdleTime参数在这种情况下将不起作用，因为连接闲置的时间不超过10秒。 <br><br> 这些参数的最佳比例在很大程度上取决于特定情况和非功能性要求： <br><br><ul><li> 如果您不打算在应用程序访问的域名后面透明地切换IP地址，同时又需要最小化网络连接的成本，那么默认设置看起来是个不错的选择。 </li><li> 如果在发生故障的情况下需要在IP地址之间进行切换，则可以将DnsRefreshTimeout设置为0，并将ConnectionLeaseTimeout设置为适合您的非负值。 哪一个具体取决于您切换到另一个IP的速度。 显然，您希望对故障做出最快的响应，但是在这里您需要找到最佳值，一方面可以提供可接受的切换时间，另一方面又不会通过频繁重新创建连接而降低系统的吞吐量和响应时间。 <br></li><li> 例如，如果您需要最快的反应来更改IP地址，例如通过DNS循环进行平衡，则可以尝试将DnsRefreshTimeout和ConnectionLeaseTimeout设置为0，但这将非常浪费：对于每个请求，将首先轮询DNS服务器，然后再轮询与目标节点的连接将重新建立。 <br></li><li> 在某些情况下，使用非零的DnsRefreshTimeout将ConnectionLeaseTimeout设置为0可能会很有用，但我无法立即提出合适的脚本。 从逻辑上讲，这意味着对于每个请求，将重新创建连接，但是将尽可能从高速缓存中获取IP地址。 </li></ul><br> 下面是一个代码示例，可用于观察上述参数的行为： <br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> client = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> HttpClient(); ServicePointManager.DnsRefreshTimeout = <span class="hljs-number"><span class="hljs-number">120000</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">var</span></span> habrServicePoint = ServicePointManager.FindServicePoint(<span class="hljs-keyword"><span class="hljs-keyword">new</span></span> Uri(<span class="hljs-string"><span class="hljs-string">"https://habr.com"</span></span>)); habrServicePoint.MaxIdleTime = <span class="hljs-number"><span class="hljs-number">100000</span></span>; habrServicePoint.ConnectionLeaseTimeout = <span class="hljs-number"><span class="hljs-number">60000</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (<span class="hljs-literal"><span class="hljs-literal">true</span></span>) { client.GetAsync(<span class="hljs-string"><span class="hljs-string">"https://habr.com"</span></span>).Wait(); Thread.Sleep(<span class="hljs-number"><span class="hljs-number">10000</span></span>); }</code> </pre><br>  <i>当测试程序运行时，您可以通过PowerShell在循环中运行netstat来监视其建立的连接。</i> <br><br> 立即应该说出如何在.NET Core中管理所描述的参数。 与ConnectionLimit一样，ServicePointManager中的设置将不起作用。  Core具有一种特殊的HTTP处理程序，可实现上述三个参数中的两个-SocketsHttpHandler： <br><br><pre> <code class="cs hljs"><span class="hljs-keyword"><span class="hljs-keyword">var</span></span> handler = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> SocketsHttpHandler(); handler.PooledConnectionLifetime = TimeSpan.FromSeconds(<span class="hljs-number"><span class="hljs-number">60</span></span>); <span class="hljs-comment"><span class="hljs-comment">// ConnectionLeaseTimeout handler.PooledConnectionIdleTimeout = TimeSpan.FromSeconds(100); // MaxIdleTime var client = new HttpClient(handler);</span></span></code> </pre><br> 没有参数可控制.NET Core中DNS记录的缓存时间。 测试案例表明，缓存不起作用-创建新的DNS连接时，将再次执行解析，因此对于在请求的域名可以在不同IP地址之间切换的条件下进行正常操作，只需将PooledConnectionLifetime设置为所需值即可。 <br><br> 除了所有这些之外，必须说所有这些问题都不会被Microsoft的开发人员注意到，因此，从.NET Core 2.1开始，HTTP客户端的工厂出现了，它可以解决其中的一些问题-https: <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=https://docs.microsoft.com/en-us/dotnet/standard/microservices-architecture/implement-resilient-applications/use-httpclientfactory-to-implement-resilient-">//docs.microsoft.com/zh-我们/ dotnet /标准/ microservices体系结构/ Implement-resilient-applications / use-httpclientfactory-to-implement-resilient-http-requests</a> 。 此外，除了管理连接的生存期外，新组件还提供了创建类型化客户端以及其他一些有用功能的机会。 本文及其中的链接提供了有关使用HttpClientFactory的足够信息和示例，因此，在本文中我将不考虑与其相关的详细信息。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN424873/">https://habr.com/ru/post/zh-CN424873/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN424861/index.html">邮箱中的蛇和F＃有什么作用</a></li>
+<li><a href="../zh-CN424865/index.html">发现基本设计粒子</a></li>
+<li><a href="../zh-CN424867/index.html">从头开始六足动物的开发（第1部分）-设计</a></li>
+<li><a href="../zh-CN424869/index.html">新的iOS 12功能如何提醒我现在该'愈了</a></li>
+<li><a href="../zh-CN424871/index.html">埃隆·马斯克（Elon Musk）和特斯拉（Tesla）与美国证券交易委员会和解</a></li>
+<li><a href="../zh-CN424877/index.html">液压制动冷却系统</a></li>
+<li><a href="../zh-CN424879/index.html">接口可用性 Yandex讲座</a></li>
+<li><a href="../zh-CN424881/index.html">Newtoo-在2018年从头开发完整的浏览器引擎？</a></li>
+<li><a href="../zh-CN424887/index.html">Lida沉默的是：开发人员职业的开始。 原理或如何成为Middl</a></li>
+<li><a href="../zh-CN424889/index.html">查看英特尔8087协处理器内部</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

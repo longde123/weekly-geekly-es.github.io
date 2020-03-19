@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🛎️ 🧕🏻 🐖 PostgreSQL: cómo y por qué se hincha WAL 🍯 🚾 ✊🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Para que el monitoreo sea útil, tenemos que resolver diferentes escenarios de problemas probables y diseñar paneles y disparadores de tal manera que e...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL: cómo y por qué se hincha WAL</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/okmeter/blog/421061/"><p><img width="400" align="left" src="https://habrastorage.org/webt/u-/b7/rk/u-b7rkoa-muxnd3pq0ai7foxhne.png">  Para que el monitoreo sea útil, tenemos que resolver diferentes escenarios de problemas probables y diseñar paneles y disparadores de tal manera que entiendan de inmediato la causa del incidente. </p><br><p>  En algunos casos, entendemos bien cómo funciona este o aquel componente de la infraestructura, y luego se sabe de antemano qué métricas serán útiles.  Y a veces eliminamos casi todas las métricas posibles con el máximo detalle y luego observamos cómo ciertos problemas son visibles en ellas. </p><br><p>  Hoy veremos cómo y por qué los postgres Write-Ahead Log (WAL) se pueden hinchar.  Como de costumbre, ejemplos de la vida real en imágenes. </p><a name="habracut"></a><br><h2 id="nemnogo-teorii-wal-v-postgresql">  Un poco de teoría WAL en postgresql </h2><br><p>  Cualquier cambio en la base de datos se registra primero en el WAL, y solo después de eso, los datos en la página en la memoria caché del búfer se cambian y se marcan como sucios, que deben guardarse en el disco.  Además, el proceso <strong>CHECKPOINT</strong> se inicia periódicamente, lo que guarda todas las páginas sucias en el disco y el número de segmento WAL, hasta el cual todas las páginas modificadas ya están escritas en el disco. </p><br><p>  Si, por alguna razón, postgresql se bloquea y comienza de nuevo, todos los segmentos WAL del último punto de control se reproducirán durante el proceso de recuperación. </p><br><p>  Los segmentos WAL que preceden al punto de control ya no nos serán útiles para la recuperación de la base de datos posterior al bloqueo, pero en el postgres WAL también participa en el proceso de replicación, y la copia de seguridad de todos los segmentos para la Recuperación de punto en el tiempo - PITR también se puede configurar. </p><br><p>  Un ingeniero experimentado probablemente ya entendió todo, cómo se rompe en la vida real :) <br>  ¡Veamos los gráficos! </p><br><h2 id="wal-raspuh-1">  WAL hinchazón # 1 </h2><br><p>  Nuestro agente de monitoreo para cada instancia encontrada de postgres calcula la ruta en el disco al directorio con wal y elimina tanto el tamaño total como la cantidad de archivos (segmentos): </p><br><p><img src="https://habrastorage.org/webt/ec/he/of/echeof-osx8kb4jj9e8na6vo2-u.png"><br><img src="https://habrastorage.org/webt/fd/ts/um/fdtsumlvrsifgg5b-mjvs4vpdtm.png"><br></p><br><p>  En primer lugar, observamos cuánto tiempo llevamos ejecutando CHECKPOINT. </p><br><p>  Tomamos métricas de pg_stat_bgwriter: </p><br><ul><li>  <strong>checkpoints_timed</strong> - contador de lanzamientos de puntos de control que ocurrieron con la condición de que el tiempo desde el último punto de control se haya excedido en más de <em>pg_settings.checkpoint_timeout</em> </li><li>  <strong>checkpoints_req</strong> : contador de inicios del punto de control con la condición de que se supere el tamaño de wal desde el último punto de control </li></ul><br><p><img src="https://habrastorage.org/webt/db/ao/2x/dbao2xjzmnkm70a1-foimvos5a4.png"><br></p><br><p> Vemos que el punto de control no se ha lanzado durante mucho tiempo.  En este caso, es imposible entender directamente la razón por la que NO se inicia este proceso (pero sería genial, por supuesto), pero sabemos que en postgres surgen muchos problemas debido a las largas transacciones. </p><br><p>  Comprobamos: </p><br><p><img src="https://habrastorage.org/webt/jm/cw/e6/jmcwe6wkzi6ubvyiplkqxlwg1ws.png"><br></p><br><p>  Además, está claro qué hacer: </p><br><ul><li>  matar una transacción </li><li>  lidiar con las razones por las que es largo </li><li>  espera, pero comprueba que hay suficiente espacio </li></ul><br><p>  Otro punto importante: <strong>en las réplicas conectadas a este servidor, ¡wal también está hinchado</strong> ! </p><br><h2 id="wal-archiver">  Archivo WAL </h2><br><p>  Te recuerdo en ocasiones: ¡la replicación no es una copia de seguridad! </p><br><p>  Una buena copia de seguridad debería permitirle recuperarse en cualquier momento.  Por ejemplo, si alguien "accidentalmente" realizó </p><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DELETE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> very_important_tbl;</code> </pre> <br><p>  Entonces deberíamos poder restaurar la base de datos al estado exactamente antes de esta transacción.  Esto se llama PITR (recuperación en un punto en el tiempo) y se implementa en postgresql con copias de seguridad periódicas completas de la base de datos + guardando todos los segmentos de WAL después del volcado. </p><br><p>  La configuración archive_command es responsable de hacer una copia de seguridad de wal, postgres simplemente inicia el comando que especificó, y si se completa sin un error, se considera que el segmento se ha copiado con éxito.  Si ocurre un error, lo intentará hasta la victoria, el segmento estará en el disco. </p><br><p>  Bueno, y como ilustración, gráficos de wal archivado roto: </p><br><p><img src="https://habrastorage.org/webt/wr/7q/j5/wr7qj5c4qheznqxduj-ixjchg3a.png"><br></p><br><p>  Aquí, además del tamaño de todos los segmentos wal, hay un <em>tamaño no archivado</em> : este es el tamaño de los segmentos que aún no se consideran guardados con éxito. </p><br><img src="https://habrastorage.org/webt/bg/ki/lb/bgkilbstwv9ziyw6gtfmscaowsq.png"><br><p><br>  Consideramos los estados según los contadores de pg_stat_archiver.  Para la cantidad de archivos, realizamos un disparo automático para todos los clientes, ya que a menudo se descompone, especialmente cuando se utiliza algo de almacenamiento en la nube como destino (S3, por ejemplo). </p><br><h2 id="replication-lag">  Retraso de replicación </h2><br><p>  La replicación de streaming en progreso funciona mediante la transferencia y reproducción de wal en réplicas.  Si por alguna razón la réplica se queda atrás y no pierde una cierta cantidad de segmentos, el asistente almacenará segmentos <em>pg_settings.wal_keep_segments</em> para ella.  Si la réplica se queda atrás en un mayor número de segmentos, ya no podrá conectarse al maestro (tendrá que volver a verterla). </p><br><p>  Para garantizar la preservación de cualquier número deseado de segmentos, la funcionalidad de las ranuras de replicación apareció en 9.4, que se discutirá más adelante. </p><br><h2 id="replication-slots">  Ranuras de replicación </h2><br><p>  Si la replicación se configura usando la ranura de replicación y hubo al menos una conexión de réplica exitosa a la ranura, entonces, en caso de que la réplica desaparezca, los postgres almacenarán todos los nuevos segmentos wal hasta que se agote el lugar. </p><br><p>  Es decir, una ranura de replicación olvidada puede causar hinchazón de la pared.  Pero afortunadamente, podemos monitorear el estado de las ranuras a través de pg_replication_slots. </p><br><p>  Así es como se ve en un ejemplo en vivo: </p><br><p><img src="https://habrastorage.org/webt/ya/vq/pj/yavqpjrilg8mmlkohfrjzh0coic.png"><br><img src="https://habrastorage.org/webt/kx/7b/7k/kx7b7kjrzoybif8abcuxnxsir-8.png"><br></p><br><p>  En el gráfico superior, junto al tamaño de la pared, siempre mostramos una ranura con el número máximo de segmentos acumulados, pero también hay un gráfico detallado que mostrará qué ranura está hinchada. </p><br><p>  Una vez que comprendamos qué tipo de ranura está recopilando datos, podemos reparar las réplicas asociadas con él o simplemente eliminarlo. </p><br><p>  Cité los casos más comunes de inflamación de la pared, pero estoy seguro de que hay otros casos (a veces también se encuentran errores en postgres).  Por lo tanto, es importante controlar el tamaño de la pared y responder a los problemas antes de que se agote el espacio en disco y la base de datos deje de atender solicitudes. </p><br><p>  <em>Nuestro <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">servicio de monitoreo</a> ya sabe cómo recopilar todo esto, visualizarlo y alertarlo correctamente.</em>  <em>Y también tenemos una opción de entrega local para aquellos a quienes la nube no se adapta.</em> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/es421061/">https://habr.com/ru/post/es421061/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es421049/index.html">Diseño de pantallas de aplicaciones: desde la planificación hasta el diseño</a></li>
+<li><a href="../es421051/index.html">Cómo lancé mi primer proyecto SaaS para contratar todo el día</a></li>
+<li><a href="../es421055/index.html">Desarrollo web personalizado: cómo escalar en un proyecto cada vez mayor</a></li>
+<li><a href="../es421057/index.html">Cómo ensamblar vagones para trenes de pasajeros</a></li>
+<li><a href="../es421059/index.html">Acelerar los sitios con consejos tempranos</a></li>
+<li><a href="../es421063/index.html">Nuevos libros sobre programación infantil en Scratch</a></li>
+<li><a href="../es421065/index.html">Cómo le enseñé a la IA a jugar Tetris para NES. Parte 2: AI</a></li>
+<li><a href="../es421067/index.html">Cómo desarrollamos la aplicación AR para revisar lugares históricos</a></li>
+<li><a href="../es421069/index.html">Bobby Urban Backpack: Inside the Castle</a></li>
+<li><a href="../es421071/index.html">Mod y resto no son lo mismo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

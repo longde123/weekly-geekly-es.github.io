@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💺 🚴 🏇 Implantando o armazenamento LINSTOR para Proxmox 📦 🥡 ⛹🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="A LINBIT lançou recentemente sua nova solução para orquestrar e gerenciar várias matrizes DRBD. 
+
+
+ Por exemplo, você pode ter vários nós e cada um te...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Implantando o armazenamento LINSTOR para Proxmox</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/423101/"><p><img src="https://habrastorage.org/getpro/habr/post_images/e47/594/c07/e47594c0721332fb46493d20339bb1be.png" alt="imagem"></p><br><p>  A LINBIT lançou recentemente sua nova solução para orquestrar e gerenciar várias matrizes DRBD. </p><br><p>  Por exemplo, você pode ter vários nós e cada um terá seu próprio pool LVM ou ZFS, no qual o LINSTOR criará automaticamente novos volumes e os replicará entre os nós usando o protocolo DRBD. </p><br><p> O LINSTOR suporta thin-provisioning, snapshots e muitas outras coisas interessantes. <br>  Esta solução é adequada para máquinas virtuais e contêineres. <a name="habracut"></a></p><br><h1 id="linstor-satellites">  Satélites LINSTOR </h1><br><p> Acredito que você já tenha um cluster Proxmox, tenho três nós <code>pve1</code> , <code>pve2</code> e <code>pve3</code> . </p><br><p>  Portanto, o primeiro passo é instalar o <strong>drbd-utils</strong> e criar <strong>um módulo do kernel</strong> em cada nó. </p><br><p>  Adicione o repositório linstor e instale <strong>os cabeçalhos do kernel</strong> , bem como todos os pacotes necessários: </p><br><pre> <code class="bash hljs">wget -O- https://packages.linbit.com/package-signing-pubkey.asc | apt-key add - <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"deb http://packages.linbit.com/proxmox/ proxmox-5 drbd-9.0"</span></span> \ &gt; /etc/apt/sources.list.d/linbit.list apt-get update apt-get -y install pve-headers apt-get -y install drbd-dkms drbdtop</code> </pre> <br><p>  Após a instalação, vamos verificar sua versão do módulo do kernel: </p><br><pre> <code class="bash hljs">modprobe drbd cat /proc/drbd</code> </pre> <br><p>  Se você <code>dkms status</code> a versão 8, algo deu errado e o módulo in-tree do kernel foi carregado, verifique o <code>dkms status</code> para saber mais sobre como construir o módulo dkms diretamente. <br>  Para o LINSTOR, você deve usar o DRBD versão 9. </p><br><p>  Em seguida, em cada nó, instale os <strong>pacotes linstor-proxmox</strong> e <strong>linstor-satellite</strong> : </p><br><pre> <code class="bash hljs">apt-get -y install linstor-proxmox linstor-satellite systemctl start linstor-satellite.service systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> linstor-satellite.service</code> </pre> <br><h1 id="linstor-controller">  Controlador LINSTOR </h1><br><p>  Vamos implantar o controlador dentro do contêiner LXC. </p><br><p>  Faça o download do modelo debian: </p><br><pre> <code class="bash hljs">wget http://download.proxmox.com/images/system/debian-9.0-standard_9.3-1_amd64.tar.gz -P /var/lib/vz/template/cache/</code> </pre> <br><p>  Agora crie um contêiner para o controlador: </p><br><pre> <code class="bash hljs">pct create 100 <span class="hljs-built_in"><span class="hljs-built_in">local</span></span>:vztmpl/debian-9.0-standard_9.3-1_amd64.tar.gz \ --hostname=linstor-controller \ --net0=name=eth0,bridge=vmbr0,gw=10.1.0.1,ip=10.1.0.123/16</code> </pre> <br><p>  Execute o contêiner e insira-o: </p><br><pre> <code class="bash hljs">pct start 100 pct <span class="hljs-built_in"><span class="hljs-built_in">exec</span></span> 100 bash</code> </pre> <br><p>  Instale atualizações: </p><br><pre> <code class="bash hljs">apt-get update apt-get -y upgrade</code> </pre> <br><p>  Inclua o repositório linstor e instale <strong>linstor-controller</strong> e <strong>linstor-client</strong> : </p><br><pre> <code class="bash hljs">wget -O- https://packages.linbit.com/package-signing-pubkey.asc | apt-key add - <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">"deb http://packages.linbit.com/proxmox/ proxmox-5 drbd-9.0"</span></span> \ &gt; /etc/apt/sources.list.d/linbit.list apt-get update &amp;&amp; apt-get install -y linstor-controller linstor-client systemctl start linstor-controller.service systemctl <span class="hljs-built_in"><span class="hljs-built_in">enable</span></span> linstor-controller.service</code> </pre> <br><p>  O Linstor requer um código de idioma configurado.  Configure a localidade: </p><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'/en_US.UTF-8 UTF-8/ s/^# //'</span></span> /etc/locale.gen locale-gen</code> </pre> <br><p>  Vamos configurar o fuso horário imediatamente: </p><br><pre> <code class="bash hljs">dpkg-reconfigure tzdata</code> </pre> <br><h1 id="konfigurirovanie-hranilischa">  Configuração do Vault </h1><br><p>  Crie nós: </p><br><pre> <code class="bash hljs">linstor node create pve1 10.1.0.11 linstor node create pve2 10.1.0.12 linstor node create pve3 10.1.0.13</code> </pre> <br><p>  Para cada nó, descrevemos uma interface adicional que será usada para replicação DRBD: </p><br><pre> <code class="bash hljs">linstor node interface create pve1 data 10.2.0.11 linstor node interface create pve2 data 10.2.0.12 linstor node interface create pve3 data 10.2.0.13</code> </pre> <br><p>  Exemplo de saída do comando <code>linstor node list</code> : </p><br><pre> <code class="plaintext hljs">╭──────────────────────────────────────────────────────────────╮ ┊ Node ┊ NodeType ┊ Addresses ┊ State ┊ ╞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╡ ┊ pve1 ┊ SATELLITE ┊ 10.0.1.11,10.0.2.11:3366 (PLAIN) ┊ Online ┊ ┊ pve2 ┊ SATELLITE ┊ 10.0.1.12,10.0.2.12:3366 (PLAIN) ┊ Online ┊ ┊ pve3 ┊ SATELLITE ┊ 10.0.1.13,10.0.2.13:3366 (PLAIN) ┊ Online ┊ ╰──────────────────────────────────────────────────────────────╯</code> </pre> <br><p>  Crie pools: </p><br><p>  Em cada nó, você deve preparar o <strong>thin-pool lvm</strong> para drbd: </p><br><pre> <code class="bash hljs">lvcreate -L 800G --thinpool drbdpool pve</code> </pre> <br><p>  Agora você pode adicioná-los ao linstor: </p><br><pre> <code class="bash hljs">linstor storage-pool create lvmthin pve1 drbdpool pve/drbdpool linstor storage-pool create lvmthin pve2 drbdpool pve/drbdpool linstor storage-pool create lvmthin pve3 drbdpool pve/drbdpool</code> </pre> <br><p>  Vamos configurar os conjuntos para usar a interface de <code>data</code> : </p><br><pre> <code class="bash hljs">linstor storage-pool <span class="hljs-built_in"><span class="hljs-built_in">set</span></span>-property pve1 drbdpool PrefNic data linstor storage-pool <span class="hljs-built_in"><span class="hljs-built_in">set</span></span>-property pve2 drbdpool PrefNic data linstor storage-pool <span class="hljs-built_in"><span class="hljs-built_in">set</span></span>-property pve3 drbdpool PrefNic data</code> </pre> <br><p>  Exemplo de saída do <code>linstor storage-pool list</code> : </p><br><pre> <code class="plaintext hljs">╭─────────────────────────────────────────────────────────────────────────────────────────── ┊ StoragePool ┊ Node ┊ Driver ┊ PoolName ┊ FreeCapacity ┊ TotalCapacity ┊ Support ╞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ ┊ drbdpool ┊ pve1 ┊ LvmThinDriver ┊ hv1/drbdpool ┊ 800 GiB ┊ 800 GiB ┊ true ┊ drbdpool ┊ pve1 ┊ LvmThinDriver ┊ hv1/drbdpool ┊ 800 GiB ┊ 800 GiB ┊ true ┊ drbdpool ┊ pve3 ┊ LvmThinDriver ┊ hv3/drbdpool ┊ 800 GiB ┊ 800 GiB ┊ true ╰───────────────────────────────────────────────────────────────────────────────────────────</code> </pre> <br><p>  Agora podemos adicionar nosso novo armazenamento à configuração do Proxmox: </p><br><pre> <code class="bash hljs">cat &gt;&gt; /etc/pve/storage.cfg &lt;&lt;EOF drbd: drbdpool content rootdir,images controller 10.1.0.123 controllervm 100 redundancy 3 EOF</code> </pre> <br><h1 id="nastroyka-ha-dlya-kontrollera">  Configuração de alta disponibilidade para o controlador </h1><br><p>  Agora vamos transferir nosso contêiner do linstor para o armazenamento do linstor. </p><br><p>  Primeiro, precisamos criar um disco virtual para ele: </p><br><pre> <code class="bash hljs">pct <span class="hljs-built_in"><span class="hljs-built_in">exec</span></span> 100 bash linstor resource-definition create vm-100-disk-0 linstor volume-definition create vm-100-disk-0 4G linstor resource create vm-100-disk-0 --auto-place 3 -s drbdpool</code> </pre> <br><p>  Exemplo de saída do comando <code>linstor resource list</code> : </p><br><pre> <code class="plaintext hljs">╭──────────────────────────────────────────╮ ┊ ResourceName ┊ Node ┊ Port ┊ State ┊ ╞┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╡ ┊ vm-100-disk-0 ┊ pve1 ┊ 7000 ┊ UpToDate ┊ ┊ vm-100-disk-0 ┊ pve2 ┊ 7000 ┊ UpToDate ┊ ┊ vm-100-disk-0 ┊ pve3 ┊ 7000 ┊ UpToDate ┊ ╰──────────────────────────────────────────╯</code> </pre> <br><p>  Por padrão, o <strong>linstor-satellite</strong> exclui as configurações de todos os recursos no momento em que o serviço é iniciado, e espera uma nova configuração do <strong>linstor-controller</strong> , mas se mantivermos o <strong>linstor-controller</strong> no mesmo local que os dados, devemos abrir uma exceção para o recurso adicionando uma opção <code>--keep-res=vm-100</code> para linstor-satellite em todos os nós: </p><br><pre> <code class="bash hljs"><span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> -e <span class="hljs-string"><span class="hljs-string">"[Service]\nExecStart=\nExecStart=/usr/share/linstor-server/bin/Satellite --logs=/var/log/linstor-satellite --config-directory=/etc/linstor --keep-res=vm-100"</span></span> | SYSTEMD_EDITOR=tee systemctl edit linstor-satellite.service</code> </pre> <br><p>  Esta ação deve impedir que o recurso <code>vm-100-disk-0</code> seja excluído toda vez que for iniciado. </p><br><p>  Agora paramos o <strong>contêiner linstor-controller</strong> e transferimos todos os dados do disco local para o disco drbd. </p><br><pre> <code class="bash hljs">pct shutdown 100 dd <span class="hljs-keyword"><span class="hljs-keyword">if</span></span>=/var/lib/vz/images/100/vm-100-disk-0.raw of=/dev/drbd/by-res/vm-100-disk-0/0 bs=8M status=progress e2fsck -f /dev/drbd/by-res/vm-100-disk-0/0 resize2fs /dev/drbd/by-res/vm-100-disk-0/0</code> </pre> <br><p>  Atualize a configuração do contêiner: </p><br><pre> <code class="bash hljs">sed -i <span class="hljs-string"><span class="hljs-string">'/^rootfs:/d'</span></span> /etc/pve/lxc/100.conf <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'rootfs: drbdpool:vm-100-disk-0,size=4G'</span></span> &gt;&gt; /etc/pve/lxc/100.conf</code> </pre> <br><p>  Execute o contêiner e, se estiver tudo bem, exclua o disco antigo: </p><br><pre> <code class="bash hljs">pct start 100 rm -f /var/lib/vz/images/100/vm-100-disk-0.raw</code> </pre> <br><p>  Agora só precisamos adicionar nosso contêiner ao proxmox <strong>ha-manager</strong> : </p><br><pre> <code class="bash hljs">ha-manager add ct:100 --max_relocate=3 --max_restart=3</code> </pre> <br><p>  LUCRO </p><br><h1 id="proizvoditelnost-i-tyuning">  Desempenho e ajuste </h1><br><p>  No momento, para alterar as configurações globais do controlador, você precisará desativar a autenticação no controlador: </p><br><ul><li>  <a href="">https://github.com/LINBIT/linbit-documentation/blob/master/UG9/en/administration-linstor.adoc#disable-user-security</a> </li></ul><br><p>  Para resolver automaticamente situações de cérebro dividido, adicione as seguintes opções ao controlador: </p><br><pre> <code class="bash hljs">linstor controller drbd-options \ --after-sb-0pri=discard-zero-changes \ --after-sb-1pri=discard-secondary \ --after-sb-2pri=disconnect</code> </pre> <br><p>  Para minha rede 10G, achei as seguintes configurações ideais para sincronização rápida: </p><br><pre> <code class="bash hljs">linstor controller drbd-options \ --max-buffers=36864 \ --rcvbuf-size=2097152 \ --sndbuf-size=1048576 linstor controller drbd-options \ --c-fill-target=10240 \ --c-max-rate=737280 \ --c-min-rate=20480 \ --c-plan-ahead=10</code> </pre> </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt423101/">https://habr.com/ru/post/pt423101/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt423089/index.html">Programadores na MBLT DEV 2018</a></li>
+<li><a href="../pt423091/index.html">Flutter para desenvolvedores do Android. Como criar uma interface do usuário para uma atividade usando o Flutter</a></li>
+<li><a href="../pt423093/index.html">Aumentamos a aleatoriedade do fato de que [provavelmente] [quase] por acidente</a></li>
+<li><a href="../pt423095/index.html">Novidades da apresentação da Apple</a></li>
+<li><a href="../pt423097/index.html">Tarefas e soluções para o lutador PostgreSQL</a></li>
+<li><a href="../pt423103/index.html">Podcasts em Python: foi tudo o que descobrimos</a></li>
+<li><a href="../pt423105/index.html">System.IO.Pipelines: E / S de alto desempenho no .NET</a></li>
+<li><a href="../pt423107/index.html">Convidamos você para a reunião Go in Production</a></li>
+<li><a href="../pt423109/index.html">O que a Apple apresentou e o que os desenvolvedores do iOS pensam sobre isso</a></li>
+<li><a href="../pt423115/index.html">Efeitos aprimorados com o modo de mesclagem da camada de segundo plano CSS</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

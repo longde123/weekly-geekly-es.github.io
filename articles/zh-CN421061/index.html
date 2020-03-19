@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏼‍🚀 🚙 🙎🏻 PostgreSQL：WAL膨胀的方式和原因 🍽️ 🌆 🧝🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="为了使监视有用，我们必须解决可能出现的问题的不同情况，并设计仪表板和触发器，使它们能够立即了解事件的原因。 
+
+
+ 在某些情况下，我们非常了解基础结构的这一部分或该部分的工作方式，然后预先知道哪些指标将很有用。 有时我们会删除几乎所有可能的度量标准，并提供最大程度的详细信息，然后查看它们上某些可见的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL：WAL膨胀的方式和原因</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/okmeter/blog/421061/"><p><img width="400" align="left" src="https://habrastorage.org/webt/u-/b7/rk/u-b7rkoa-muxnd3pq0ai7foxhne.png"> 为了使监视有用，我们必须解决可能出现的问题的不同情况，并设计仪表板和触发器，使它们能够立即了解事件的原因。 </p><br><p> 在某些情况下，我们非常了解基础结构的这一部分或该部分的工作方式，然后预先知道哪些指标将很有用。 有时我们会删除几乎所有可能的度量标准，并提供最大程度的详细信息，然后查看它们上某些可见的问题。 </p><br><p> 今天，我们将研究预写日志（WAL）postgres如何膨胀以及为什么膨胀。 像往常一样-现实生活中的图片示例。 </p><a name="habracut"></a><br><h2 id="nemnogo-teorii-wal-v-postgresql">  PostgreSQL中的一些WAL理论 </h2><br><p> 数据库中的任何更改都首先记录在WAL中，只有在更改缓冲区高速缓存中的页面中的数据并将其标记为“脏”之后，才将其保存到磁盘中。 此外， <strong>CHECKPOINT</strong>进程会定期启动，这会将所有脏页保存到磁盘，并保存WAL段号，在此之前，所有更改的页均已写入磁盘。 </p><br><p> 如果由于某种原因突然使PostgreSQL崩溃并重新开始，则在恢复过程中将播放最后一个检查点的所有WAL段。 </p><br><p> 在检查点之前的WAL段对于我们在崩溃后的数据库恢复中将不再有用，但是在postgres中，WAL也参与复制过程，并且还可以为即时恢复-PITR配置所有段的备份。 </p><br><p> 一位经验丰富的工程师可能已经了解了一切，以及它们在现实生活中是如何破裂的:) <br> 让我们看一下图表！ </p><br><h2 id="wal-raspuh-1"> 沃尔膨胀＃1 </h2><br><p> 我们针对每个找到的postgres实例的监视代理使用wal计算磁盘上目录的路径，并删除文件的总大小和数量（段）： </p><br><p><img src="https://habrastorage.org/webt/ec/he/of/echeof-osx8kb4jj9e8na6vo2-u.png"><br><img src="https://habrastorage.org/webt/fd/ts/um/fdtsumlvrsifgg5b-mjvs4vpdtm.png"><br></p><br><p> 首先，我们看一下运行CHECKPOINT多久了。 </p><br><p> 我们从pg_stat_bgwriter获取指标： </p><br><ul><li>  <strong>checkpoints_timed-</strong>在距最后一个检查点的时间超过<em>pg_settings.checkpoint_timeout的</em>情况下发生的检查点启动计数器 </li><li>  <strong>checkpoints_req-</strong>通过从最后一个检查点开始超出沃尔玛大小的条件来开始<strong>检查点的</strong>计数器 </li></ul><br><p><img src="https://habrastorage.org/webt/db/ao/2x/dbao2xjzmnkm70a1-foimvos5a4.png"><br></p><br><p>我们看到检查点已经很长时间没有启动了。 在这种情况下，不可能直接理解不启动该过程的原因（但是这当然很酷），但是我们知道在postgres中，由于长时间的交易会产生很多问题！ </p><br><p> 我们检查： </p><br><p><img src="https://habrastorage.org/webt/jm/cw/e6/jmcwe6wkzi6ubvyiplkqxlwg1ws.png"><br></p><br><p> 进一步明确该怎么做： </p><br><ul><li> 取消交易 </li><li> 处理漫长的原因 </li><li> 等待，但是请检查是否有足够的空间 </li></ul><br><p> 另一个要点： <strong>在连接到该服务器的副本上，wal也肿了</strong> ！ </p><br><h2 id="wal-archiver">  WAL存档器 </h2><br><p> 我偶尔提醒您：复制不是备份！ </p><br><p> 良好的备份应该可以让您在任何给定的时间进行恢复。 例如，如果某人“意外”执行了 </p><br><pre><code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">DELETE</span></span> <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> very_important_tbl;</code> </pre> <br><p> 然后，我们应该能够将数据库还原到此事务之前的状态。 这称为PITR（时间点恢复），是在postgresql中实现的，它具有数据库的定期完整备份+在转储后保存所有WAL段。 </p><br><p>  archive_command设置负责备份wal，postgres只是启动您指定的命令，如果它完成而没有错误，则认为该段已成功复制。 如果发生错误，它将尝试直到胜利，该段将位于磁盘上。 </p><br><p> 好了，作为一个例子-破碎的沃尔玛图形： </p><br><p><img src="https://habrastorage.org/webt/wr/7q/j5/wr7qj5c4qheznqxduj-ixjchg3a.png"><br></p><br><p> 在这里，除了所有wal段的大小之外，还有一个<em>未归档的大小</em> -这是尚未被成功保存的段的大小。 </p><br><img src="https://habrastorage.org/webt/bg/ki/lb/bgkilbstwv9ziyw6gtfmscaowsq.png"><br><p><br> 我们根据pg_stat_archiver的计数器来考虑状态。 对于文件数，我们对所有客户端进行了自动触发，因为它经常崩溃，尤其是当某些云存储用作目标时（例如，S3）。 </p><br><h2 id="replication-lag"> 复制滞后 </h2><br><p> 正在进行的流复制工作是通过在副本上传输和播放wal进行的。 如果由于某种原因副本在后面并且没有丢失一定数量的段，则向导将<em>为其</em>存储<em>pg_settings.wal_keep_segments</em>段。 如果副本在较大数量的段上落后，它将不再能够连接到主副本（必须重新浇注）。 </p><br><p> 为了保证保留任何所需数量的段，复制插槽的功能出现在9.4中，稍后将对此进行讨论。 </p><br><h2 id="replication-slots"> 复制插槽 </h2><br><p> 如果使用复制插槽配置了复制，并且至少有一个成功的副本连接到该插槽，则如果副本消失，则postgres将存储所有新的wal段，直到该位置用完为止。 </p><br><p> 也就是说，遗忘的复制插槽会导致沃尔玛膨胀。 但是幸运的是，我们可以通过pg_replication_slots监视插槽的状态。 </p><br><p> 这是一个实时示例的外观： </p><br><p><img src="https://habrastorage.org/webt/ya/vq/pj/yavqpjrilg8mmlkohfrjzh0coic.png"><br><img src="https://habrastorage.org/webt/kx/7b/7k/kx7b7kjrzoybif8abcuxnxsir-8.png"><br></p><br><p> 在上方的图形中，在沃尔码尺寸旁边，我们始终显示一个槽，该槽具有最大数量的累积段，但也有一个详细的图形将显示哪个槽膨胀了。 </p><br><p> 一旦了解了哪种插槽正在收集数据，就可以修复与其关联的副本，也可以简单地删除它。 </p><br><p> 我列举了沃尔玛肿胀的最常见情况，但我敢肯定还有其他情况（有时也会发现postgres中的错误）。 因此，在磁盘空间用完并且数据库将停止处理请求之前，监视wal的大小并响应问题非常重要。 </p><br><p>  <em>我们的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">监控服务</a>已经知道如何收集所有这些信息，正确可视化并发出警报。</em>  <em>对于云不适合的用户，我们还有一个本地交付选项。</em> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN421061/">https://habr.com/ru/post/zh-CN421061/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN421049/index.html">设计应用程序屏幕：从计划到设计布局</a></li>
+<li><a href="../zh-CN421051/index.html">我如何启动我的第一个SaaS项目以全天候招聘</a></li>
+<li><a href="../zh-CN421055/index.html">定制Web开发：如何扩展不断增长的项目</a></li>
+<li><a href="../zh-CN421057/index.html">如何为旅客列车组装货车</a></li>
+<li><a href="../zh-CN421059/index.html">提早提示加速网站</a></li>
+<li><a href="../zh-CN421063/index.html">Scratch儿童编程新书</a></li>
+<li><a href="../zh-CN421065/index.html">我如何教AI玩NES玩俄罗斯方块。 第2部分：AI</a></li>
+<li><a href="../zh-CN421067/index.html">我们如何开发用于审查历史地点的AR应用程序</a></li>
+<li><a href="../zh-CN421069/index.html">Bobby Urban背包：城堡里面</a></li>
+<li><a href="../zh-CN421071/index.html">模数和余数不相同</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
