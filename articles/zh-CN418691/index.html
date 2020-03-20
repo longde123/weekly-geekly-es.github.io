@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>↔️ 📤 🏴󠁧󠁢󠁷󠁬󠁳󠁿 牧场主：5分钟内使用裸机进行Kubernetes 🖊️ 🏹 🐵</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在交叉路口，乐队不变。 
+
+ 在我由于对Docker Swarm的伪简单性和持续不断的整理工作，对分布式文件系统的不太方便的工作，稍微潮湿的Web界面和狭窄的功能以及缺乏对“即开即用”的GitLab集成的支持而完全厌倦之后，决定部署您的Kubernetes群集在您自己的硬件上，即通过部署Ranche...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>牧场主：5分钟内使用裸机进行Kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/418691/"> 在交叉路口，乐队不变。 <br><br> 在我由于对Docker Swarm的伪简单性和持续不断的整理工作，对分布式文件系统的不太方便的工作，稍微潮湿的Web界面和狭窄的功能以及缺乏对“即开即用”的GitLab集成的支持而完全厌倦之后，决定部署您的Kubernetes群集在您自己的硬件上，即通过部署Rancher Management Server 2.0。 <br><br> 安装经验，容错方案，在haProxy下使用haProxy和两个仪表板： <br><a name="habracut"></a><br>  <strong>输入数据：</strong> <br><br> 主机服务器HP Proliant DL320e Gen8-2个。 <br>  VM Ubuntu服务器16.04、2Gb RAM，2vCPU，20Gb HDD-1个。 在每个主机上（VM-haProxy）。 <br>  VM Ubuntu服务器16.04、4Gb RAM，4vCPU，40Gb HDD，20Gb SSD-3个 在每个主机（VM-*-群集）上。 <br>  VM Ubuntu服务器16.04、4Gb RAM，4vCPU，100Gb HDD-1个。 在任何主机（VM-NFS）上。 <br><br> 网络图： <br><br><div class="spoiler">  <b class="spoiler_title">图1</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/ua/wg/ec/uawgecpkngtalxstr0i1fam-ok4.jpeg"><br></div></div><br>  <strong>入门：</strong> <br><br>  <em>VM-haProxy</em>具有haProxy，fail2ban，iptables规则。 充当其后面所有计算机的网关。 我们有两个网关，一旦主机上的网关通信中断，所有机器都将切换到另一个。 <br><br> 这些节点（VM-haProxy）的主要任务是分配对后端的访问，平衡，转发端口并收集统计信息。 <br><br> 我的选择取决于haProxy，它是有关平衡和运行状况检查的更狭focused的工具。 为此，我喜欢配置指令的语法，并使用IP白名单和黑名单，以及使用多域SSL连接。 <br><br>  HaProxy配置： <br><br><div class="spoiler">  <b class="spoiler_title">haproxy.conf与评论</b> <div class="spoiler_text"><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">########################################################## #Global # ########################################################## global log 127.0.0.1 local0 notice maxconn 2000 user haproxy group haproxy tune.ssl.default-dh-param 2048 defaults log global mode http option httplog option dontlognull retries 3 option redispatch timeout connect 5000 timeout client 10000 timeout server 10000 option forwardfor option http-server-close ########################################################## #TCP # ########################################################## #    API  Kubernetes listen kube-api-tls bind *:6443 mode tcp option tcplog server VM-Master-Cluster Master:6443 ########################################################## #HTTP/HTTPS - Frontend and backend # ########################################################## #      "  ", frontend  backend. frontend http-in bind *:80 acl network_allowed src -f /path/allowed-ip #     IP.     . http-request deny if !network_allowed #       IP  . reqadd X-Forwarded-Proto:\ http mode http option httpclose acl is_haproxy hdr_end(host) -i haproxy.domain.ru acl is_rancher hdr_end(host) -i rancher.domain.ru acl is_kubernetes hdr_end(host) -i kubernetes.domain.ru use_backend kubernetes if is_kubernetes use_backend rancher if is_rancher use_backend haproxy if is_haproxy frontend https-in bind *:443 ssl crt-list /path/crt-list #    .        . acl network_allowed src -f /path/allowed-ip http-request deny if !network_allowed reqadd X-Forwarded-Proto:\ https acl is_rancher hdr_end(host) -i rancher.etraction.ru acl is_kubernetes hdr_end(host) -i kubernetes.etraction.ru use_backend kubernetes if is_kubernetes { ssl_fc_sni kubernetes.domain.ru } use_backend rancher if is_rancher { ssl_fc_sni rancher.domain.ru } # Backend  haProxy.    . backend haproxy stats enable stats uri /haproxy?stats stats realm Strictly\ Private stats auth login:passwd cookie SERVERID insert nocache indirect #  , , backend   dashboard rancher  kubernetes. backend rancher acl network_allowed src -f /path/allowed-ip http-request deny if !network_allowed mode http redirect scheme https if !{ ssl_fc } server master master:443 check ssl verify none backend kubernetes acl network_allowed src -f /path/allowed-ip http-request deny if !network_allowed mode http balance leastconn redirect scheme https if !{ ssl_fc } server master master:9090 check ssl verify none</span></span></code> </pre> <br></div></div><br>  <strong>重要：</strong>所有计算机都必须通过主机名相互“了解”。 <br><br><div class="spoiler">  <b class="spoiler_title">add-host-entry.pp用于在/ etc / hosts中添加主机名的人偶清单</b> <div class="spoiler_text"><pre> <code class="bash hljs">class host_entries { host { <span class="hljs-string"><span class="hljs-string">'proxy01'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.11'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'proxy02'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.12'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'master'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.100'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node01'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.101'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node02'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.102'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node03'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.103'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node04'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.104'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node05'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.105'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'nfs'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.200'</span></span>, } }</code> </pre><br></div></div><br>  <em>VM-Master-Cluster</em>是主控制机。 它与Puppet Master，GlusterFS Server，Rancher Server（容器），etcd（容器），控制管理器（容器）不同。 如果此主机断开连接，生产服务将继续工作。 <br>  <em>VM-Node-Cluster-</em>节点，工作程序。 工作机器，其资源将被组合到一个容错环境中。 没什么有趣的。 <br><br>  <em>VM-NFS</em> -NFS服务器（nfs-kernel-server）。 主要任务是提供缓冲区空间。 存储配置文件和所有文件。 不存储任何重要内容。 喝咖啡时，可以缓慢地纠正其跌落。 <br><br>  <strong>重要提示：</strong>所有环境机器都必须具备：docker.io，nfs-common，gluster-server。 <br><br><div class="spoiler">  <b class="spoiler_title">must-have-packages.pp木偶清单，用于安装正确的软件</b> <div class="spoiler_text"><pre> <code class="bash hljs">class musthave { package { <span class="hljs-string"><span class="hljs-string">'docker.io'</span></span>: ensure =&gt; <span class="hljs-string"><span class="hljs-string">'installed'</span></span>, } package { <span class="hljs-string"><span class="hljs-string">'nfs-common'</span></span>: ensure =&gt; <span class="hljs-string"><span class="hljs-string">'installed'</span></span>, } package { <span class="hljs-string"><span class="hljs-string">'gluster-server'</span></span>: ensure =&gt; <span class="hljs-string"><span class="hljs-string">'installed'</span></span>, } }</code> </pre><br></div></div><br> 由于大量介绍了nfs-volume的安装和GlusterFS的配置，因此我将不对其进行描述。 <br><br> 如果您在规格说明中注意到有SSD磁盘，则它们为Gluster分布式文件系统的运行做好了准备。 创建分区，并存储在高速磁盘上。 <br><br>  <em>注意事项</em> 实际上，运行Rancher不需要类似镜像的环境。 以上所有都是我对集群的看法以及对我遵循的实践的描述。 <br><br> 要运行Rancher， <strong>一</strong>台计算机就足够了，它具有4CPU，4Gb RAM和10Gb HDD。 <br><br>  5分钟到Rancher。 <br><br> 在VM-Master-Cluster上，我们执行以下操作： <br><br><pre> <code class="bash hljs">sudo docker run -d --restart=unless-stopped -p 80:80 -p 443:443 rancher/rancher</code> </pre> <br> 检查可用性： <br><br><pre> <code class="bash hljs">curl -k https://localhost</code> </pre> <br> 如果您看到了API-恭喜您成功通过了一半。 <br><br> 再次查看网络图，我们记得我们将从外部通过haProxy进行工作，在配置中，我们发布了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">rancher.domain.ru</a>链接，继续，设置您的密码。 <br><br> 下一页是Kubernetes集群创建页面。 <br><br><div class="spoiler">  <b class="spoiler_title">图2</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/1w/ke/xn/1wkexnv2z_lgd_epga3vx3foyv4.png"><br></div></div><br> 从“群集选项”菜单中，选择“绒布”。 我没有与其他网络提供商合作。 我不建议。 <br><br> 值得一提的是，如果您不打算在工作人员模式下使用管理器，我们已经安装了etcd和Control Plane复选框，则未安装工作程序复选框。 <br> 我们在局域网内工作，在NIC上使用相同的地址，因此在“公共和内部地址”字段中指示相同的IP。 <br><br> 复制上面的结果代码，然后在控制台中运行。 <br><br> 一段时间后，在Web界面中，您将看到有关添加节点的消息。 一段时间后，您将启动Kubernetes集群。 <br><br><div class="spoiler">  <b class="spoiler_title">图3</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/lj/sn/kk/ljsnkkwx3eh2w0eg5vysblt8wpm.png"><br></div></div><br> 要添加工作程序，请在Rancher Web界面中编辑集群，您将看到生成连接命令的菜单。 <br><br> 仅将复选框设置为工作程序位置，指定将来的工作程序的IP，复制命令并在所需节点的控制台中执行。 <br><br> 一段时间后，群集功率将增加，就像节点数一样。 <br><br>  <strong>安装Kubernetes仪表板：</strong> <br><br> 转到“项目/命名空间”菜单。 <br><br> 安装后，您将看到与Kubernetes相关的名称空间将包含在项目外部。 要完全使用这些命名空间，必须将它们放置在项目中。 <br><br> 添加一个项目，随便命名。 使用“移动”上下文菜单将名称空间（牛系统，入口nginx，kube-public，kube系统）移至您创建的项目。 应该是这样的： <br><br><div class="spoiler">  <b class="spoiler_title">图4</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/dz/qv/el/dzqvelzycrlwyj3bkwllq-pndqm.png"><br></div></div><br> 直接单击项目名称，您将被带到工作负载控制面板。 我们将在这里讨论如何创建简单服务。 <br><br><div class="spoiler">  <b class="spoiler_title">图5</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/q6/lp/5z/q6lp5znqlnhzkudjafjnr172n-g.png"><br></div></div><br> 点击右上角的“导入YAML”。 复制<a href="">此文件</a>的内容并将其粘贴到打开的窗口的文本框中，选择名称空间“ kube-system”，单击“导入”。 <br><br> 一段时间后，pod kubernetes-dashboard将启动。 <br><br> 转到pod编辑，打开端口发布菜单，设置以下值： <br><br><div class="spoiler">  <b class="spoiler_title">图6</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/_p/2b/wk/_p2bwkxifynrhipap0imqddogfi.png"><br></div></div><br> 在运行Pod的节点上检查访问权限。 <br><br><pre> <code class="bash hljs">curl -k https://master:9090</code> </pre> <br> 看到答案了吗？ 出版物已完成，尚需到达管理部分。 <br><br> 在Rancher的群集管理主页上，有非常方便的工具，例如kubectl（群集管理控制台）和Kubeconfig File（包含API地址，ca.crt等的配置文件）。 <br><br> 我们进入kubectl并执行： <br><br><pre> <code class="bash hljs">kubectl create serviceaccount cluster-admin-dashboard-sa kubectl create clusterrolebinding cluster-admin-dashboard-sa --clusterrole=cluster-admin --serviceaccount=default:cluster-admin-dashboard-sa</code> </pre><br> 我们创建了一个具有最高特权的服务帐户，现在我们需要一个令牌来访问仪表板。 <br><br> 查找创建的帐户的秘密： <br><br><pre> <code class="bash hljs">kubectl get secret | grep cluster-admin-dashboard-sa</code> </pre><br> 我们将在末尾看到带有特定哈希的帐户名称，将其复制并执行： <br><br><pre> <code class="bash hljs">kubectl describe secret cluster-admin-dashboard-sa-$( )</code> </pre><br> 同样，我们记得所有内容都已通过haProxy成功发布。 <br><br> 我们点击链接<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">kubernetes.domain.ru</a> 。 输入收到的令牌。 <br><br> 欢喜： <br><br><div class="spoiler">  <b class="spoiler_title">图7</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/ps/1q/iw/ps1qiwgxivruyotas0fcb2slwfy.png"><br></div></div><br>  <em>聚苯乙烯</em> <br> 总的结果是要感谢Rancher创建了一个直观的界面，一个易于部署的实例，简单的文档，快速移动的能力以及在集群级别的可伸缩性。 也许我在帖子开始时讲得太尖锐，Swarm厌倦了它，而是明显的发展趋势，这让我凝视着身边，而没有完成无聊的工作。  Docker创造了一个发展时代。 而且判断这个项目当然不适合我。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN418691/">https://habr.com/ru/post/zh-CN418691/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN418681/index.html">友谊日-为我们的朋友提供所有JetBrains IDE的50％优惠</a></li>
+<li><a href="../zh-CN418683/index.html">创建一个模拟器街机。 第二部分</a></li>
+<li><a href="../zh-CN418685/index.html">程序层生成</a></li>
+<li><a href="../zh-CN418687/index.html">3.5“革命：带有蒸汽的软盘的小繁荣的细节</a></li>
+<li><a href="../zh-CN418689/index.html">如何使用在线拍卖的示例在Figma中创建组件库，节省预算</a></li>
+<li><a href="../zh-CN418693/index.html">为什么幸福很难在大脑中发现</a></li>
+<li><a href="../zh-CN418695/index.html">反盗版战争-帝国反击</a></li>
+<li><a href="../zh-CN418699/index.html">创建一个模拟器街机。 第三部分</a></li>
+<li><a href="../zh-CN418701/index.html">我们研究俄语的语法分析器</a></li>
+<li><a href="../zh-CN418705/index.html">Futex基础</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

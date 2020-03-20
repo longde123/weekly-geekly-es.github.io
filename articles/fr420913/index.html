@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏁 💆🏼 👆🏾 Exécutez kubernetes dans LXC 😵 💡 🤜🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Dans cet article, je vais vous expliquer comment exécuter kubernetes master dans un conteneur LXC. 
+ Cette méthode fonctionne assez bien avec Proxmox ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Exécutez kubernetes dans LXC</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/420913/"><p><img src="https://habrastorage.org/webt/ku/7d/fb/ku7dfbo93q4kk2a53rvhv-9p2qy.png"></p><br><p>  Dans cet article, je vais vous expliquer comment exécuter kubernetes master dans un conteneur LXC. <br>  Cette méthode fonctionne assez bien avec Proxmox et peut être considérée comme une alternative au déploiement classique de kubernetes avec plusieurs assistants. </p><a name="habracut"></a><br><h1 id="pochemu-proxmox">  Pourquoi proxmox? </h1><br><p>  Parce que proxmox prêt à l'emploi fournit de nombreuses fonctionnalités utiles. <br>  Proxmox comprend des fonctionnalités de haute disponibilité, la migration, les sauvegardes automatiques, le contrôle d'accès et tout cela est accessible via une interface graphique simple. </p><br><p> Vous pouvez également déployer la configuration kubernetes la plus simple avec un seul assistant, proxmox fournira une haute disponibilité. <br>  Cette méthode est idéale pour déployer des tests ou de petits clusters. </p><br><p>  Pour les déploiements plus importants, il est recommandé de placer etcd dans des conteneurs séparés qui utiliseront des disques locaux rapides et les combineront dans un cluster. <br>  Néanmoins, kubernetes-master lui-même peut toujours rester un ha-conteneur régulier, il n'a pas besoin d'avoir un stockage rapide. </p><br><p>  De plus, si vous lisez cet article, je suppose que dans la plupart des cas, vous disposez déjà d'une sorte d'infrastructure sur Proxmox et que vous souhaitez peut-être avoir une interface unique pour gérer vos services. </p><br><h1 id="pochemu-lxc">  Pourquoi LXC? </h1><br><p>  Kubernetes démarrera sans problème dans une machine virtuelle standard.  Mais les conteneurs LXC offrent la flexibilité qui n'est pas disponible avec les machines virtuelles conventionnelles. </p><br><p>  En fait, les conteneurs LXC ne fournissent pas une isolation complète des conteneurs de l'hôte; au contraire, tous les processus à l'intérieur des conteneurs démarrent en tant que processus hôtes normaux, juste dans un espace de noms séparé. </p><br><p>  Cette méthode vous donne de bonnes performances mais impose certaines limitations dans notre cas. </p><br><p>  Je vais discuter de ces limitations et comment les gérer dans cet article. </p><br><h1 id="konfiguraciya">  La configuration </h1><br><p>  Étant donné que, par défaut, les conteneurs ne sont pas autorisés à charger seuls les modules du noyau, vous devez les configurer pour qu'ils se chargent directement sur les hyperviseurs. </p><br><p> Nous utiliserons le pilote de <code>overlay</code> pour docker, c'est donc tout ce dont nous avons besoin: </p><br><pre> <code class="plaintext hljs">echo overlay &gt;&gt; /etc/modules</code> </pre> <br><p>  Maintenant, nous devons ajouter plus de privilèges à notre conteneur pour lui permettre d'exécuter d'autres conteneurs à l'intérieur, ajoutez ces lignes à la configuration de votre conteneur: </p><br><pre> <code class="plaintext hljs">lxc.apparmor.profile: unconfined lxc.cap.drop: lxc.cgroup.devices.allow: a lxc.mount.auto: proc:rw sys:rw</code> </pre> <br><p>  À partir de la version <strong>v11.0,</strong> kubelet nécessite le mode partagé pour toutes les montures de l'hôte. </p><br><p>  Ce hack sale vous permettra d'y parvenir, à l'intérieur du conteneur LXC, exécutez: </p><br><pre> <code class="plaintext hljs">echo '#!/bin/sh -e mount --make-rshared /' &gt; /etc/rc.local</code> </pre> <br><p>  Cette action ajoutera la commande <code>mount --make-rshared /</code> à <code>/etc/rc.local</code> et l'exécutera à chaque chargement du conteneur. </p><br><p>  De plus, si vous prévoyez d'utiliser HA-manager dans proxmox, sachez qu'il existe actuellement un <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">bogue</a> désagréable <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="># 1842</a> , qui tue de force les processus de conteneur pendant la migration, ce qui peut engendrer des processus zombies ou même bloquer votre stockage. </p><br><p>  Ce n'est pas bon, heureusement, il existe une solution simple: </p><br><pre> <code class="plaintext hljs">sed -i 's/forceStop =&gt; 1/forceStop =&gt; 0/' /usr/share/perl5/PVE/HA/Resources/PVECT.pm</code> </pre> <br><p>  De plus, vous pouvez ajouter les options suivantes pour votre docker: </p><br><pre> <code class="plaintext hljs">--storage-driver overlay2 --iptables=false --ip-masq=false</code> </pre> <br><p>  Copiez <code>docker.service</code> de <code>/lib</code> vers <code>/etc</code> pour remplacer ses options: </p><br><pre> <code class="plaintext hljs">cp /{lib,etc}/systemd/system/docker.service</code> </pre> <br><p>  Ajoutez maintenant ces options à la section <code>ExecStart</code> . </p><br><p>  C'est tout, après ces étapes, l' <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">installation</a> standard de <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">kubeadm</a> devrait fonctionner sans problème. </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr420913/">https://habr.com/ru/post/fr420913/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr420901/index.html">Comment j'étudie le cadre Spring (l'aide aux débutants est le travail des débutants eux-mêmes)</a></li>
+<li><a href="../fr420903/index.html">Implémentation de l'ERP: comment ne pas échouer</a></li>
+<li><a href="../fr420905/index.html">Comment l'éclairage intelligent est introduit en Russie et combien de temps cela prendra</a></li>
+<li><a href="../fr420907/index.html">De NOKLA à Xiaomi: l'évolution des téléphones mobiles chinois</a></li>
+<li><a href="../fr420909/index.html">Les télévisions russes accusent Yandex de piraterie</a></li>
+<li><a href="../fr420915/index.html">Analyse RFM en un clic ou comment nous simplifions la vie des clients</a></li>
+<li><a href="../fr420919/index.html">Numéros animés sur Android</a></li>
+<li><a href="../fr420923/index.html">Développeur de logiciels Meta Skills</a></li>
+<li><a href="../fr420927/index.html">«Rubber host search on Alibaba Cloud»: hébergez Elasticsearch dans les installations d'Alibaba Cloud</a></li>
+<li><a href="../fr420929/index.html">Exécuter, tester, exécuter. Parler de Meetup Mobile Testing</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

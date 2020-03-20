@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👲🏾 🍷 🏧 Borg备份的理论和实践 💮 🆗 👓</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="令我们感到惊讶的是，关于出色的数据备份开源工具-Borg并没有任何资料（不要与同名Kubernetes的祖先混淆！） 。 由于我们已经在生产中使用它了一年多，因此在本文中，我将分享我们对博格的“印象”。 
+
+ 背景：Bacula和Bareos的经验 
+ 在2017年，我们对Bacula和Bareos...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Borg备份的理论和实践</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/420055/"><img src="https://habrastorage.org/webt/xx/7w/tn/xx7wtnr5mv7mjndz-uzowsql58o.png"><br><br> 令我们感到惊讶的是，关于出色的数据备份开源工具<i>-Borg并没有任何</i>资料<i>（不要与同名Kubernetes的祖先混淆！）</i> 。 由于我们已经在生产中使用它了一年多，因此在本文中，我将分享我们对博格的“印象”。 <a name="habracut"></a><br><br><h2> 背景：Bacula和Bareos的经验 </h2><br> 在2017年，我们对Bacula和Bareos感到厌倦，因为从一开始我们就开始使用Bacula和Bareos（即当时的生产时间约为9年）。 怎么了 在运营过程中，我们积累了很多不满： <br><br><ul><li>  SD（存储守护程序）冻结。 如果已配置并行性，则SD维护将变得更加复杂，并且冻结将阻止按计划进行进一步的备份以及恢复的可能性。 </li><li> 必须同时为客户端和控制器生成配置。 即使我们将其自动化（在我们的情况下，Chef，Ansible和我们自己的开发在不同的时间使用），我们也需要监视导演在<i>重新加载后</i>实际上拾取了配置。 仅在<i>reload</i>命令的输出和之后的<i>消息</i>调用中跟踪此<i>消息</i> （以获取错误文本本身）。 </li><li> 安排备份。  Bacula的开发人员决定采用自己的方式，并编写了自己的进度表格式，您不能仅将其解析或转换为其他格式。 以下是我们旧安装中标准备份计划的示例： <ul><li> 每周三的每日完整备份，其他日子的增量备份： <br> <code>Run = Level=Full Pool="Foobar-low7" wed at 18:00 <br> Run = Level=Incremental Pool="Foobar-low7" at 18:00</code> </li> <li> 每月两次备份wal文件，并每小时增加一次： <br> <code>Run = Level=Full FullPool=CustomerWALPool 1st fri at 01:45 <br> Run = Level=Full FullPool=CustomerWALPool 3rd fri at 01:45 <br> Run = Level=Incremental FullPool=CustomerWALPool IncrementalPool=CustomerWALPool on hourly</code> </li> <li> 由于Bacula / Bareos定期发疯，因此在所有情况下（在一周中的不同日期每隔2小时）生成的<code>schedule</code>大约为1665。 </li></ul></li><li>  Bacula-fd（和aredos-fd）具有包含大量数据的目录（例如，40 TB，其中35 TB包含大文件[100+ MB]，其余5 TB包含小文件[1 KB至100 MB ]）缓慢的内存泄漏开始，这在生产中是非常不愉快的情况。 <br><br><img src="https://habrastorage.org/webt/eu/33/ao/eu33aocunyesaxcwtlyzzim_eha.png"></li><li> 对于具有大量文件的备份，Bacula和Bareos非常依赖于所用DBMS的性能。 它有什么驱动器？ 您如何熟练地调整她以满足这些特定需求？ 顺便说一下，在数据库中，创建了一个（！）不可分区表，其中包含所有备份中所有文件的列表，而第二个-包含所有备份中所有路径的列表。 如果您不准备为基础服务器分配至少8 GB的RAM + 40 GB的SSD，请立即做好准备。 </li><li> 数据库依赖性值得一提。  Bacula / Bareos对于每个文件都会询问导演是否已经有这样的文件。 导向器当然会爬入数据库，进入那些非常大的表中……事实证明，可以通过同时启动多个繁重的备份来阻止备份，即使那里的差异只有几兆字节也是如此。 </li></ul><br><img src="https://habrastorage.org/webt/nh/iw/dz/nhiwdzn69dvunjisjzcwcy1fyna.png"><br><br> 不能说根本没有解决任何问题，这是不公平的，但是到了这一点，我们真的厌倦了各种变通办法，并希望“现在和现在”都有可靠的解决方案。 <br><br>  Bacula / Bareos可以出色地完成少量（10-30）的统一工作。 一周一次有小事打破吗？ 没关系：他们将任务交给值班主任（或其他工程师）-他们修理了。 但是，我们有一些项目，其中的作业数为数百，而其中的文件数为数十万。 结果，每周要花费5分钟来修复备份（这之前还不算数小时的设置）开始成倍增长。 所有这些导致了这样一个事实，即每天2小时都需要修复所有项目中的备份，因为实际上到处都是琐碎的事情或严重破坏的事情。 <br><br> 然后有人可能会认为专门为此工作的工程师应该进行备份。 当然，他会变得胡须和严厉，并且从他的表情来看，备用杯会立即修复，而他会平静地喝咖啡。 这个想法可能在某种程度上是正确的……但是总有一个but。 并非每个人都能负担得起全天候修复和监视备份的费用，甚至更多-分配给这些目的工程师。 我们只是确定最好每天将这两个小时花在更具生产力和实用性的东西上。 因此，我们继续寻找“可行”的替代解决方案。 <br><br><h2> 博格作为一种新方式 </h2><br> 对其他开放源代码选项的搜索随着时间的流逝而展开，因此很难估算总成本，但在某一时刻（去年），我们的注意力转向了“场合中的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">英雄</a> ” <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">-BorgBackup</a> （或简称Borg）。 在某种程度上，这得益于我们的一位工程师（在先前的工作地点）使用它的真实经验。 <br><br>  Borg用Python编写（要求版本&gt; = 3.4.0），而性能要求较高的代码（压缩，加密等）则用C / Cython实现。 根据免费的BSD许可证（3条款）分发。 它支持许多平台，包括Linux，* BSD，macOS以及Windows 10的实验级Cygwin和Linux子系统。对于BorgBackup的安装，可以使用流行的Linux发行版和其他OS的软件包，以及通过pip安装的源， -有关更多详细信息，请参见<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">项目文档</a> 。 <br><br> 博格为什么这么贿赂我们？ 这是它的主要优点： <br><br><ul><li>  <b>重复数据删除</b> ：真正且非常有效（以下示例）。 单个Borg存储库中的文件（即Borg特定格式的特殊目录）被分成n兆字节的块，并且重复的Borg块被重复数据删除。 重复数据删除恰好在压缩之前发生。 </li><li>  <b>压缩</b> ：重复数据删除后，数据也会被压缩。 可以使用不同的压缩算法：lz4，lzma，zlib，zstd。 任何备份的标准功能，但这同样有用。 </li><li>  <b>在SSH上工作</b> ：Borg通过SSH备份到远程服务器。 在服务器端，您只需要安装Borg就可以了！ 从这里开始，诸如安全性和加密之类的优势立即出现。 您只能通过按键来配置访问权限，此外，进入服务器时，Borg只能执行他的命令之一。 例如，像这样： <br><br><pre> <code class="bash hljs">$ cat .ssh/authorized_keys <span class="hljs-built_in"><span class="hljs-built_in">command</span></span>=<span class="hljs-string"><span class="hljs-string">"/usr/bin/borg serve"</span></span> ssh-rsa AAAAB3NzaC1yc…</code> </pre> </li><li> 它以PPA（主要使用Ubuntu）和<b>静态二进制文件形式提供</b> 。 静态二进制形式的Borg使得它几乎可以在至少有一个最低限度的现代glibc的任何地方运行。  （但并非到处都是-例如，不可能在CentOS 5上启动。） </li><li> 灵活<b>清理旧备份</b> 。 您可以设置最近n个备份的存储，以及每小时/天/周的2个备份。 在后一种情况下，将保留本周末的最后一次备份。 可通过存储过去7天的7个每日备份和4个每周的备份来合并条件。 </li></ul><br> 在小型项目上，向博格的过渡开始缓慢。 最初，这些都是简单的cron脚本，每天都在执行。 这持续了大约六个月。 在这段时间里，我们不得不多次备份...事实证明，Borg根本不需要维修！ 怎么了 因为简单的原理在这里起作用：“机制越简单，破坏它的地方就越少。” <br><br><h2> 实践：如何使用Borg进行备份？ </h2><br> 考虑一个创建备份的简单示例： <br><br><ol><li> 将最新版本的二进制文件下载到备份服务器以及我们将从<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">官方存储库</a>备份的计算机： <br><br><pre> <code class="bash hljs">sudo wget https://github.com/borgbackup/borg/releases/download/1.1.6/borg-linux64 -O /usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/borg sudo chmod +x /usr/<span class="hljs-built_in"><span class="hljs-built_in">local</span></span>/bin/borg</code> </pre> <br>  <i><b>注意</b> ：如果您同时使用本地计算机作为源和接收方进行测试，则整个区别仅在于我们将继续传递的URI中，但是我们记住备份需要单独存储，而不是存储在同一台计算机上。</i> </li><li> 在备份服务器上，创建<code>borg</code>用户： <br><br><pre> <code class="bash hljs">sudo useradd -m borg</code> </pre> <br> 简单：无组且具有标准外壳程序，但始终具有主目录。 </li><li> 客户端上会生成SSH密钥： <br><br><pre> <code class="bash hljs">ssh-keygen</code> </pre> </li><li> 在服务器上，将生成的密钥添加到<code>borg</code>用户： <br><br><pre> <code class="bash hljs">mkdir ~borg/.ssh <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'command="/usr/local/bin/borg serve" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDNdaDfqUUf/XmSVWfF7PfjGlbKW00MJ63zal/E/mxm+vJIJRBw7GZofe1PeTpKcEUTiBBEsW9XUmTctnWE6p21gU/JNU0jITLx+vg4IlVP62cac71tkx1VJFMYQN6EulT0alYxagNwEs7s5cBlykeKk/QmteOOclzx684t9d6BhMvFE9w9r+c76aVBIdbEyrkloiYd+vzt79nRkFE4CoxkpvptMgrAgbx563fRmNSPH8H5dEad44/Xb5uARiYhdlIl45QuNSpAdcOadp46ftDeQCGLc4CgjMxessam+9ujYcUCjhFDNOoEa4YxVhXF9Tcv8Ttxolece6y+IQM7fbDR'</span></span> &gt; ~borg/.ssh/authorized_keys chown -R borg:borg ~borg/.ssh</code> local / bin中/博格服务” SSH-RSA AAAAB3NzaC1yc2EAAAADAQABAAABAQDNdaDfqUUf / XmSVWfF7PfjGlbKW00MJ63zal / E / MXM + vJIJRBw7GZofe1PeTpKcEUTiBBEsW9XUmTctnWE6p21gU / JNU0jITLx + vg4IlVP62cac71tkx1VJFMYQN6EulT0alYxagNwEs7s5cBlykeKk / QmteOOclzx684t9d6BhMvFE9w9r + c76aVBIdbEyrkloiYd + vzt79nRkFE4CoxkpvptMgrAgbx563fRmNSPH8H5dEad44 / Xb5uARiYhdlIl45QuNSpAdcOadp46ftDeQCGLc4CgjMxessam + 9ujYcUCjhFDNOoEa4YxVhXF9Tcv8Ttxolece6y + IQM7fbDR'&gt;〜博格/的.ssh <code class="bash hljs">mkdir ~borg/.ssh <span class="hljs-built_in"><span class="hljs-built_in">echo</span></span> <span class="hljs-string"><span class="hljs-string">'command="/usr/local/bin/borg serve" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDNdaDfqUUf/XmSVWfF7PfjGlbKW00MJ63zal/E/mxm+vJIJRBw7GZofe1PeTpKcEUTiBBEsW9XUmTctnWE6p21gU/JNU0jITLx+vg4IlVP62cac71tkx1VJFMYQN6EulT0alYxagNwEs7s5cBlykeKk/QmteOOclzx684t9d6BhMvFE9w9r+c76aVBIdbEyrkloiYd+vzt79nRkFE4CoxkpvptMgrAgbx563fRmNSPH8H5dEad44/Xb5uARiYhdlIl45QuNSpAdcOadp46ftDeQCGLc4CgjMxessam+9ujYcUCjhFDNOoEa4YxVhXF9Tcv8Ttxolece6y+IQM7fbDR'</span></span> &gt; ~borg/.ssh/authorized_keys chown -R borg:borg ~borg/.ssh</code> </pre> </li><li> 我们从客户端在服务器上初始化<i>borg存储库</i> ： <br><br><pre> <code class="bash hljs">ssh borg@172.17.0.3 hostname <span class="hljs-comment"><span class="hljs-comment">#     borg init -e none borg@172.17.0.3:MyBorgRepo</span></span></code> </pre> <br>  <code>-e</code>开关用于选择存储库的加密方法（是的，您还可以使用密码另外加密每个存储库！）。 在这种情况下，因为 这是一个例子，我们不使用加密。  <code>MyBorgRepo</code>是<i>borg repo</i>所在目录的名称（您无需提前创建它<i>-Borg</i>会自己做所有事情）。 </li><li> 使用Borg启动第一个备份： <br><br><pre> <code class="bash hljs">borg create --stats --list borg@172.17.0.3:MyBorgRepo::<span class="hljs-string"><span class="hljs-string">"MyFirstBackup-{now:%Y-%m-%d_%H:%M:%S}"</span></span> /etc /root</code> </pre> <br> 关于按键： <br><ul><li>  <code>--stats</code>和<code>--list</code>为我们提供有关备份和备份文件的统计信息； </li><li>  <code>borg@172.17.0.3:MyBorgRepo</code>一切都在这里清楚了，这是我们的服务器和目录。 那么魔术的下一步是什么？ </li><li>  <code>::"MyFirstBackup-{now:%Y-%m-%d_%H:%M:%S}"</code>是存储库中存档的名称。 它是任意的，但我们坚持使用<code>_-timestamp</code>格式（Python格式的时间戳）。 </li></ul></li></ol><br> 接下来是什么？ 当然，请查看备份中的内容！ 存储库中的档案列表： <br><br><pre> <code class="bash hljs">borg@b3e51b9ed2c2:~$ borg list MyBorgRepo/ Warning: Attempting to access a previously unknown unencrypted repository! Do you want to <span class="hljs-built_in"><span class="hljs-built_in">continue</span></span>? [yN] y MyFirstBackup-2018-08-04_16:55:53 Sat, 2018-08-04 16:55:54 [89f7b5bccfb1ed2d72c8b84b1baf477a8220955c72e7fcf0ecc6cd5a9943d78d]</code> </pre> <br> 我们看到带有时间戳的备份，以及Borg如何询问我们是否真的要访问以前从未使用过的未加密存储库。 <br><br> 我们看一下文件列表： <br><br><pre> <code class="bash hljs">borg list MyBorgRepo::MyFirstBackup-2018-08-04_16:55:53</code> </pre> <br> 我们从备份中获取文件（您也可以整个目录）： <br><br><pre> <code class="bash hljs">borg@b3e51b9ed2c2:~$ borg extract MyBorgRepo::MyFirstBackup-2018-08-04_16:55:53 etc/hostname borg@b3e51b9ed2c2:~$ ll etc/hostname -rw-r--r-- 1 borg borg 13 Aug 4 16:27 etc/hostname</code> </pre> <br> 恭喜，您的第一个Borg备份已准备就绪！ <br><br><h2> 实践：[使用GitLab]自动化！ </h2><br> 将所有这些都包装在脚本中之后，我们以类似的方式在大约40台主机上手动配置了备份。 意识到Borg确实有效，他们开始向它转移更多和更大的项目... <br><br> 在这里，我们面临的是Bareos，而不是Borg！ 即：WebUI或某种集中位置来配置备份。 我们真的希望这是暂时的现象，但是到目前为止，我们必须解决一些问题。 搜寻完成的工具并参加视频会议，我们开始做生意。 像以前使用Bacula一样，将Borg与我们的内部服务集成是一个好主意（Bacula本身从集中式API中删除了工作清单，我们将自己的界面与其他项目设置集成在一起）。 我们考虑了如何做，概述了如何以及在何处构建它的计划，但是...现在需要常规备份，但是没有地方制定宏伟的时间计划。 怎么办 <br><br> 问题和要求大致如下： <br><br><ul><li> 什么可以用作集中式备份管理？ </li><li> 任何Linux管理员可以做什么？ </li><li> 甚至向客户显示备份计划的经理还能理解和配置什么？ </li><li> 计划任务每​​天在您的系统上做什么？ </li><li> 什么将不会很难配置并且不会损坏？ </li></ul><br> 答案是显而易见的：这是好旧的老土，每天英勇地履行其职责。 很简单 它不会冻结。 甚至从Unix到“您”的管理员也可以修复它。 <br><br> 那么crontab，但是您将所有这些保存在哪里？ 是否每次都要去项目机器并用手编辑文件？ 当然不是 我们可以将时间表放入Git存储库中并配置GitLab Runner，通过提交将其更新到主机上。 <br><br>  <i><b>注意</b> ：之所以选择GitLab作为自动化工具，是因为它便于执行任务，在我们的情况下几乎无处不在。</i>  <i>但是我必须说，他绝不是必需品。</i> <br><br> 您可以通过熟悉的自动化工具或通常手动（在小型项目或家庭安装中）扩展crontab以进行备份。 <br><br> 因此，这是简单自动化所需要的： <br><br>  1. <b>GitLab和一个存储库</b> ，其中首先有两个文件： <br><br><ul><li>  <code>schedule</code> -备份时间表 </li><li>  <code>borg_backup_files.sh</code>一个用于备份文件的简单脚本（如上例所示）。 </li></ul><br>  <code>schedule</code>示例： <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment"># WARNING! CRONTAB MANAGED FROM GITLAB CI RUNNER IN ${CI_PROJECT_URL} # CI_COMMIT_SHA: ${CI_COMMIT_SHA} # Branch/tag: ${CI_COMMIT_REF_NAME} # Timestamp: ${TIMESTAMP} PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin # MyRemoteHost 0 0 * * * ${CI_PROJECT_DIR}/borg_backup_files.sh 'SYSTEM /etc,/opt'</span></span></code> </pre> <br>  CI变量用于验证crontab更新是否成功，并且<code>CI_PROJECT_DIR</code>是克隆运行器后存储库所在的目录。 最后一行指示备份每天在午夜执行。 <br><br> 示例<code>borg_backup_files.sh</code> ： <br><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash BORG_SERVER="borg@10.100.1.1" NAMEOFBACKUP=${1} DIRS=${2} REPOSITORY="${BORG_SERVER}:$(hostname)-${NAMEOFBACKUP}" borg create --list -v --stats \ $REPOSITORY::"files-{now:%Y-%m-%d_%H:%M:%S}" \ $(echo $DIRS | tr ',' ' ') || \ echo "borg create failed"</span></span></code> </pre> <br> 此处<i>的第一个</i>参数是备份的名称， <i>第二个</i>参数是备份目录的列表，以逗号分隔。 严格来说，列表也可以是一组单独的文件。 <br><br>  2. <b>GitLab Runner</b> ，在需要备份的计算机上运行，​​并且仅针对此存储库的作业被阻止。 <br><br>  3. <b>CI脚本本身</b> ，由<code>.gitlab-ci.yml</code> ： <br><br><pre> <code class="hljs pgsql">stages: - deploy Deploy: stage: deploy script: - export <span class="hljs-type"><span class="hljs-type">TIMESTAMP</span></span>=$(<span class="hljs-type"><span class="hljs-type">date</span></span> <span class="hljs-string"><span class="hljs-string">'+%Y.%m.%d %H:%M:%S'</span></span>) - cat schedule | envsubst | crontab - tags: - borg-backup</code> </pre> <br>  4. <code>gitlab-runner</code>访问<code>gitlab-runner</code>服务器的<code>gitlab-runner</code>用户的<b>SSH密钥</b> （在示例中为10.100.1.1）。 默认情况下，它应位于<code>.ssh/id_rsa</code>主目录（ <code>gitlab-runner</code> ）中。 <br><br>  5.相同的10.100.1.1上的<b><code>borg</code>用户</b> ，只能访问<code>borg serve</code>命令： <br><br><pre> <code class="bash hljs">$ cat .ssh/authorized_keys <span class="hljs-built_in"><span class="hljs-built_in">command</span></span>=<span class="hljs-string"><span class="hljs-string">"/usr/bin/borg serve"</span></span> ssh-rsa AAAAB3NzaC1yc2EAA...</code> </pre> <br> 现在，当您提交到Runner存储库时，它将填充crontab的内容。 当cron的响应时间到来时，将执行<code>/etc</code>和<code>/opt</code>目录的备份，该目录将位于备份服务器上服务器10.100.1.1的<code>MyHostname-SYSTEM</code>目录中。 <br><br><img src="https://habrastorage.org/webt/ud/n7/wb/udn7wbd4vqknfq6cguw5wmi7tcq.png"><br><br><h2> 不能得出结论：您还能做什么？ </h2><br> 当然，在此使用博格并不止于此。 以下是一些进一步实施的想法，其中一些我们已经在家中实施： <br><br><ul><li>  <b>添加</b>用于不同备份的<b>通用脚本</b> ，该<b>脚本</b>在执行结束时运行<code>borg_backup_files.sh</code> ，以其工作结果为目标的目录。 例如，您可以备份PostgreSQL（pg_basebackup），MySQL（innobackupex），GitLab（内置rake作业，创建归档文件）。 </li><li>  <b>具有备份<i>计划的</i>中央主机</b> 。 不在每个主机上配置GitLab Runner吗？ 不用说它在备份服务器上，启动时crontab会将备份脚本传输到计算机上并在该计算机上运行。 当然，为此，您将需要客户端计算机上的<code>borg</code>用户和<code>ssh-agent</code> ，以便不为每台计算机上的备份服务器分配密钥。 </li><li>  <b>监控方式</b> 哪里没有他！ 关于备份未正确完成的警报必须是。 </li><li>  <b>从旧档案中清除borg储存库。</b> 尽管重复数据删除性能很好，但仍必须清除旧备份。 为此，您可以在备份脚本的末尾调用<code>borg prune</code> 。 </li><li>  <b>计划的Web界面</b> 。 如果您手动或在Web界面中编辑crontab看起来不牢靠/不舒服，它将非常有用。 </li><li>  <b>饼图</b> 。 一些图表以可视方式表示成功完成的备份的百分比，它们的执行时间，“已吃”通道的宽度。 难怪我写道，像Bareos一样，WebUI不够用... </li><li> 我希望通过按钮收到的<b>简单操作</b> ：按需启动备份，还原到计算机等。 </li></ul><br> 最后，我想在生产环境中的PostgreSQL WAL文件的实际工作备份上添加重复数据删除的有效性示例： <br><br><pre> <code class="bash hljs">borg@backup ~ $ borg info PROJECT-PG-WAL Repository ID: 177eeb28056a60487bdfce96cfb33af1c186cb2a337226bc3d5380a78a6aeeb6 Location: /mnt/borg/PROJECT-PG-WAL Encrypted: No Cache: /mnt/borg/.cache/borg/177eeb28056a60487bdfce96cfb33af1c186cb2a337226bc3d5380a78a6aeeb6 Security dir: /mnt/borg/.config/borg/security/177eeb28056a60487bdfce96cfb33af1c186cb2a337226bc3d5380a78a6aeeb6 ------------------------------------------------------------------------------ Original size Compressed size Deduplicated size All archives: 6.68 TB 6.70 TB 19.74 GB Unique chunks Total chunks Chunk index: 11708 3230099</code> </pre> <br> 这是每小时进行WAL文件备份的65天。 使用Bacula / Bareos时，即 不进行重复数据删除，我们将获得6.7 TB的数据。 试想一下：我们有能力存储通过PostgreSQL传递的近7 TB的数据，而实际上仅占用20 GB的空间。 <br><br><h2> 聚苯乙烯 </h2><br> 另请参阅我们的博客： <br><br><ul><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Ubuntu无人值守升级的理论和实践</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Junior，他们在工作的第一天就从生产中删除了数据库</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">使用Kubernetes加速大型数据库的引导</a> 。” </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN420055/">https://habr.com/ru/post/zh-CN420055/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN420041/index.html">TypeScript War或Enum Conquest</a></li>
+<li><a href="../zh-CN420045/index.html">约会的地堡：如何允许我在太空工厂范围内的RUVDS数据中心走动</a></li>
+<li><a href="../zh-CN420049/index.html">这本书“那个男人在说话。 进化与语言</a></li>
+<li><a href="../zh-CN420051/index.html">[DotNetBook]跨度，内存和ReadOnlyMemory</a></li>
+<li><a href="../zh-CN420053/index.html">Veeam C＃开发人员学院：新季</a></li>
+<li><a href="../zh-CN420057/index.html">成功的自由职业者的8条规则</a></li>
+<li><a href="../zh-CN420059/index.html">现在我是团队负责人，但是为什么我会生病呢？ 实用技巧</a></li>
+<li><a href="../zh-CN420061/index.html">我们根据客观数据评估开发团队中的流程</a></li>
+<li><a href="../zh-CN420063/index.html">“圣”提姆利德和他的追随者</a></li>
+<li><a href="../zh-CN420065/index.html">沟通是团队合作的表现领域</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

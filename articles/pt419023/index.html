@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⚕️ 🙅🏽 🤱🏻 Como escalamos o Nginx e salvamos o mundo 54 anos de espera todos os dias 🔧 🕵️ 🍛</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="“A equipe do @Cloudflare acabou de fazer alterações que melhoraram significativamente o desempenho da nossa rede, especialmente para as solicitações m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Como escalamos o Nginx e salvamos o mundo 54 anos de espera todos os dias</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/419023/"> <i>“A equipe do @Cloudflare acabou de fazer alterações que melhoraram significativamente o desempenho da nossa rede, especialmente para as solicitações mais lentas.</i>  <i>Quanto mais rápido?</i>  <i>Estimamos que estamos economizando na Internet cerca de 54 anos <b>por dia</b> que seriam gastos esperando os sites serem carregados</i> . <i>”</i>  - Matthew Prince <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">tweet</a> , 28 de junho de 2018 <br><br>  10 milhões de sites, aplicativos e APIs usam o Cloudflare para acelerar o download de conteúdo para os usuários.  No pico, processamos mais de 10 milhões de solicitações por segundo em 151 data centers.  Ao longo dos anos, fizemos muitas alterações em nossa versão do Nginx para lidar com o crescimento.  Este artigo é sobre uma dessas alterações. <br><a name="habracut"></a><br><h1>  Como o Nginx funciona </h1><br>  O Nginx é um dos programas que usa loops de processamento de eventos para resolver <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">o</a> problema <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">do C10K</a> .  Cada vez que um evento de rede chega (uma nova conexão, solicitação ou notificação para enviar uma quantidade maior de dados etc.), o Nginx acorda, processa o evento e retorna para outro trabalho (isso pode estar processando outros eventos).  Quando um evento chega, os dados estão prontos, o que permite processar com eficiência muitas solicitações simultâneas sem tempo de inatividade. <br><br><pre><code class="hljs pgsql">num_events = epoll_wait(epfd, <span class="hljs-comment"><span class="hljs-comment">/*returned=*/</span></span>events, events_len, <span class="hljs-comment"><span class="hljs-comment">/*timeout=*/</span></span><span class="hljs-number"><span class="hljs-number">-1</span></span>); // events <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> list <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> active events // handle event[<span class="hljs-number"><span class="hljs-number">0</span></span>]: incoming request <span class="hljs-keyword"><span class="hljs-keyword">GET</span></span> http://example.com/ // handle event[<span class="hljs-number"><span class="hljs-number">1</span></span>]: send <span class="hljs-keyword"><span class="hljs-keyword">out</span></span> response <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GET</span></span> http://cloudflare.com/</code> </pre> <br>  Por exemplo, aqui está a aparência de um pedaço de código para ler dados de um descritor de arquivo: <br><br><pre> <code class="hljs pgsql">// we got a <span class="hljs-keyword"><span class="hljs-keyword">read</span></span> event <span class="hljs-keyword"><span class="hljs-keyword">on</span></span> fd <span class="hljs-keyword"><span class="hljs-keyword">while</span></span> (buf_len &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>) { ssize_t n = <span class="hljs-keyword"><span class="hljs-keyword">read</span></span>(fd, buf, buf_len); <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (n &lt; <span class="hljs-number"><span class="hljs-number">0</span></span>) { <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (errno == EWOULDBLOCK || errno == EAGAIN) { // try later <span class="hljs-keyword"><span class="hljs-keyword">when</span></span> we <span class="hljs-keyword"><span class="hljs-keyword">get</span></span> a <span class="hljs-keyword"><span class="hljs-keyword">read</span></span> event again } <span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (errno == EINTR) { <span class="hljs-keyword"><span class="hljs-keyword">continue</span></span>; } <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> total; } buf_len -= n; buf += n; total += n; }</code> </pre> <br>  Se fd for um soquete de rede, os bytes já recebidos serão retornados.  A última chamada retornará <code>EWOULDBLOCK</code> .  Isso significa que o buffer de leitura local terminou e você não deve mais ler neste soquete até que os dados apareçam. <br><br><h1>  E / S de disco é diferente da rede </h1><br>  Se fd for um arquivo regular no Linux, <code>EWOULDBLOCK</code> e <code>EWOULDBLOCK</code> nunca aparecerão e a operação de leitura sempre aguardará a leitura de todo o buffer, mesmo que o arquivo seja aberto usando <code>O_NONBLOCK</code> .  Conforme escrito no manual <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">aberto (2)</a> : <br><br><blockquote>  Observe que esse sinalizador não é válido para arquivos regulares e dispositivos de bloqueio. </blockquote><br>  Em outras palavras, o código acima é essencialmente reduzido a isso: <br><br><pre> <code class="hljs pgsql"><span class="hljs-keyword"><span class="hljs-keyword">if</span></span> (<span class="hljs-keyword"><span class="hljs-keyword">read</span></span>(fd, buf, buf_len) &gt; <span class="hljs-number"><span class="hljs-number">0</span></span>) { <span class="hljs-keyword"><span class="hljs-keyword">return</span></span> buf_len; }</code> </pre> <br>  Se o manipulador precisar ler do disco, ele bloqueará o loop de eventos até que a leitura seja concluída e os manipuladores de eventos subsequentes aguardem. <br><br>  Isso é normal para a maioria das tarefas, pois a leitura de um disco geralmente é muito rápida e muito mais previsível do que esperar por um pacote da rede.  Especialmente agora que todo mundo tem um SSD e todos os nossos caches estão em SSDs.  Nos SSDs modernos, um atraso muito pequeno, geralmente em dezenas de microssegundos.  Além disso, você pode executar o Nginx com vários fluxos de trabalho para que um manipulador de eventos lento não bloqueie solicitações em outros processos.  Na maioria das vezes, você pode confiar no Nginx para processar solicitações de forma rápida e eficiente. <br><br><h1>  Desempenho do SSD: nem sempre como prometido </h1><br>  Como você deve ter adivinhado, essas suposições nem sempre são verdadeiras.  Se cada leitura sempre leva 50 μs, a leitura de 0,19 MB em blocos de 4 KB (e lemos em blocos ainda maiores) levará apenas 2 ms.  Mas os testes mostraram que o tempo até o primeiro byte às vezes é muito pior, especialmente nos percentis 99 e 999.  Em outras palavras, a leitura mais lenta de cada 100 (ou 1000) leituras geralmente leva muito mais tempo. <br><br>  As unidades de estado sólido são muito rápidas, mas conhecidas por sua complexidade.  Eles possuem computadores nessa fila e reordenam a E / S e também executam várias tarefas em segundo plano, como coleta de lixo e desfragmentação.  De tempos em tempos, as solicitações diminuem visivelmente.  Meu colega <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Ivan Bobrov</a> lançou vários benchmarks de E / S e registrou atrasos de leitura de até 1 segundo.  Além disso, alguns de nossos SSDs apresentam mais picos de desempenho do que outros.  No futuro, levaremos esse indicador em consideração ao comprar um SSD, mas agora precisamos desenvolver uma solução para o equipamento existente. <br><br><h1>  Distribuição uniforme de carga com <code>SO_REUSEPORT</code> </h1><br>  É difícil evitar uma resposta lenta a cada 1000 solicitações, mas o que realmente não queremos é bloquear as 1000 solicitações restantes por um segundo inteiro.  Conceitualmente, o Nginx é capaz de processar muitas solicitações em paralelo, mas inicia apenas um manipulador de eventos por vez.  Então, adicionei uma métrica especial: <br><br><pre> <code class="hljs pgsql">gettimeofday(&amp;<span class="hljs-keyword"><span class="hljs-keyword">start</span></span>, <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span>); num_events = epoll_wait(epfd, <span class="hljs-comment"><span class="hljs-comment">/*returned=*/</span></span>events, events_len, <span class="hljs-comment"><span class="hljs-comment">/*timeout=*/</span></span><span class="hljs-number"><span class="hljs-number">-1</span></span>); // events <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> list <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> active events // handle event[<span class="hljs-number"><span class="hljs-number">0</span></span>]: incoming request <span class="hljs-keyword"><span class="hljs-keyword">GET</span></span> http://example.com/ gettimeofday(&amp;event_start_handle, <span class="hljs-keyword"><span class="hljs-keyword">NULL</span></span>); // handle event[<span class="hljs-number"><span class="hljs-number">1</span></span>]: send <span class="hljs-keyword"><span class="hljs-keyword">out</span></span> response <span class="hljs-keyword"><span class="hljs-keyword">to</span></span> <span class="hljs-keyword"><span class="hljs-keyword">GET</span></span> http://cloudflare.com/ timersub(&amp;event_start_handle, &amp;<span class="hljs-keyword"><span class="hljs-keyword">start</span></span>, &amp;event_loop_blocked);</code> </pre> <br>  O 99º percentil (p99) <code>event_loop_blocked</code> excedeu 50% do nosso TTFB.  Em outras palavras, metade do tempo ao atender a uma solicitação é o resultado do bloqueio do ciclo de processamento de eventos por outras solicitações.  <code>event_loop_blocked</code> mede apenas metade do bloqueio (porque as chamadas pendentes para <code>epoll_wait()</code> não <code>epoll_wait()</code> medidas), portanto, a proporção real do tempo bloqueado é muito maior. <br><br>  Cada uma de nossas máquinas executa o Nginx com 15 fluxos de trabalho, ou seja, uma E / S lenta bloqueará no máximo 6% das solicitações.  Mas os eventos não são distribuídos igualmente: o trabalhador principal recebe 11% das solicitações. <br><br>  <code>SO_REUSEPORT</code> pode resolver o problema de distribuição desigual.  Marek Maikovsky escreveu anteriormente sobre a <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">desvantagem</a> dessa abordagem no contexto de outras instâncias do Nginx, mas aqui você pode ignorá-la principalmente: as conexões upstream no cache são duráveis, para que você possa negligenciar um ligeiro aumento no atraso ao abrir a conexão.  Essa alteração de configuração sozinha com a ativação do <code>SO_REUSEPORT</code> melhorou o pico de p99 em 33%. <br><br><h1>  Movendo read () para um pool de threads: não é um marcador de prata </h1><br>  A solução é tornar o read () sem bloqueio.  Na verdade, essa função é <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">implementada no Nginx normal</a> !  Usando a seguinte configuração, read () e write () são executados no conjunto de encadeamentos e não bloqueiam o loop de eventos: <br><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">aio</span></span> threads; <span class="hljs-attribute"><span class="hljs-attribute">aio_write</span></span> <span class="hljs-literal"><span class="hljs-literal">on</span></span>;</code> </pre> <br>  Mas testamos essa configuração e, em vez de melhorar o tempo de resposta em 33 vezes, notamos apenas uma pequena alteração na p99, a diferença está dentro da margem de erro.  O resultado foi muito desanimador, então adiamos temporariamente essa opção. <br><br>  Existem várias razões pelas quais não tivemos melhorias significativas, como os desenvolvedores do Nginx.  No teste, eles usaram 200 conexões simultâneas para solicitar arquivos de 4 MB ao disco rígido.  Os Winchesters têm muito mais latência de E / S; portanto, a otimização tem um efeito maior. <br><br>  Além disso, estamos preocupados principalmente com o desempenho do p99 (e p999).  A otimização do atraso médio não resolve necessariamente o problema de pico de emissão. <br><br>  Finalmente, em nosso ambiente, os tamanhos de arquivo típicos são muito menores.  90% de nossos acertos no cache são menores que 60 KB.  Quanto menores os arquivos, menos casos de bloqueio (geralmente lemos o arquivo inteiro em duas leituras). <br><br>  Vamos examinar a E / S do disco quando atingida no cache: <br><br><pre> <code class="hljs ruby">/<span class="hljs-regexp"><span class="hljs-regexp">/     https:/</span></span><span class="hljs-regexp"><span class="hljs-regexp">/example.com    0xCAFEBEEF fd = open("/cache</span></span><span class="hljs-regexp"><span class="hljs-regexp">/prefix/dir</span></span><span class="hljs-regexp"><span class="hljs-regexp">/EF/</span></span>BE/CAFEBEEF<span class="hljs-string"><span class="hljs-string">", O_RDONLY); //    32    //    ,  "</span></span>aio threads<span class="hljs-string"><span class="hljs-string">"  read(fd, buf, 32*1024);</span></span></code> </pre> <br>  32K nem sempre são lidos.  Se os cabeçalhos forem pequenos, você precisará ler apenas 4 KB (não usamos E / S diretamente, portanto o kernel arredondará para 4 KB).  <code>open()</code> parece inofensivo, mas na verdade consome recursos.  No mínimo, o kernel deve verificar se o arquivo existe e se o processo de chamada tem permissão para abri-lo.  Ele precisa encontrar o inode para <code>/cache/prefix/dir/EF/BE/CAFEBEEF</code> , e para isso ele terá que procurar <code>CAFEBEEF</code> em <code>/cache/prefix/dir/EF/BE/</code> .  Em suma, no pior dos casos, o kernel realiza esta pesquisa: <br><br><pre> <code class="hljs pgsql">/<span class="hljs-keyword"><span class="hljs-keyword">cache</span></span> /<span class="hljs-keyword"><span class="hljs-keyword">cache</span></span>/prefix /<span class="hljs-keyword"><span class="hljs-keyword">cache</span></span>/prefix/dir /<span class="hljs-keyword"><span class="hljs-keyword">cache</span></span>/prefix/dir/EF /<span class="hljs-keyword"><span class="hljs-keyword">cache</span></span>/prefix/dir/EF/BE /<span class="hljs-keyword"><span class="hljs-keyword">cache</span></span>/prefix/dir/EF/BE/CAFEBEEF</code> </pre> <br>  São 6 leituras separadas que o <code>open()</code> produz, em comparação com 1 <code>read()</code> !  Felizmente, na maioria dos casos, a pesquisa cai no <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">cache</a> do <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">dentry</a> e não atinge o SSD.  Mas é claro que o processamento de <code>read()</code> em um pool de threads é apenas metade da imagem. <br><br><h1>  Acorde final: aberto sem bloqueio () em conjuntos de encadeamentos </h1><br>  Portanto, fizemos uma alteração no Nginx para que <code>open()</code> seja executado principalmente dentro do pool de threads e não bloqueie o loop de eventos.  E aqui está o resultado de abrir () e ler () sem bloqueio ao mesmo tempo: <br><br><img src="https://habrastorage.org/getpro/habr/post_images/d70/b1a/84b/d70b1a84b46934921ffd5a1fd7e7182a.png"><br><br>  Em 26 de junho, lançamos as alterações nos 5 data centers mais movimentados e no dia seguinte - em todos os outros 146 data centers do mundo.  O pico total de TT99 p99 diminuiu 6 vezes.  De fato, se resumirmos o tempo todo o processamento de 8 milhões de solicitações por segundo, pouparemos à Internet 54 anos de espera todos os dias. <br><br>  Nossa série de eventos ainda não se livrou completamente dos bloqueios.  Em particular, o bloqueio ainda ocorre na primeira vez em que o arquivo é armazenado em cache ( <code>open(O_CREAT)</code> e <code>rename()</code> ) ou ao atualizar a revalidação.  Mas esses casos são raros se comparados aos acessos ao cache.  No futuro, consideraremos a possibilidade de mover esses elementos para fora do loop de processamento de eventos para melhorar ainda mais o fator de atraso p99. <br><br><h1>  Conclusão </h1><br>  O Nginx é uma plataforma poderosa, mas escalar cargas extremamente altas de E / S do Linux pode ser uma tarefa assustadora.  O Nginx padrão transfere a leitura em threads separados, mas em nossa escala, geralmente precisamos dar um passo adiante. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/pt419023/">https://habr.com/ru/post/pt419023/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt419011/index.html">Jinja2 no mundo C ++, parte dois. Renderização</a></li>
+<li><a href="../pt419013/index.html">Atribuição baseada em funil para empresas B2B SaaS - considerando o valor de todos os esforços de marketing</a></li>
+<li><a href="../pt419017/index.html">O que há de novo no ConstraintLayout 1.1</a></li>
+<li><a href="../pt419019/index.html">AlterEgo: um dispositivo que pode ler (alguns) pensamentos</a></li>
+<li><a href="../pt419021/index.html">Os principais tipos de impressão e seus recursos</a></li>
+<li><a href="../pt419025/index.html">@Pythonetc compilation, julho de 2018</a></li>
+<li><a href="../pt419027/index.html">Segurança da informação de pagamentos bancários sem dinheiro. Parte 6 - Análise do Crime Bancário</a></li>
+<li><a href="../pt419029/index.html">Fortnite se tornou um fenômeno social. Os pais estão cada vez mais contratando treinadores para seus filhos e brincando com eles</a></li>
+<li><a href="../pt419033/index.html">Uma pequena observação sobre o tópico de execução do vue.js no cluster kubernetes</a></li>
+<li><a href="../pt419035/index.html">Livro “Head First Agile. Gerenciamento flexível de projetos ”</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

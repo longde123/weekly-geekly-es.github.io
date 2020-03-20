@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>☎️ 🌀 🏍️ 在LXC内运行kubernetes 👢 🚢 👂🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在本文中，我将告诉您如何在LXC容器中运行kubernetes master。 
+ 该方法在Proxmox上可以很好地工作，并且可以被认为是使用多个向导对kubernetes进行经典部署的替代方法。 
+ 为什么要使用proxmox？ 
+
+
+ 因为开箱即用的proxmox提供了许多有用的功能。 
+ P...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>在LXC内运行kubernetes</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/420913/"><p><img src="https://habrastorage.org/webt/ku/7d/fb/ku7dfbo93q4kk2a53rvhv-9p2qy.png"></p><br><p> 在本文中，我将告诉您如何在LXC容器中运行kubernetes master。 <br> 该方法在Proxmox上可以很好地工作，并且可以被认为是使用多个向导对kubernetes进行经典部署的替代方法。 </p><a name="habracut"></a><br><h1 id="pochemu-proxmox"> 为什么要使用proxmox？ </h1><br><p> 因为开箱即用的proxmox提供了许多有用的功能。 <br>  Proxmox包括高可用性功能，迁移，自动备份，访问控制，所有这些都可以通过简单的图形界面访问。 </p><br><p>您还可以使用单个向导部署最简单的kubernetes配置，proxmox将提供高可用性。 <br> 此方法非常适合部署测试或小型集群。 </p><br><p> 对于较大的部署，建议将etcd放在将使用快速本地磁盘的单独容器中，并将它们组合到群集中。 <br> 尽管如此，kubernetes-master本身仍然可以保留为常规的ha容器，它不需要快速存储。 </p><br><p> 另外，如果您正在阅读本文，则我认为在大多数情况下，您已经在Proxmox上拥有某种基础结构，也许您希望拥有一个用于管理服务的界面。 </p><br><h1 id="pochemu-lxc"> 为什么选择LXC？ </h1><br><p>  Kubernetes将在常规虚拟机内启动而不会出现问题。 但是LXC容器提供了传统虚拟机无法提供的灵活性。 </p><br><p> 实际上，LXC容器并未提供容器与主机的完全隔离；相反，容器内的所有进程都像普通的主机进程一样启动，只是在单独的命名空间中。 </p><br><p> 这种方法可以为您提供良好的性能，但在我们的案例中会带来一些限制。 </p><br><p> 我将在本文中讨论这些限制以及如何处理它们。 </p><br><h1 id="konfiguraciya"> 构型 </h1><br><p> 由于默认情况下不允许容器自行加载内核模块，因此必须将其配置为直接在虚拟机管理程序上加载。 </p><br><p>我们将为Docker使用<code>overlay</code>驱动程序，因此这就是我们所需要的： </p><br><pre> <code class="plaintext hljs">echo overlay &gt;&gt; /etc/modules</code> </pre> <br><p> 现在，我们需要为我们的容器添加更多权限，以使其能够在其中运行其他容器，并将这些行添加到容器的配置中： </p><br><pre> <code class="plaintext hljs">lxc.apparmor.profile: unconfined lxc.cap.drop: lxc.cgroup.devices.allow: a lxc.mount.auto: proc:rw sys:rw</code> </pre> <br><p> 从<strong>v11.0</strong>版本<strong>开始，</strong> kubelet需要主机上所有装载的共享模式。 </p><br><p> 这个肮脏的技巧将使您可以在LXC容器中执行以下操作： </p><br><pre> <code class="plaintext hljs">echo '#!/bin/sh -e mount --make-rshared /' &gt; /etc/rc.local</code> </pre> <br><p> 该操作会将<code>mount --make-rshared /</code>到<code>/etc/rc.local</code>并在每次容器加载时运行它。 </p><br><p> 另外，如果您打算在proxmox中使用HA-manager，请注意，目前存在一个令人不愉快的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">错误＃1842</a> ，该<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">错误会</a>在迁移过程中强制杀死容器进程，这可能会生成僵尸进程，甚至阻塞您的存储。 </p><br><p> 这不好，幸运的是有一个简单的解决方案： </p><br><pre> <code class="plaintext hljs">sed -i 's/forceStop =&gt; 1/forceStop =&gt; 0/' /usr/share/perl5/PVE/HA/Resources/PVECT.pm</code> </pre> <br><p> 此外，您可以为泊坞窗添加以下选项： </p><br><pre> <code class="plaintext hljs">--storage-driver overlay2 --iptables=false --ip-masq=false</code> </pre> <br><p> 将<code>docker.service</code>从<code>/lib</code>复制到<code>/etc</code>以覆盖其选项： </p><br><pre> <code class="plaintext hljs">cp /{lib,etc}/systemd/system/docker.service</code> </pre> <br><p> 现在，将这些选项添加到<code>ExecStart</code>部分。 </p><br><p> 就是说，完成这些步骤之后，标准的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">kubeadm安装</a>应该可以正常工作。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN420913/">https://habr.com/ru/post/zh-CN420913/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN420901/index.html">我如何学习Spring框架（对初学者的帮助是初学者自己的工作）</a></li>
+<li><a href="../zh-CN420903/index.html">实施ERP：如何不失败</a></li>
+<li><a href="../zh-CN420905/index.html">俄罗斯如何引入智能照明以及需要多长时间</a></li>
+<li><a href="../zh-CN420907/index.html">从诺基亚到小米：中国手机的演变</a></li>
+<li><a href="../zh-CN420909/index.html">俄罗斯电视公司指控Yandex盗版</a></li>
+<li><a href="../zh-CN420915/index.html">一键式RFM分析或我们如何使客户的生活更轻松</a></li>
+<li><a href="../zh-CN420919/index.html">Android上的动画数字</a></li>
+<li><a href="../zh-CN420923/index.html">软件开发人员元技能</a></li>
+<li><a href="../zh-CN420927/index.html">“在阿里云上进行橡胶主机搜索”：在阿里云设施上托管Elasticsearch</a></li>
+<li><a href="../zh-CN420929/index.html">运行，测试，运行。 谈论移动测试聚会</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

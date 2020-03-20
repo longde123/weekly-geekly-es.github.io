@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏻‍🤝‍👨🏽 👩🏼‍🤝‍👩🏻 🛑 使用HBase的理论与实践 🎪 😀 💅🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="下午好 我叫Danil Lipova，我们在Sbertech的团队开始使用HBase作为运营数据存储库。 在他的学习期间，我获得了一些经验，我想将其系统化和描述（我们希望它对许多人有用）。 以下所有实验均使用HBase 1.2.0-cdh5.14.2和2.0.0-cdh6.0.0-beta1版本进行...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>使用HBase的理论与实践</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/sberbank/blog/420425/"> 下午好 我叫Danil Lipova，我们在Sbertech的团队开始使用HBase作为运营数据存储库。 在他的学习期间，我获得了一些经验，我想将其系统化和描述（我们希望它对许多人有用）。 以下所有实验均使用HBase 1.2.0-cdh5.14.2和2.0.0-cdh6.0.0-beta1版本进行。 <br><br><ol><li> 通用架构 </li><li> 将数据写入HBASE </li><li> 从HBASE读取数据 </li><li> 资料快取 </li><li> 批处理MultiGet / MultiPut </li><li> 将表格拆分为区域的策略（溢出） </li><li> 容错，压缩和数据局部性 </li><li> 设置和性能 </li><li> 负载测试 </li><li> 结论 </li></ol><a name="habracut"></a><br><h2>  1.一般架构 </h2><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/y9/wa/vl/y9wavltynzhs9r_7v5sn1d8ff68.png"></div><br> 备用主服务器侦听ZooKeeper节点上的活动心跳，并在消失时接管主服务器的功能。 <br><br><h2>  2.将数据写入HBASE </h2><br> 首先，考虑最简单的情况-使用put（rowkey）将键值对象写入某个表。 客户端必须首先找出存储hbase：meta表的根域服务器（RRS）的位置。 他从ZooKeeper收到此信息。 然后，他转向RRS并读取hbase：元表，从中检索RegionServer（RS）负责在他感兴趣的表中存储给定行键数据的信息。 为了将来使用，元表由客户端缓存，因此后续调用可以更快地直接发送到RS。 <br><br> 然后，RS收到请求后，首先将其写入WriteAheadLog（WAL），这对于崩溃时的恢复是必需的。 然后将数据保存在MemStore中。 这是内存中的缓冲区，其中包含给定区域的一组排序键。 该表可以分为多个区域（分区），每个区域包含一组不相交的键。 这允许将区域放置在不同的服务器上以获得更高的性能。 但是，尽管这句话很明显，但我们以后会看到这并不适用于所有情况。 <br><br> 将记录放入MemStore后，客户端会收到一条响应，说明记录已成功保存。 同时，它实际上仅存储在缓冲区中，并且仅在经过一定时间或充满新数据后才进入磁盘。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/xt/xi/p7/xtxip7moylyjdgqggsqiu8j_cm4.png"></div><br> 执行“删除”操作时，不会发生物理数据删除。 它们被简单地标记为已删除，并且破坏本身在调用主要压缩函数时发生，这在第7节中有更详细的描述。 <br><br>  HFile格式的文件会累积在HDFS中，并且会不时启动次要的压缩过程，该过程仅将小文件粘贴到较大的文件中，而不删除任何内容。 随着时间的流逝，这变成一个仅在读取数据时才显现出来的问题（稍后我们将再次讨论）。 <br><br> 除了上述引导过程外，还有一个更有效的过程，这可能是该数据库最强大的方面-BulkLoad。 它包含以下事实：我们独立创建HFiles并将其放置在磁盘上，这使我们可以完美地扩展并获得非常好的速度。 实际上，这里的限制不是HBase，而是铁的可能性。 以下是在由16个RegionServer和16个NodeManager YARN（CPU Xeon E5-2680 v4 @ 2.40GHz * 64线程），版本HBase 1.2.0-cdh5.14.2组成的群集上加载的结果。 <br><br><img src="https://habrastorage.org/webt/ro/bu/hf/robuhfegpwqyed6gmwg7he2bmfk.png"><br><br> 可以看出，增加表中的分区（区域）以及可执行文件Spark的数量，可以提高下载速度。 另外，速度取决于录制量。 大块增加了MB /秒的度量，小块增加了单位时间插入记录的数量，其他所有条件都相同。 <br><br> 您也可以同时开始加载到两个表中，并获得双倍的速度。 从下面可以看出，将10 KB块一次以大约600 Mb / s的速度（总共1275 Mb / s）写入到两个表中，这与向一个表写入623 MB / s的速度相吻合（请参见上面的第11号） <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/gr/05/vp/gr05vpmhauzclwmn310erbgj22u.png"></div><br> 但是第二次启动时记录为50 KB，表明下载速度已经有所提高，这表明接近极限值。 应该记住的是，HBASE本身几乎没有负载，它所要做的就是首先从hbase：meta提供数据，然后在对HFiles进行内联之后刷新BlockCache数据，如果不是，则将MemStore缓冲区保存到磁盘上空的。 <br><br><h2>  3.从HBASE读取数据 </h2><br> 如果我们假设来自hbase：meta的所有信息都已经有一个客户端（请参阅第2节），则请求将立即发送到RS，其中存储了所需的密钥。 首先，搜索是在MemCache中完成的。 无论是否有数据，搜索都在BlockCache缓冲区中进行，如果需要，还可以在HFiles中进行。 如果在文件中找到数据，则将其放置在BlockCache中，并在下一个请求时更快地返回。 由于使用Bloom过滤器，因此HFile搜索相对较快。 读取少量数据后，他立即确定该文件是否包含所需的密钥，如果没有，则转到下一个。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/8-/zz/wz/8-zzwzcoed7obxmlgzxl3ihrzzw.png"></div><br>  RS从这三个来源接收到数据后，就形成了响应。 特别是，如果客户端请求版本控制，它可以一次传送找到的对象的多个版本。 <br><br><h2>  4.数据缓存 </h2><br>  MemStore和BlockCache缓冲区最多占据已分配的堆上RS内存的80％（其余预留给RS服务任务）。 如果典型的使用模式是进程写入并立即读取相同的数据，则减少BlockCache并增加MemStore是有意义的，因为 当将数据写入读取缓存的次数不会减少时，使用BlockCache的频率将降低。  BlockCache缓冲区由两部分组成：LruBlockCache（始终在堆上）和BucketCache（通常在堆上或SSD上）。 当有大量读取请求且它们不适合LruBlockCache时，应使用BucketCache，这会导致垃圾收集器的活动。 同时，您不应期望通过使用读取缓存来显着提高性能，但是我们将在第8节中返回到此。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/rq/oe/nw/rqoenwgqtngb-a37gsof7sqbgn0.png"></div><br>  BlockCache是​​整个RS的一个，而MemStore在每个表中都有它自己的（每个列族一个）。 <br><br> 如理论上所述，当写入数据不会落入缓存时，实际上，用于表的参数CACHE_DATA_ON_WRITE和用于RS的“写入时的缓存数据”被设置为false。 但是，实际上，如果将数据写入MemStore，然后将其刷新到磁盘（以这种方式清理），然后删除生成的文件，然后通过执行get请求，我们将成功接收数据。 即使您完全禁用BlockCache并用新数据填充表，然后将MemStore存入磁盘，删除它们并从另一个会话请求，它们仍将从某个地方获取。 因此，HBase不仅存储数据，而且还存储神秘的难题。 <br><br><pre><code class="bash hljs">hbase(main):001:0&gt; create <span class="hljs-string"><span class="hljs-string">'ns:magic'</span></span>, <span class="hljs-string"><span class="hljs-string">'cf'</span></span> Created table ns:magic Took 1.1533 seconds hbase(main):002:0&gt; put <span class="hljs-string"><span class="hljs-string">'ns:magic'</span></span>, <span class="hljs-string"><span class="hljs-string">'key1'</span></span>, <span class="hljs-string"><span class="hljs-string">'cf:c'</span></span>, <span class="hljs-string"><span class="hljs-string">'try_to_delete_me'</span></span> Took 0.2610 seconds hbase(main):003:0&gt; flush <span class="hljs-string"><span class="hljs-string">'ns:magic'</span></span> Took 0.6161 seconds hdfs dfs -mv /data/hbase/data/ns/magic/* /tmp/trash hbase(main):002:0&gt; get <span class="hljs-string"><span class="hljs-string">'ns:magic'</span></span>, <span class="hljs-string"><span class="hljs-string">'key1'</span></span> cf:c timestamp=1534440690218, value=try_to_delete_me</code> </pre> <br> 读取时的缓存数据设置为false。 如果您有任何想法，欢迎在评论中讨论。 <br><br><h2>  5. MultiGet / MultiPut数据的批处理 </h2><br> 处理单个请求（获取/放置/删除）是一项相当昂贵的操作，因此您应将它们尽可能多地组合在一个列表或列表中，这样可以大大提高性能。 对于写入操作尤其如此，但是在读取时存在以下陷阱。 下图显示了从MemStore读取50,000条记录的时间。 读取是在一个流中进行的，横轴显示请求中键的数量。 可以看出，当您在一个请求中增加一千个键时​​，执行时间会减少，即 速度增加。 但是，默认情况下，当MSLAB模式打开时，此阈值后，性能开始急剧下降，并且记录中的数据量越大，运行时间越长。 <br><br><img src="https://habrastorage.org/webt/1k/ic/hj/1kichjm1xdpxskbx7avzppmlqty.png"><br><br> 测试是在8核HBase版本2.0.0-cdh6.0.0-beta1的虚拟机上执行的。 <br><br>  MSLAB模式旨在减少由于新旧数据混合产生的堆碎片。 作为启用MSLAB时解决该问题的一种方法，将数据放在相对较小的单元中（大块）并分批处理。 结果，当请求的数据包中的卷超过分配的大小时，性能将急剧下降。 另一方面，也不建议关闭此模式，因为在大量处理数据的时刻，由于GC会导致停止。 一个好的解决办法是在通过同时放置读取和读取进行主动写入的情况下增加单元的体积。 值得注意的是，如果在记录后执行将MemStore刷新到磁盘的flush命令或使用BulkLoad执行加载，则不会发生此问题。 下表显示，从较大数量（和相同数量）的MemStore数据查询会导致速度变慢。 但是，增加块大小会使处理时间恢复正常。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/zb/jq/s3/zbjqs3tou2ywnnzc16p93fttbva.png"></div><br> 除了增加块大小外，按区域划分数据也有帮助，即 表拆分。 这导致以下事实：到达每个区域的请求较少，如果将它们放置在单元中，则响应仍然良好。 <br><br><h2>  6.将表划分为区域的策略（剪切） </h2><br> 由于HBase是键值存储并且按键进行分区，因此在所有区域之间均匀共享数据非常重要。 例如，将此类表分为三部分，将导致数据分为三个区域： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/rg/4c/9d/rg4c9dm-gbtodx0dqr3quc9h6we.png"></div><br> 如果将来加载的数据看起来像长值，而其中大多数以相同的数字开头，则可能会导致急剧下降，例如： <br><br>  1000001 <br>  1000002 <br>  ... <br>  1100003 <br><br> 由于密钥存储为字节数组，因此所有密钥都将以相同的方式开始，并且属于存储此密钥范围的同一区域＃1。 有几种拆分策略： <br><br>  HexStringSplit-将密钥转换为十六进制编码的字符串，范围为“ 00000000” =&gt;“ FFFFFFFF”，并在左侧用零填充。 <br><br>  UniformSplit-将密钥转换为十六进制编码的字节数组，范围为“ 00” =&gt;“ FF”，并在右侧用零填充。 <br><br> 此外，您可以指定任何范围或键组以进行拆分和设置自动拆分。 但是，最简单，最有效的方法之一是UniformSplit和散列连接的使用，例如，通过CRC32（行键）函数和行键本身运行键产生的高字节对： <br><br> 哈希+行键 <br><br> 然后，所有数据将均匀分布在各个区域中。 读取时，仅丢弃前两个字节，保留原始密钥。  RS还控制该区域中的数据和键的数量，并且当超出限制时，它将自动将其分解成碎片。 <br><br><h2>  7.容错和数据局部性 </h2><br> 由于每组密钥仅由一个区域负责，因此与RS崩溃或停用相关的问题的解决方案是将所有必需的数据存储在HDFS中。 当RS崩溃时，主服务器通过ZooKeeper节点上没有心跳来检测到此情况。 然后，他将服务区域分配给另一个RS，并且由于HFiles存储在分布式文件系统中，因此新主机将读取它们并继续为数据服务。 但是，由于某些数据可能位于MemStore中，并且没有时间进入HFiles，因此将WAL（也存储在HDFS中）用于还原操作历史记录。 在变更过渡之后，RS能够响应请求，但是，此举导致以下事实：部分数据及其处理位于不同的节点上，即 地点减少。 <br><br> 解决该问题的方法是进行大量压缩-此过程将文件移动到对其负责的节点（其区域所在的位置），结果，在此过程中，网络和磁盘上的负载急剧增加。 但是，将来，对数据的访问将显着加速。 此外，major_compaction将所有HFile组合到该区域内的一个文件中，并根据表设置清除数据。 例如，您可以指定要保存的对象的版本数或生存期，然后物理删除该对象。 <br><br> 此过程可以对HBase产生非常积极的影响。 下图显示了由于活动数据记录而导致的性能下降。 在这里，您可以看到如何将40个流写入一个表，同时40个流同时读取数据。 写入流形成越来越多的HFile，其他流会读取它们。 结果，越来越多的数据需要从内存中删除，最后GC开始工作，这实际上使所有工作瘫痪了。 大压实的开始导致了所产生的堵塞的清除和性能的恢复。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/x2/ha/ga/x2haga1cohdfilxz5ffu_vatfzy.png"></div><br> 该测试是在3个DataNode和4个RS（CPU Xeon E5-2680 v4 @ 2.40GHz * 64线程）上进行的。  HBase版本1.2.0-cdh5.14.2 <br><br> 值得注意的是，主要压缩的启动是在“活动”表上进行的，在该表中主动写入和读取数据。 网络上有一条声明说，这可能导致读取数据时出现错误的答案。 为了进行检查，启动了一个过程，该过程生成新数据并将其写入表中。 之后，我立即读取并验证所获得的值是否与记录的值一致。 在此过程中，进行了大约200次的大型压实，没有记录到任何故障。 也许该问题很少出现，并且仅在高负载下出现，所以在不允许此类GC下降的情况下，仍按计划停止写入和读取过程并执行清洁操作更为安全。 <br><br> 另外，主要压缩不影响MemStore的状态，要将其刷新到磁盘并进行压缩，您需要使用flush（connection.getAdmin（）。Flush（TableName.valueOf（tblName）））。 <br><br><h2>  8.设置和性能 </h2><br> 如前所述，HBase在执行BulkLoad时无需执行任何操作的情况下显示出最大的成功。 但是，这适用于大多数系统和人员。 但是，此工具更适合于大块数据的大量堆叠，而如果该过程需要大量竞争的读写请求，则可以使用上述的Get和Put命令。 为了确定最佳参数，使用表参数和设置的各种组合进行启动： <br><br><ul><li> 连续3次同时启动10个线程（我们称其为线程块）。 </li><li> 对模块中所有流的运行时间进行平均，这是该模块运行的最终结果。 </li><li> 所有线程都使用同一张表。 </li><li> 在每次启动线程块之前，都执行了一次重大压缩。 </li><li> 每个块仅执行以下操作之一： </li></ul><br>  -放 <br>  -得到 <br>  -获取+放置 <br><br><ul><li> 每个块执行了50,000次重复操作。 </li><li> 该块中的记录大小为100字节，1000字节或10000字节（随机）。 </li><li> 使用不同数量的请求密钥（一个或10个）启动块。 </li><li> 在各种表设置下启动了块。 参数已更改： </li></ul><br>  -BlockCache =打开或关闭 <br>  -块大小= 65 Kb或16 Kb <br>  -分区= 1、5或30 <br>  -MSLAB =开或关 <br><br> 因此，该块如下所示： <br><br> 一个  MSLAB模式打开/关闭。 <br>  b。 创建一个为其设置了以下参数的表：BlockCache = true / none，BlockSize = 65/16 Kb，Partitions = 1/5/30。 <br>  c。 设置压缩GZ。 <br>  d。 同时启动10个线程，在该表中执行1/10的put / get / get + put操作，记录为100/1000/10000字节，连续执行50,000个查询（随机键）。 <br>  e。 重复点d 3次。 <br>  f。 平均所有线程的运行时间。 <br><br> 检查所有可能的组合。 可以预见的是，随着记录大小的增加，速度将会降低，或者禁用缓存将会减慢速度。 但是，目标是了解每个参数影响的程度和重要性，因此，将收集的数据馈入线性回归函数的输入，这使得可以使用t统计量来评估可靠性。 以下是执行Put操作的块的结果。 一组完整的组合2 * 2 * 3 * 2 * 3 = 144个选项+ 72，因为 一些被执行了两次。 因此，总共有216次启动： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ai/5u/wj/ai5uwj0fvmyo9hyqkjg4-cigceq.png"></div><br> 测试是在由3个DataNode和4个RS（CPU Xeon E5-2680 v4 @ 2.40GHz * 64个流）组成的小型群集上进行的。  HBase版本1.2.0-cdh5.14.2。 <br><br> 关闭MSLAB模式时，在具有一个分区且启用了BlockCache，BlockSize = 16的表上，关闭MSLAB模式时可获得3.7秒的最高插入速度，每包10字节记录100字节。 <br> 启用MSLAB模式后，在具有一个分区的表上启用BlockCache且BlockSize = 16的情况下，最低插入速度为82.8秒，每个记录10,000字节。 <br><br> 现在让我们看一下模型。 我们看到R2的质量模型很好，但是很明显在这里禁忌外推。 系统在更改参数时的实际行为将不是线性的，该模型不需要进行预测，而是了解给定参数内发生了什么。 例如，在这里我们根据学生的标准看到，对于Put操作，BlockSize和BlockCache参数无关紧要（通常是可预测的）： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/aq/vg/xt/aqvgxt9uyfs_l4m4crnm3adhliy.png"></div><br> 但是，可以理解，增加分区数量会导致性能降低这一事实在某种程度上是出乎意料的（我们已经看到使用BulkLoad增加分区数量的积极作用）。 首先，为了进行处理，有必要对30个区域而不是一个区域进行查询，并且数据量不能增加。 其次，总操作时间由最慢的RS确定，并且由于DataNode的数量小于RS的数量，因此某些区域的局部性为零。 好吧，让我们看一下前五名： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/bx/md/iu/bxmdiuzfdzqlfe1l8_s_2ktecb0.png"></div><br> 现在，让我们评估一下Get块的执行结果： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/zl/2b/no/zl2bnojdyx-byfpty6yr9poebzg.png"></div><br> 分区的数量已失去重要性，这可能是由于数据缓存良好，而读取缓存是最重要的（统计上的）参数这一事实。 自然地，增加请求中的消息数量对于性能也非常有用。 最佳结果： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/f0/6d/pu/f06dpurnzlck4po4jw1xpyrphl8.png"></div><br> 好吧，最后，看看先执行get的块的模型，然后放入： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ae/fc/23/aefc23q9mcfbtbumdc5qjmw_qrg.png"></div><br> 在这里，所有参数都很重要。 领导者的结果： <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/q0/vo/th/q0vothoybhc8k6m1ysefviz3tco.png"></div><br><h2>  9.负载测试 </h2><br> 好吧，最后，我们会推出或多或少的体面负载，但是当有可比较的东西时，它总是更加有趣。  Cassandra的主要开发人员DataStax的站点具有许多NoSQL存储库<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的</a> NT <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">结果</a> ，包括HBase 0.98.6-1。 加载由40个流，数据大小为100字节的SSD磁盘执行。 测试“读取-修改-写入”操作的结果显示了这些结果。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/ha/7b/bw/ha7bbwydc612f04jtwyqvdvg_ae.png"></div><br> 据我了解，读取是在100条记录的块中进行的，对于16个HBase节点，DataStax测试显示每秒1万次操作的性能。 <br><br> 幸运的是，我们的集群也有16个节点，但是并不是很“幸运”，每个节点都有64个核心（线程），而DataStax测试只有4个。另一方面，它们有SSD磁盘，而我们有HDD等新版本的HBase和负载期间的CPU使用率实际上并未显着增加（从视觉上看提高了5-10％）。 不过，我们将尝试从此配置开始。 默认情况下，表格设置是在0到5000万个键的范围内随机进行读取的（实际上，每次都是新的）。 在该表中，5000万个条目分为64个分区。 密钥是crc32哈希。 表设置为默认设置，已启用MSLAB。 从40个线程开始，每个线程读取一组100个随机密钥，并立即将生成的100个字节写回这些密钥。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/po/sd/el/posdel66zx7quvvo3kvrjb6uif8.png"></div><br> 支架：16个DataNode和16个RS（CPU Xeon E5-2680 v4 @ 2.40GHz * 64个流）。  HBase版本1.2.0-cdh5.14.2。 <br><br> 平均结果接近每秒4万次操作，这比DataStax测试中要好得多。 但是，出于实验目的，条件可以稍作更改。 所有工作完全不可能只用一个表，也只能用唯一的键来完成。 假设存在一组“热”键来生成主负载。 因此，我们将尝试在4个不同的表中创建具有较大记录（10 KB）的负载，每个记录也以100个为一组，并将请求的密钥范围限制为5万个。下图显示了40个线程的开始，每个流读取一组100个密钥，并立即写入随机10这些键上的KB回来了。 <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/f7/ec/mr/f7ecmrebgulvlcyru05c7jzytyi.png"></div><br> 支架：16个DataNode和16个RS（CPU Xeon E5-2680 v4 @ 2.40GHz * 64个流）。  HBase版本1.2.0-cdh5.14.2。 <br><br> 在加载期间，多次执行一次大型压实，如上所示，如果不执行此步骤，性能将逐渐降低，但是在执行过程中还会发生额外的加载。 亏损是由多种原因造成的。 有时线程终止，并且在它们重新启动时会有暂停，有时第三方应用程序在群集上造成了负载。 <br><br> 立即读取和写入是HBase最困难的工作方案之一。 如果只放置一个小尺寸的放置请求，例如每个放置100个字节，将它们组合成105,000件的批处理，则每秒可以进行成千上万次操作，这种情况与只读请求相似。 值得注意的是，由于以5万为一个块的请求，因此结果从根本上比在DataStax上获得的结果更好。 <br><br><img src="https://habrastorage.org/webt/kv/_j/bv/kv_jbvizskwbod1nxapokckg9s8.png"><br> 支架：16个DataNode和16个RS（CPU Xeon E5-2680 v4 @ 2.40GHz * 64个流）。  HBase版本1.2.0-cdh5.14.2。 <br><br><h2>  10.结论 </h2><br> 该系统具有足够的灵活性来进行配置，但是仍然不清楚大量参数的影响。 其中一些已经过测试，但未包含在结果测试套件中。 例如，初步实验表明，诸如DATA_BLOCK_ENCODING这样的参数无关紧要，该参数使用来自相邻单元格的值对信息进行编码，这对于随机生成的数据而言是可以理解的。 在使用大量重复对象的情况下，增益会很大。 通常，我们可以说HBase给人的印象是一个相当认真且经过深思熟虑的数据库，当处理大型数据块时，该数据库的生产率可能很高。 特别是如果可以及时扩展读写过程。 <br><br> 如果您认为某些事情未得到充分披露，我准备详细介绍。 如果您不同意我们的建议，建议您分享经验或进行辩论。 </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN420425/">https://habr.com/ru/post/zh-CN420425/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN420409/index.html">学习OpenGL。 5.7课-HDR</a></li>
+<li><a href="../zh-CN420413/index.html">SQLite和NW.js-有关建立牢固友谊的分步说明</a></li>
+<li><a href="../zh-CN420415/index.html">您想了解有关测试Wi-Fi适配器的所有信息，但又害怕问</a></li>
+<li><a href="../zh-CN420419/index.html">那些喜欢屈辱或我们如何更改和修改PixJam的跑步者</a></li>
+<li><a href="../zh-CN420423/index.html">地面交叉接口问题</a></li>
+<li><a href="../zh-CN420429/index.html">USE，RED，PgBouncer，其设置和监视</a></li>
+<li><a href="../zh-CN420431/index.html">火星 家庭主妇地形改造实用指南</a></li>
+<li><a href="../zh-CN420433/index.html">“星期五格式”：音乐之路-它是什么以及为什么不在俄罗斯</a></li>
+<li><a href="../zh-CN420435/index.html">ARM Mbed快速入门：面向初学者的现代微控制器开发</a></li>
+<li><a href="../zh-CN420437/index.html">Kubernetes软件包管理器实用介绍-Helm</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

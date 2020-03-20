@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕴🏻 👨🏽‍🏫 🧕🏼 Rancher: Kubernetes in 5 Minuten auf Bare Metal 👙 👨‍👨‍👧 📺</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="An der Kreuzung wird das Orchester nicht verändert. 
+
+ Nachdem ich Docker Swarm aufgrund seiner Pseudo-Einfachheit und konstanten Endbearbeitung, der ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Rancher: Kubernetes in 5 Minuten auf Bare Metal</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/418691/">  An der Kreuzung wird das Orchester <s>nicht</s> verändert. <br><br>  Nachdem ich Docker Swarm aufgrund seiner Pseudo-Einfachheit und konstanten Endbearbeitung, der nicht sehr bequemen Arbeit mit verteilten Dateisystemen, einer leicht feuchten Weboberfläche und der engen Funktionalität sowie der mangelnden Unterstützung der sofort einsatzbereiten GitLab-Integration völlig satt hatte, wurde die Bereitstellung beschlossen Ihr Kubernetes-Cluster auf Ihrer eigenen Hardware, nämlich durch Bereitstellung von Rancher Management Server 2.0. <br><br>  Installationserfahrung, Fehlertoleranzschema, Arbeiten mit haProxy und zwei Dashboards unter der Katze: <br><a name="habracut"></a><br>  <strong>Eingabedaten:</strong> <br><br>  Host Server HP Proliant DL320e Gen8 - 2 Stück <br>  VM Ubuntu Server 16.04, 2 GB RAM, 2 vCPU, 20 GB Festplatte - 1 PC.  auf jedem Host (VM-haProxy). <br>  VM Ubuntu Server 16.04, 4 GB RAM, 4 vCPU, 40 GB Festplatte, 20 GB SSD - 3 Stk.  auf jedem Host (VM - * - Cluster). <br>  VM Ubuntu Server 16.04, 4 GB RAM, 4 vCPU, 100 GB Festplatte - 1 St.  auf jedem Host (VM-NFS). <br><br>  Netzwerkdiagramm: <br><br><div class="spoiler">  <b class="spoiler_title">Abb. 1</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/ua/wg/ec/uawgecpkngtalxstr0i1fam-ok4.jpeg"><br></div></div><br>  <strong>Erste Schritte:</strong> <br><br>  <em>VM-haProxy</em> hat die Regeln für haProxy, fail2ban und iptables an Bord.  Dient als Gateway für alle dahinter stehenden Maschinen.  Wir haben zwei Gateways und alle Maschinen wechseln bei einem Verlust der Gateway-Kommunikation auf ihrem Host zu einem anderen. <br><br>  Die Hauptaufgabe dieser Knoten (VM-haProxy) besteht darin, den Zugriff auf das Backend zu verteilen, die Ports auszugleichen, die Ports weiterzuleiten und Statistiken zu sammeln. <br><br>  Meine Wahl fiel auf haProxy, ein enger fokussiertes Instrument in Bezug auf Ausgleich und Gesundheitskontrolle.  Für all dies mag ich die Syntax von Konfigurationsanweisungen und arbeite mit IP-White- und Blacklists sowie mit Multi-Domain-SSL-Verbindungen. <br><br>  HaProxy-Konfiguration: <br><br><div class="spoiler">  <b class="spoiler_title">haproxy.conf mit Kommentaren</b> <div class="spoiler_text"><pre><code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">########################################################## #Global # ########################################################## global log 127.0.0.1 local0 notice maxconn 2000 user haproxy group haproxy tune.ssl.default-dh-param 2048 defaults log global mode http option httplog option dontlognull retries 3 option redispatch timeout connect 5000 timeout client 10000 timeout server 10000 option forwardfor option http-server-close ########################################################## #TCP # ########################################################## #    API  Kubernetes listen kube-api-tls bind *:6443 mode tcp option tcplog server VM-Master-Cluster Master:6443 ########################################################## #HTTP/HTTPS - Frontend and backend # ########################################################## #      "  ", frontend  backend. frontend http-in bind *:80 acl network_allowed src -f /path/allowed-ip #     IP.     . http-request deny if !network_allowed #       IP  . reqadd X-Forwarded-Proto:\ http mode http option httpclose acl is_haproxy hdr_end(host) -i haproxy.domain.ru acl is_rancher hdr_end(host) -i rancher.domain.ru acl is_kubernetes hdr_end(host) -i kubernetes.domain.ru use_backend kubernetes if is_kubernetes use_backend rancher if is_rancher use_backend haproxy if is_haproxy frontend https-in bind *:443 ssl crt-list /path/crt-list #    .        . acl network_allowed src -f /path/allowed-ip http-request deny if !network_allowed reqadd X-Forwarded-Proto:\ https acl is_rancher hdr_end(host) -i rancher.etraction.ru acl is_kubernetes hdr_end(host) -i kubernetes.etraction.ru use_backend kubernetes if is_kubernetes { ssl_fc_sni kubernetes.domain.ru } use_backend rancher if is_rancher { ssl_fc_sni rancher.domain.ru } # Backend  haProxy.    . backend haproxy stats enable stats uri /haproxy?stats stats realm Strictly\ Private stats auth login:passwd cookie SERVERID insert nocache indirect #  , , backend   dashboard rancher  kubernetes. backend rancher acl network_allowed src -f /path/allowed-ip http-request deny if !network_allowed mode http redirect scheme https if !{ ssl_fc } server master master:443 check ssl verify none backend kubernetes acl network_allowed src -f /path/allowed-ip http-request deny if !network_allowed mode http balance leastconn redirect scheme https if !{ ssl_fc } server master master:9090 check ssl verify none</span></span></code> </pre> <br></div></div><br>  <strong>Wichtig:</strong> Alle Computer müssen sich anhand des Hostnamens „kennen“. <br><br><div class="spoiler">  <b class="spoiler_title">Puppet-Manifest add-host-entry.pp zum Hinzufügen von Hostnamen in / etc / hosts</b> <div class="spoiler_text"><pre> <code class="bash hljs">class host_entries { host { <span class="hljs-string"><span class="hljs-string">'proxy01'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.11'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'proxy02'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.12'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'master'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.100'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node01'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.101'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node02'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.102'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node03'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.103'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node04'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.104'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'node05'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.105'</span></span>, } host { <span class="hljs-string"><span class="hljs-string">'nfs'</span></span>: ip =&gt; <span class="hljs-string"><span class="hljs-string">'10.10.10.200'</span></span>, } }</code> </pre><br></div></div><br>  <em>VM-Master-Cluster</em> ist die Hauptsteuerungsmaschine.  Es unterscheidet sich von anderen Knoten an Bord durch Puppet Master, GlusterFS Server, Rancher Server (Container), etcd (Container) und Control Manager (Container).  Im Falle einer Trennung dieses Hosts funktionieren die Produktionsdienste weiterhin. <br>  <em>VM-Node-Cluster</em> - Knoten, Arbeiter.  Arbeitsmaschinen, deren Ressourcen in einer fehlertoleranten Umgebung zusammengefasst werden.  Nichts Interessantes. <br><br>  <em>VM-NFS</em> - NFS-Server (NFS-Kernel-Server).  Die Hauptaufgabe besteht darin, Pufferplatz bereitzustellen.  Speichert Konfigurationsdateien und alles.  Speichert nichts Wichtiges.  Sein Sturz kann beim Kaffeetrinken langsam korrigiert werden. <br><br>  <strong>Wichtig:</strong> Alle Umgebungscomputer müssen an Bord sein: docker.io, nfs-common, gluster-server. <br><br><div class="spoiler">  <b class="spoiler_title">must-have-packages.pp Marionettenmanifest zur Installation der richtigen Software</b> <div class="spoiler_text"><pre> <code class="bash hljs">class musthave { package { <span class="hljs-string"><span class="hljs-string">'docker.io'</span></span>: ensure =&gt; <span class="hljs-string"><span class="hljs-string">'installed'</span></span>, } package { <span class="hljs-string"><span class="hljs-string">'nfs-common'</span></span>: ensure =&gt; <span class="hljs-string"><span class="hljs-string">'installed'</span></span>, } package { <span class="hljs-string"><span class="hljs-string">'gluster-server'</span></span>: ensure =&gt; <span class="hljs-string"><span class="hljs-string">'installed'</span></span>, } }</code> </pre><br></div></div><br>  Ich werde die Installation von nfs-volume und die Konfiguration von GlusterFS nicht beschreiben, da es großzügig in großer Anzahl beschrieben wird. <br><br>  Wenn Sie feststellen, dass die Spezifikationsbeschreibung SSD-Festplatten enthält, sind diese für den Betrieb des verteilten Gluster-Dateisystems vorbereitet.  Erstellen Sie Partitionen und speichern Sie sie auf Hochgeschwindigkeitsfestplatten. <br><br>  <em>Hinweis</em>  Für die Ausführung eines Rancher ist keine spiegelähnliche Umgebung erforderlich.  All dies ist meine Vision des Clusters und eine Beschreibung der Praktiken, denen ich folge. <br><br>  Um Rancher auszuführen, reicht <strong>ein</strong> Computer mit 4 CPU, 4 GB RAM und 10 GB Festplatte aus. <br><br>  5 Minuten zu Rancher. <br><br>  Auf VM-Master-Cluster machen wir: <br><br><pre> <code class="bash hljs">sudo docker run -d --restart=unless-stopped -p 80:80 -p 443:443 rancher/rancher</code> </pre> <br>  Verfügbarkeit prüfen: <br><br><pre> <code class="bash hljs">curl -k https://localhost</code> </pre> <br>  Wenn Sie die API gesehen haben - ich gratuliere Ihnen genau auf halbem Weg. <br><br>  Nachdem wir uns das Netzwerkdiagramm noch einmal angesehen haben, erinnern wir uns, dass wir über haProxy von außen arbeiten werden. In der Konfiguration, in der wir den Link <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">rancher.domain.ru</a> veröffentlicht haben, legen Sie Ihr Passwort fest. <br><br>  Die nächste Seite ist die Seite zur Erstellung von Kubernetes-Clustern. <br><br><div class="spoiler">  <b class="spoiler_title">Abb.2</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/1w/ke/xn/1wkexnv2z_lgd_epga3vx3foyv4.png"><br></div></div><br>  Wählen Sie im Menü Clusteroptionen die Option Flanell.  Ich habe nicht mit anderen Netzwerkanbietern zusammengearbeitet.  Ich kann nicht raten. <br><br>  Es ist zu beachten, dass wir die Kontrollkästchen etcd und Control Plane installiert haben. Der Checkbox-Worker ist nicht installiert, wenn Sie den Manager nicht im Worker-Modus verwenden möchten. <br>  Wir arbeiten innerhalb des lokalen Netzwerks mit derselben Adresse auf der Netzwerkkarte, sodass in den Feldern Öffentliche und interne Adresse dieselbe IP angegeben ist. <br><br>  Kopieren Sie den resultierenden Code oben und führen Sie ihn in der Konsole aus. <br><br>  Nach einiger Zeit wird in der Weboberfläche eine Meldung zum Hinzufügen eines Knotens angezeigt.  Und nach einiger Zeit starten Sie den Kubernetes-Cluster. <br><br><div class="spoiler">  <b class="spoiler_title">Abb.3</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/lj/sn/kk/ljsnkkwx3eh2w0eg5vysblt8wpm.png"><br></div></div><br>  Um einen Worker hinzuzufügen, gehen Sie zum Bearbeiten des Clusters in der Rancher-Weboberfläche. Sie sehen dasselbe Menü, das den Verbindungsbefehl generiert. <br><br>  Setzen Sie das Kontrollkästchen nur auf die Worker-Position, geben Sie die IP des zukünftigen Workers an, kopieren Sie den Befehl und führen Sie ihn in der Konsole des gewünschten Knotens aus. <br><br>  Nach einer Weile erhöht sich die Clusterleistung ebenso wie die Anzahl der Knoten. <br><br>  <strong>Installieren Sie das Kubernetes Dashboard:</strong> <br><br>  Gehen Sie zum Menü Projekte / Namespaces. <br><br>  Nach der Installation sehen Sie, dass Namespaces, die sich auf Kubernetes beziehen, außerhalb von Projekten enthalten sind.  Um mit diesen Namespaces vollständig arbeiten zu können, müssen sie im Projekt platziert werden. <br><br>  Fügen Sie ein Projekt hinzu und benennen Sie es nach Ihren Wünschen.  Verschieben Sie Namespaces (Cattle-System, Ingress-Nginx, Kube-Public, Kube-System) in das Projekt, das Sie über das Kontextmenü „Verschieben“ erstellt haben.  Es sollte so sein: <br><br><div class="spoiler">  <b class="spoiler_title">Abb. 4</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/dz/qv/el/dzqvelzycrlwyj3bkwllq-pndqm.png"><br></div></div><br>  Klicken Sie direkt auf den Projektnamen, um zur Workload-Systemsteuerung zu gelangen.  Hier werden wir diskutieren, wie man einen einfachen Service erstellt. <br><br><div class="spoiler">  <b class="spoiler_title">Abb.5</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/q6/lp/5z/q6lp5znqlnhzkudjafjnr172n-g.png"><br></div></div><br>  Klicken Sie oben rechts auf "YAML importieren".  Kopieren Sie den Inhalt <a href="">dieser Datei</a> und fügen Sie ihn in das Textfeld des sich öffnenden Fensters ein. Wählen Sie den Namespace "kube-system" aus und klicken Sie auf "Importieren". <br><br>  Nach einiger Zeit wird das Pod Kubernetes-Dashboard gestartet. <br><br>  Gehen Sie zur Pod-Bearbeitung, öffnen Sie das Port-Publishing-Menü und stellen Sie die folgenden Werte ein: <br><br><div class="spoiler">  <b class="spoiler_title">Abb.6</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/_p/2b/wk/_p2bwkxifynrhipap0imqddogfi.png"><br></div></div><br>  Überprüfen Sie den Zugriff auf den Knoten, auf dem der Pod ausgeführt wird. <br><br><pre> <code class="bash hljs">curl -k https://master:9090</code> </pre> <br>  Sehen Sie die Antwort?  Die Veröffentlichung ist abgeschlossen, es bleibt der administrative Teil zu erreichen. <br><br>  Auf der Hauptseite der Clusterverwaltung in Rancher finden Sie sehr praktische Tools wie kubectl - die Clusterverwaltungskonsole und Kubeconfig File - die Konfigurationsdatei mit der API-Adresse, ca.crt usw. <br><br>  Wir gehen in kubectl und führen aus: <br><br><pre> <code class="bash hljs">kubectl create serviceaccount cluster-admin-dashboard-sa kubectl create clusterrolebinding cluster-admin-dashboard-sa --clusterrole=cluster-admin --serviceaccount=default:cluster-admin-dashboard-sa</code> </pre><br>  Wir haben ein Dienstkonto mit den höchsten Berechtigungen erstellt. Jetzt benötigen wir ein Token, um auf das Dashboard zugreifen zu können. <br><br>  Finden Sie das Geheimnis des erstellten Kontos: <br><br><pre> <code class="bash hljs">kubectl get secret | grep cluster-admin-dashboard-sa</code> </pre><br>  Wir werden den Namen des Kontos mit einem bestimmten Hash am Ende sehen, ihn kopieren und ausführen: <br><br><pre> <code class="bash hljs">kubectl describe secret cluster-admin-dashboard-sa-$( )</code> </pre><br>  Wir erinnern uns erneut daran, dass alles erfolgreich über haProxy veröffentlicht wurde. <br><br>  Wir folgen dem Link <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=">kubernetes.domain.ru</a> .  Geben Sie den empfangenen Token ein. <br><br>  Freut euch: <br><br><div class="spoiler">  <b class="spoiler_title">Abb. 7</b> <div class="spoiler_text"><img src="https://habrastorage.org/webt/ps/1q/iw/ps1qiwgxivruyotas0fcb2slwfy.png"><br></div></div><br>  <em>PS</em> <br>  Das Gesamtergebnis Ich möchte Rancher für die Erstellung einer intuitiven Benutzeroberfläche, einer leicht implementierbaren Instanz, einer einfachen Dokumentation, der Fähigkeit zum schnellen Verschieben und der Skalierbarkeit auf Clusterebene danken.  Vielleicht habe ich zu Beginn des Beitrags zu scharf gesprochen, dass Swarm die offensichtlichen Entwicklungstrends satt hatte, und mich irgendwie dazu gebracht habe, zur Seite zu starren und die langweilige Routine nicht zu beenden.  Docker hat eine Ära der Entwicklung eingeleitet.  Und dieses Projekt zu beurteilen ist sicherlich nichts für mich. </div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/de418691/">https://habr.com/ru/post/de418691/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de418681/index.html">Tag der Freundschaft - 50% Rabatt auf alle JetBrains-IDEs für unsere Freunde</a></li>
+<li><a href="../de418683/index.html">Erstellen eines Emulator-Arcade-Automaten. Teil 2</a></li>
+<li><a href="../de418685/index.html">Prozedurale Level-Generierung</a></li>
+<li><a href="../de418687/index.html">3,5 "Umdrehung: Details eines kleinen Auslegers von Disketten mit Dämpfen</a></li>
+<li><a href="../de418689/index.html">Erstellen von Komponentenbibliotheken in Figma, Einsparen eines Budgets am Beispiel einer Online-Auktion</a></li>
+<li><a href="../de418693/index.html">Warum ist Glück im Gehirn so schwer zu erkennen?</a></li>
+<li><a href="../de418695/index.html">Anti-Piraterie-Kriege - Das Imperium schlägt zurück</a></li>
+<li><a href="../de418699/index.html">Erstellen eines Emulator-Arcade-Automaten. Teil 3</a></li>
+<li><a href="../de418701/index.html">Wir studieren syntaktische Parser für die russische Sprache</a></li>
+<li><a href="../de418705/index.html">Futex-Grundlagen</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
