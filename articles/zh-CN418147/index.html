@@ -1,0 +1,119 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚞 🔥 🚸 沉默的Ruby执行：事务性Rails / PostgreSQL惊悚片 🥘 👇🏻 ↘️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="这是一个有关为什么在数据库中的事务内部时永远不应该忽略错误的故事。 不能选择如何正确使用交易以及使用交易时该怎么做。 剧透：这将与PostgreSQL中的咨询锁有关！ 
+
+
+我参与了一个项目，在这个项目中，用户可以从外部服务中将大量重实体（我们称为产品）导入我们的应用程序。 对于每种产品，甚至可以从...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>沉默的Ruby执行：事务性Rails / PostgreSQL惊悚片</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/418147/"><p>  <em>这是一个有关为什么在数据库中的事务内部时<strong>永远不应该</strong>忽略错误的故事。</em>  <em>不能选择如何正确使用交易以及使用交易时该怎么做。</em>  <em>剧透：这将与PostgreSQL中的咨询锁有关！</em> </p><br><p>我参与了一个项目，在这个项目中，用户可以从外部服务中将大量重实体（我们称为产品）导入我们的应用程序。 对于每种产品，甚至可以从外部API加载与其相关的更多数据。 用户加载数百种产品以及所有依赖项的情况并不少见，因此，导入一个产品要花费很长的时间（30-60秒），并且整个过程可能要花费很长时间。 用户可能会厌倦了等待结果，并且他有权随时单击“取消”按钮，并且该应用程序对于当前可以下载的产品数量应该是有用的。 </p><a name="habracut"></a><br><p>  “中断导入”的实现方式如下：在每种产品的开头，都会在数据库的铭牌中创建一个临时任务记录。 对于每个产品，都会启动一个后台导入任务，该任务将下载该产品并将其与所有依赖项一起保存到数据库中（通常执行所有操作），并最终删除其任务记录。 如果到后台任务开始时，数据库中将没有任何记录-该任务只是默默地结束。 因此，要取消导入，仅删除所有任务就足够了。 </p><br><p> 导入是由用户取消还是由用户自己完成都无所谓-在任何情况下，没有任务意味着一切都结束了，用户可以开始使用该应用程序。 </p><br><p> 该设计简单可靠，但是其中存在一个小错误。 关于他的典型错误报告是：“取消导入后，将向用户显示其商品清单。 但是，如果刷新页面，则产品列表将由几个条目补充。” 出现这种情况的原因很简单-当用户单击“取消”按钮时，他立即被转到所有产品的列表中。 但是此时，已经开始进口的某些商品仍在“运行”中。 </p><br><p> 当然，这是一件小事，但是用户对该命令感到困惑，因此对其进行修复将是不错的选择。 我有两种方法：以某种方式识别并“杀死”已在运行的任务，或者当我单击“取消”按钮时，等待它们完成并“死亡”，然后再进一步转移用户。 我选择了第二种方式-等待。 </p><br><h2 id="tranzakcionnye-blokirovki-speshat-na-pomosch"> 交易锁急救 </h2><br><p> 对于使用（关系）数据库的每个人来说，答案都是显而易见的：使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">事务</a> ！ </p><br><p>重要的是要记住，在大多数RDBMS中，在事务中更新的记录将被<em>阻止</em> ，其他进程无法访问该更改，直到该事务完成为止。 使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>SELECT FOR UPDATE</code></a>记录也将被锁定。 </p><br><p> 正是我们的情况！ 我将将单个商品的进口包装到交易中，并在一开始就阻止了任务记录： </p><br><pre> <code class="ruby hljs">ActiveRecord::Base.transaction <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> task = Import::Task.lock.find_by(<span class="hljs-symbol"><span class="hljs-symbol">id:</span></span> id) <span class="hljs-comment"><span class="hljs-comment"># SELECT … FOR UPDATE  «    » return unless task #  - ? ,    ! #     task.destroy end</span></span></code> </pre> <br><p> 现在，当用户想要取消导入时，导入停止操作将删除尚未开始的导入任务，并将被迫等待已存在的任务完成： </p><br><pre> <code class="ruby hljs">user.import_tasks.delete_all <span class="hljs-comment"><span class="hljs-comment">#       </span></span></code> </pre> <br><p> 简洁大方！ 我运行测试，在本地和阶段检查导入，然后“投入战斗”。 </p><br><h2 id="ne-tak-bystro"> 没那么快... </h2><br><p> 对我的工作感到满意，我很惊讶很快发现错误报告和日志中的大量错误。 许多产品根本就没有进口。 在某些情况下，完成所有进口后只能保留一种产品。 </p><br><p> 日志中的错误也不会令人鼓舞： <code>PG::InFailedSqlTransaction</code>带有回溯到导致执行无害<code>SELECT</code>的代码的回溯。 到底是怎么回事？ </p><br><p> 经过一整天的调试，我确定了问题的三个主要原因： </p><br><ol><li> 竞争性地将冲突的记录插入数据库。 </li><li> 错误后在PostgreSQL中自动取消事务。 </li><li> 应用程序代码中的问题静音（Ruby异常）。 </li></ol><br><p>  <strong>问题一：竞争性词条的竞争插入</strong> </p><br><p> 由于每个导入操作最多需要一分钟，并且其中有许多任务，因此我们并行执行它们以节省时间。 在用户的所有产品可以引用一个单一记录，创建一次然后再使用的范围内，相关的商品记录可能会相交。 </p><br><p> 可以在应用程序代码中找到并重用相同的依赖项的检查，但是<em>现在，当我们使用事务时，这些检查变得无用</em> ：如果事务A创建了一个依赖记录但尚未完成，则事务B将无法找出其存在并尝试创建重复项记录。 </p><br><p>  <strong>问题二：PostgreSQL错误发生后自动取消交易</strong> </p><br><p> 当然，我们使用以下DDL阻止了在数据库级别创建重复任务： </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">ALTER</span></span> <span class="hljs-keyword"><span class="hljs-keyword">TABLE</span></span> product_deps <span class="hljs-keyword"><span class="hljs-keyword">ADD</span></span> <span class="hljs-keyword"><span class="hljs-keyword">UNIQUE</span></span> (user_id, characteristics);</code> </pre> <br><p> 如果进行中的事务A插入了一条新记录，而事务B尝试插入具有与<code>user_id</code>和<code>characteristics</code>字段相同的值的记录，则事务B将收到错误消息： </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">BEGIN</span></span>; <span class="hljs-keyword"><span class="hljs-keyword">INSERT</span></span> <span class="hljs-keyword"><span class="hljs-keyword">INTO</span></span> product_deps (user_id, characteristics) <span class="hljs-keyword"><span class="hljs-keyword">VALUES</span></span> (<span class="hljs-number"><span class="hljs-number">1</span></span>, <span class="hljs-string"><span class="hljs-string">'{"same": "value"}'</span></span>); <span class="hljs-comment"><span class="hljs-comment">-- Now it will block until first transaction will be finished ERROR: duplicate key value violates unique constraint "product_deps_user_id_characteristics_key" DETAIL: Key (user_id, characteristics)=(1, {"same": "value"}) already exists. -- And will throw an error when first transaction have commited and it is become clear that we have a conflict</span></span></code> </pre> <br><p> 但是有一个不应忘记的功能-事务B在检测到错误后将被自动取消，并且其中完成的所有工作都会耗费大量精力。 但是，此事务<strong>仍然</strong>处于“错误”状态，但是如果尝试执行任何请求，即使是最无害的请求，也将仅返回错误作为响应： </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> * <span class="hljs-keyword"><span class="hljs-keyword">FROM</span></span> products; ERROR: current transaction is aborted, commands ignored until <span class="hljs-keyword"><span class="hljs-keyword">end</span></span> <span class="hljs-keyword"><span class="hljs-keyword">of</span></span> <span class="hljs-keyword"><span class="hljs-keyword">transaction</span></span> <span class="hljs-keyword"><span class="hljs-keyword">block</span></span></code> </pre> <br><p> 好吧，完全不必说此事务中输入数据库的所有内容都不会保存： </p><br><pre> <code class="hljs sql"><span class="hljs-keyword"><span class="hljs-keyword">COMMIT</span></span>; <span class="hljs-comment"><span class="hljs-comment">--      ,   ROLLBACK --          </span></span></code> </pre> <br><p>  <strong>问题三：沉默</strong> </p><br><p> 至此，已经很清楚，仅向应用程序中添加事务就会破坏它。 别无选择：我不得不深入研究导入代码。 在代码中，以下模式经常引起我的注意： </p><br><pre> <code class="ruby hljs"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">process_stuff</span></span></span><span class="hljs-params"><span class="hljs-function"><span class="hljs-params">(data)</span></span></span></span> <span class="hljs-comment"><span class="hljs-comment"># ,   rescue StandardError nil #  ,  end</span></span></code> </pre> <br><p> 此处的代码作者告诉我们：“我们尝试过，我们没有成功，但是没关系，我们会继续这样做。” 而且，尽管做出此选择的原因是可以完全解释的（并非所有事情都可以在应用程序级别上进行处理），但这使基于事务的任何逻辑都变得不可能：抛出的执行将无法浮动到<code>transaction</code>块，并且不会导致正确的回滚事务（ActiveRecord捕获此块中的所有错误，回滚事务并再次引发它们）。 </p><br><h2 id="idealnyy-shtorm"> 完美风暴 </h2><br><p> 这就是所有这三个因素共同创造完美的方式 <del> 风暴 </del> 错误： </p><br><ul><li> 事务中的应用程序试图将冲突的记录插入数据库中，并导致PostgreSQL中出现“重复键”错误。 但是，此错误不会导致事务在应用程序中回滚，因为它被“隐藏”在应用程序的其中一部分中。 </li><li> 事务无效，但是应用程序不知道该事务，并继续工作。 在任何尝试访问数据库的尝试中，应用程序都会再次收到错误，这一次是“当前事务中止”，但是也可以抛出此错误... </li><li> 您可能已经知道应用程序中的某些内容会继续崩溃，但是直到执行到第一个位置为止，没人知道它，因为这里没有过度贪婪的<code>rescue</code> ，并且错误最终可能会弹出并记录下来，在错误跟踪器中注册的-任何东西。 但是这个地方已经离成为错误根源的地方很远了，仅此一个地方就将调试变成了一场噩梦。 </li></ul><br><h2 id="alternativa-tranzakcionnym-blokirovkam-v-postgresql">  PostgreSQL中事务锁的替代方法 </h2><br><p> 在应用程序代码中寻找<code>rescue</code>并重写所有导入逻辑不是一种选择。 好久不见 我需要一个快速的解决方案，并在postgres上找到了它！ 它具有内置的锁解决方案，可以替代锁定事务中的记录，见面会话建议锁。 我按如下方式使用它们： </p><br><p> 首先，我先删除了包装事务。 无论如何，通过公开交易与应用程序代码中的外部API（或任何其他“副作用”）进行交互都是一个坏主意，因为即使您回滚交易以及数据库中的所有更改，外部系统中的更改仍将保留，而整个应用程序可能处于一种奇怪的不良状态。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">隔离程序</a>可以帮助您确保副作用与事务正确<em>隔离</em> 。 </p><br><p> 然后，在每个导入操作中，我对整个导入的某些唯一键进行<em>共享</em>锁定（例如，从用户ID创建并从操作类的名称创建哈希）： </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_advisory_lock_shared(<span class="hljs-number"><span class="hljs-number">42</span></span>, user.id);</code> </pre> <br><p> 任何数量的会话都可以同时获取同一密钥上的共享锁。 </p><br><p> 同时取消导入操作会从数据库中删除所有任务条目，并尝试对同一键<em>进行独占</em>锁定。 在这种情况下，她将不得不等待直到所有共享锁都被释放： </p><br><pre> <code class="sql hljs"><span class="hljs-keyword"><span class="hljs-keyword">SELECT</span></span> pg_advisory_lock(<span class="hljs-number"><span class="hljs-number">42</span></span>, user.id)</code> </pre> <br><p> 仅此而已！ 现在，“取消”将等到所有“正在运行”的单个商品进口完成。 </p><br><p> 而且，由于我们之间没有事务联系，我们可以使用一个小技巧来限制导入取消的等待时间（以防某些导入“黏住”），因为长时间阻止Web服务器流是不好的（并且强制等待用户）： </p><br><pre> <code class="ruby hljs">transaction <span class="hljs-keyword"><span class="hljs-keyword">do</span></span> execute(<span class="hljs-string"><span class="hljs-string">"SET LOCAL lock_timeout = '30s'"</span></span>) execute(<span class="hljs-string"><span class="hljs-string">"SELECT pg_advisory_lock(42, user.id)"</span></span>) <span class="hljs-keyword"><span class="hljs-keyword">rescue</span></span> ActiveRecord::LockWaitTimeout <span class="hljs-literal"><span class="hljs-literal">nil</span></span> <span class="hljs-comment"><span class="hljs-comment">#    (     ) end</span></span></code> </pre> <br><p> 在<code>transaction</code>块<em>之外</em>捕获错误是安全的，因为<a href="">ActiveRecord将已经回滚事务</a> 。 </p><br><h2 id="no-chto-delat-s-konkurentnoy-vstavkoy-odinakovyh-zapisey"> 但是，竞争性插入相同记录怎么办？ </h2><br><p> 不幸的是，我不知道哪种解决方案可以很好地与<em>竞争性</em>插件一起使用。 有以下方法，但是它们都会阻塞并发插入，直到第一个事务完成为止： </p><br><ul><li> 在第二个事务中的<code>INSERT … ON CONFLICT UPDATE</code> （自PostgreSQL 9.5起可用）将被锁定，直到第一个事务完成，然后它将返回第一个事务插入的记录。 </li><li> 在运行验证以插入新记录之前，请锁定事务中的某些常规记录。 在这里，我们将等待直到插入到另一个事务中的记录可见并且验证无法完全完成。 </li><li> 采取某种通用建议锁定-效果与阻止通用记录相同。 </li></ul><br><p> 好吧，如果您不害怕使用基本级别错误，则可以捕获唯一性错误： </p><br><pre> <code class="hljs ruby"><span class="hljs-function"><span class="hljs-keyword"><span class="hljs-function"><span class="hljs-keyword">def</span></span></span><span class="hljs-function"> </span><span class="hljs-title"><span class="hljs-function"><span class="hljs-title">import_all_the_things</span></span></span><span class="hljs-function"> </span><span class="hljs-comment"><span class="hljs-function"><span class="hljs-comment">#   ,   Dep.create(user_id, chars) rescue ActiveRecord::RecordNotUnique retry end</span></span></span></span></code> </pre> <br><p> 只要确保此代码不再包装在事务中即可。 </p><br><blockquote> 他们为什么被阻止？ <br><br>  UNIQUE和EXCLUDE约束<em>通过</em>阻止同时记录来阻止<em>潜在冲突</em> 。 例如，如果您对整数列有唯一约束，并且一个事务插入了一个值为5的行，则其他尝试插入5的事务也会被阻止，但是尝试插入6或4的事务将立即成功而不会阻塞。 由于<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">PostgreSQL的最低实际事务隔离级别</a>为<code>READ COMMITED</code> ，因此事务无权查看其他事务的未提交更改。 因此，在第一个事务提交其更改（然后第二个事务接收到唯一性错误）或回滚（然后第二个事务中的插入将成功）之前，无法接受或拒绝具有冲突值的<code>INSERT</code> 。 在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">EXCLUDE限制作者</a>的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">一篇文章中</a>阅读有关此问题的更多信息。 </blockquote><br><h2 id="predotvraschaem-katastrofu-v-buduschem"> 预防未来的灾难 </h2><br><p>  <em>现在</em>您知道并非所有代码都可以包装在事务中。 确保将来没有人将此类代码包装在事务中，这是很好的做法，这是我重复的错误。 </p><br><p> 为此，您可以将所有操作包装在一个小的辅助模块中，该模块将在运行包装的操作代码之前检查事务是否已打开（此处假定所有操作具有相同的接口- <code>call</code>方法）。 </p><br><pre> <code class="ruby hljs"><span class="hljs-comment"><span class="hljs-comment">#     module NoTransactionAllowed class InTransactionError &lt; RuntimeError; end def call(*) return super unless in_transaction? raise InTransactionError, "#{self.class.name} doesn't work reliably within a DB transaction" end def in_transaction? connection = ApplicationRecord.connection # service transactions (tests and database_cleaner) are not joinable connection.transaction_open? &amp;&amp; connection.current_transaction.joinable? end end #    class Deps::Import &lt; BaseService prepend NoTransactionAllowed def call do_import rescue ActiveRecord::RecordNotUnique retry end end</span></span></code> </pre> <br><p> 现在，如果有人试图将<em>危险的</em>服务包装在交易中，那么他将立即收到错误消息（当然，除非他保持沉默）。 </p><br><h2 id="itogi"> 总结 </h2><br><p> 要学习的主要课程：小心例外。 不要连续处理所有内容，仅捕获那些您知道如何处理的异常，然后让其余的获取日志。 永远不要忽略异常（仅当您不确定100％为什么这样做时）。 越早发现错误，调试起来就越容易。 </p><br><p> 并且不要过度使用数据库中的事务。 这不是万能药。 使用我们的gem <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">隔离器</a>和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">after_commit_everywhere-</a>它们将帮助您的交易变得万无一失。 </p><br><h2 id="chto-pochitat"> 读什么 </h2><br><p>  <em>Avdi Grimm的</em> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><em>杰出Ruby</em></a> 。 这本简短的书将教您如何处理Ruby中的现有异常以及如何为应用程序正确设计一个异常系统。 </p><br><p>  @Brandur <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=https://brandur.org/"><em>使用原子事务为幂等API</em></a>提供动力。  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">他的博客上有</a>许多关于应用程序可靠性的有用文章，Ruby和PostgreSQL。 </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN418147/">https://habr.com/ru/post/zh-CN418147/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN418137/index.html">嗜血：DonorSearch创始人专访</a></li>
+<li><a href="../zh-CN418139/index.html">微分方程组给出的物体数学模型的数值解</a></li>
+<li><a href="../zh-CN418141/index.html">RE：Ghat / AFR初学者船长竞赛</a></li>
+<li><a href="../zh-CN418143/index.html">PVS-Studio作为SAST解​​决方案</a></li>
+<li><a href="../zh-CN418145/index.html">当Telegram被封锁时，公司遭受的第一起针对Roskomnadzor的诉讼</a></li>
+<li><a href="../zh-CN418151/index.html">介绍识别情绪的任务</a></li>
+<li><a href="../zh-CN418153/index.html">Kolesa Android Meetup视频：关于MVVM，反模式和模块化开发</a></li>
+<li><a href="../zh-CN418155/index.html">二极体 发光二极管 齐纳二极管</a></li>
+<li><a href="../zh-CN418157/index.html">该书“优雅的对象。 Java版»</a></li>
+<li><a href="../zh-CN418159/index.html">设计师去哪儿：俄罗斯，东欧和独联体国家的著名奖项</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

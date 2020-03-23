@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚆 👩🏻‍🚒 💅🏽 Kubernetes中CPU Manager的工作方式 🥉 🐾 🍀</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="注意事项 佩雷夫 ：本文发表在Kubernetes官方博客上，由两名直接参与CPU Manager开发的英特尔员工撰写，CPU Manager是我们在1.8版本评估中所介绍的Kubernetes的一项新功能。 目前（例如，对于K8s 1.11），此功能处于beta状态，请在稍后的注释中进一步了解其功...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kubernetes中CPU Manager的工作方式</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/418269/">  <i><b>注意事项</b></i>  <i><b>佩雷夫</b></i>  <i>：本文发表在Kubernetes官方博客上，由两名直接参与CPU Manager开发的英特尔员工撰写，CPU Manager是我们在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">1.8版本</a>评估中所介绍的Kubernetes的一项新功能。</i>  <i>目前（例如，对于K8s 1.11），此功能处于beta状态，请在稍后的注释中进一步了解其功能。</i> <br><br> 该出版物讨论了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CPU管理器</a> （Kubernetes中的beta功能）。  CPU Manager使您可以更好地在Kubelet中分配工作负载，即 通过将专用CPU分配给特定炉床的容器，在Kubernetes主机代理上运行。 <br><br><img src="https://habrastorage.org/webt/h-/5g/yo/h-5gyocq5lrz2vsvso7ioblnb3q.png"><a name="habracut"></a><br><br><h2> 听起来不错！ 但是CPU管理器会帮助我吗？ </h2><br> 取决于工作量。  Kubernetes集群中唯一的计算节点可以运行许多炉床，其中一些可以运行活跃于CPU消耗的负载。 在这种情况下，炉床可以争夺该节点上可用的过程资源。 当竞争加剧时，工作负载可能会转移到其他CPU，具体取决于它是否受到<i>限制</i> ，以及在计划时可用的CPU。 另外，在某些情况下，工作负载对上下文切换很敏感。 在所有这些情况下，工作负载性能可能会受到影响。 <br><br> 如果您的工作负载对这种情况敏感，则可以通过将特定的CPU分配给负载来使CPU Manager提供更好的性能隔离。 <br><br>  CPU管理器可以通过以下功能帮助进行装载： <br><br><ul><li> 对CPU节流效果敏感 </li><li> 对上下文切换敏感； </li><li> 处理器高速缓存未命中； </li><li> 受益于划分处理器资源（例如，数据缓存和指令）； </li><li> 处理器套接字之间的内存敏感内存<i>（在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Unix Stack Exchange</a>上详细介绍了作者的想法- <b>大约翻译</b> ）</i> ； </li><li> 对CPU敏感或需要相同物理内核的超线程。 </li></ul><br><h2> 好吧 如何使用？ </h2><br> 使用CPU Manager很容易。 首先， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">使用</a>在群集的计算节点上运行的Kubelet中<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的静态策略启用它</a> 。 然后为壁炉配置<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><i>保证</i>服务质量（QoS）</a>类。 为需要专用内核的容器请求整数个CPU内核（例如<code>1000m</code>或<code>4000m</code> ）。 按照前面的方法创建（例如， <code>kubectl create -f pod.yaml</code> ）...瞧-CPU管理器将根据每个炉床容器的CPU需求为其分配专用的处理器内核。 <br><br><pre> <code class="plaintext hljs">apiVersion: v1 kind: Pod metadata: name: exclusive-2 spec: containers: - image: quay.io/connordoyle/cpuset-visualizer name: exclusive-2 resources: # Pod is in the Guaranteed QoS class because requests == limits requests: # CPU request is an integer cpu: 2 memory: "256M" limits: cpu: 2 memory: "256M"</code> </pre> <br>  <i>需要2个专用CPU的炉膛规格。</i> <br><br><h2>  CPU管理器如何工作？ </h2><br> 我们考虑了大多数Linux发行版中可用的三种CPU资源控制类型，它们与Kubernetes和本出版物的目的有关。 前两个是CFS份额（我在系统中CPU时间的加权“诚实”份额）和CFS配额（这期间为我分配的最大CPU时间）。  CPU Manager还使用第三个，称为CPU亲和力（允许在其上执行逻辑CPU的计算）。 <br><br> 默认情况下，在Kubernetes集群节点上运行的所有Pod和容器都可以在任何可用的系统内核上运行。 分配的份额和配额总数受为<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Kubernetes和系统守护程序</a>保留的CPU资源限制。 但是，可以使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">炉床规格中的CPU限制</a>来确定对使用的CPU时间的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">限制</a> 。  Kubernetes使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CFS配额</a>对炉膛容器实施CPU限制。 <br><br> 使用<i>静态</i>策略启用CPU管理器时，它将管理专用的CPU池。 最初，该池包含计算节点的整个CPU。 当Kubelet在炉膛中创建一个具有保证数量的专用处理器核心的容器时，分配给该容器的CPU将在其生存期内分配给它，并从共享池中删除。 其余容器的负载从这些专用核心转移到其他核心。 <br><br> 所有没有专用CPU的容器（ <i>Burstable</i> ， <i>BestEffort</i>和<i>带有非整数CPU的保证</i>容器）都在共享池中剩余的内核上运行。 当具有专用CPU的容器停止工作时，其内核将返回到共享池。 <br><br><h2> 更多详细信息，请... </h2><br><img src="https://habrastorage.org/webt/cr/w-/-8/crw--8xnqnkcu8fl18xxbbeyfzk.png"><br><br> 上图显示了CPU Manager的结构。 它使用容器运行时接口（CRI）中的<code>UpdateContainerResources</code>方法来更改运行容器的CPU。  <i>Manager会</i>定期将<code>cgroupfs</code>与每个正在运行的容器的CPU资源的当前状态匹配。 <br><br>  CPU管理器使用<a href=""><i>策略</i></a>来决定CPU内核的分配。 实现了两个策略： <i>None</i>和<i>Static</i> 。 默认情况下，从Kubernetes版本1.10开始，通过<i>None</i>策略启用它。 <br><br>  <i>静态</i>策略将分配给CPU的Pod容器分配给保证的QoS类，该类请求整数个内核。  <i>静态</i>策略尝试以最佳拓扑方式并按以下顺序指定CPU： <br><br><ul><li> 将所有CPU分配给一个处理器插槽（如果有），并且该容器要求一个CPU的数量至少为整个CPU插槽的数量。 </li><li> 分配一个物理CPU内核的所有逻辑CPU（超线程）（如果可用），并且容器至少需要整个内核的CPU。 </li><li> 分配任何可用的逻辑CPU优先于来自单个插槽的CPU。 </li></ul><br><h2>  CPU Manager如何改善计算隔离性？ </h2><br> 在CPU管理器中启用<i>静态</i>策略后，由于以下原因之一，工作负载可以表现更好： <br><br><ul><li> 可以将专用CPU分配给具有工作负载的容器，但不能分配给其他容器。 这些（其他）容器不使用相同的CPU资源。 因此，由于出现“攻击者” <i>（CPU要求严格的进程- <b>大约Transl。</b> ）</i>或相邻工作负载的情况下的隔离，我们期望有更好的性能。 </li><li> 工作负载使用的资源竞争较少，因为我们可以按工作负载本身划分CPU。 这些资源不仅可以包括CPU，还可以包括缓存层次结构和内存带宽。 这样可以提高整体工作负载性能。 </li><li>  CPU Manager根据可用的最佳选项以拓扑顺序分配CPU。 如果整个套接字都空闲，它将为其所有CPU分配工作负载。 由于套接字之间缺少流量，因此可以提高工作负载性能。 </li><li> 具有QoS <i>保证的</i> Pod中的容器受CFS配额限制。 可以计划易于突然爆发的工作量，并在分配的期限结束之前超过其配额，从而限制了工作量。 此时所涉及的CPU既可以完成重要工作，又不是非常有用的工作。 但是，当配额CPU由专用CPU分配策略补充时，此类容器将不受CFS限制。 </li></ul><br><h2> 好吧 你有结果吗？ </h2><br> 为了查看Kubelet中包含CPU Manager所提供的性能改进和隔离，我们在具有两个插槽（Intel Xeon CPU E5-2680 v3）和启用超线程的计算节点上进行了实验。 该节点由48个逻辑CPU（24个物理内核，每个具有超线程）组成。 下面显示了在三种不同情况下基准测试和实际工作负载所获得的CPU Manager的性能和隔离优势。 <br><br><h3> 如何解释图表？ </h3><br> 对于每种情况，都显示了图表（ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">跨度图</a> ，箱形图），这些图表说明了在启动基准测试或实际负载（打开和关闭CPU管理器）时的标准化执行时间及其可变性。 将运行时间归一化为表现最佳的启动（Y轴上的1.00代表最佳启动时间：图形的值越小越好）。 图表上绘图的高度显示了性能的变化。 例如，如果站点是一条线路，则这些启动的性能没有变化。 在这些区域中，中线是中位数，顶部是第75个百分点，而底部是第25个百分点。 图的高度（即第75个百分位数与第25个百分位数之间的差）定义为四分位间距（IQR）。  “胡子”显示此间隔之外的数据，点显示异常值。 排放定义为与IQR相差1.5倍（小于或大于相应四分位数）的任何数据。 每个实验进行10次。 <br><br><h3> 积极防护 </h3><br> 我们从一<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">组PARSEC</a> （工作量-“受害者”）中启动了六个基准测试<i>[更多关于受害者工作量的信息，例如， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">在这里</a> - <b>大约。</b></i>  <i><b>佩雷夫</b></i>  <i>]，</i>然后在已打开和关闭CPU管理器的容器中加载CPU（“攻击者”工作负载）。 <br><br>  <i>攻击者</i>容器将与<i>Burstable</i> QoS类一起启动<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">，</a>请求23个CPU标志<code>--cpus 48</code> 。 基准<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">作为</a>具有QoS <i>保证</i>类的<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Pod</a>运行，这需要一个完整插槽中的一组CPU（即该系统上的24个CPU）。 下图显示了标准化的Pod启动时间，在Pod攻击者旁边有一个基准，带有CPU Manager <i>静态</i>策略，而没有CPU Manager <i>静态</i>策略。 在所有测试案例中，启用该策略都可以提高性能，并减少性能差异。 <br><br><img src="https://habrastorage.org/webt/tb/aj/gu/tbajgurqlbubtzm3il4d9vzoh8i.png"><br><br><h3> 相邻负载的绝缘 </h3><br> 这证明了CPU管理器对于许多并置工作负载的有用性。 下面的跨度图显示了PARSEC集合（ <i>Blackscholes</i>和<i>Canneal</i> ）中针对彼此相邻的<i>保证</i> （Gu）和<i>Burstable</i> （Bu）QoS类启动的两个基准的性能，其中<i>静态</i>策略已打开和关闭。 <br><br> 从左上图顺时针方向看，我们看到<i>Black chols</i>的Bu QoS性能（左上）， <i>Canneal</i>的Bu QoS性能（右上）， <i>Canneal</i>的Gu QoS性能（右下）和<i>Blackscholes</i>的Gu QoS性能（左下）。 在每个图表上，它们都与<i>Canneal（</i>用于Gu QoS）（左上）， <i>Blackscholes</i>用于Gu QoS（右上）， <i>Blackscholes</i>用于Bu QoS（右下）和<i>Canneal</i>用于Bu QoS（左下）一起定位（再次沿顺时针方向）。相应地。 例如， <i>Bu-blackscholes-Gu-canneal图</i> （左上方）显示了运行Bu QoS并位于Gu QoS类<i>Canneal</i>旁边的<i>Blackscholes</i>的性能。 在每种情况下，类别为Gu的QoS需要一个完整的套接字内核（即24个CPU），而类别为Bu QoS的则需要23个CPU。 <br><br> 在所有测试中，两个相邻工作负载都有更好的性能，并且性能差异较小。 例如，查看<i>Bu-blackscholes-Gu-canneal</i> （左上）和<i>Gu-canneal-Bu-blackscholes</i> （右下）。 它们显示了在打开和关闭CPU Manager的情况下运行<i>Blackscholes</i>和<i>Canneal</i>的性能。 在这种情况下， <i>Canneal</i>从CPU管理器接收更多专用内核，因为它属于Gu QoS类，并请求整数个CPU内核。 但是， <i>Blackscholes还</i>获得了一组专用的CPU，因为这是共享池中唯一的工作负载。 因此，使用CPU Manager时， <i>Blackscholes</i>和<i>Canneal都</i>可以利用负载隔离。 <br><br><img src="https://habrastorage.org/webt/et/wj/93/etwj93f4gv4pbjyoq8-6_nfmtmm.png"><br><br><h3> 独立负载的绝缘 </h3><br> 它展示了CPU Manager对于现实生活中的独立工作负载有多么有用。 我们从<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">官方TensorFlow模型中</a>提取了两个负载： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">宽和深</a>以及<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ResNet</a> 。 将使用典型数据集（分别为人口普查和CIFAR10）。 在这两种情况下， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">炉床</a> （ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">wide和deep</a> ， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">ResNet</a> ）都需要24个CPU，相当于一个完整的插槽。 如图所示，在两种情况下，CPU Manager都可以提供更好的隔离。 <br><br><img src="https://habrastorage.org/webt/ln/hv/a6/lnhva6g-1coouyustgjq-ziwybk.png"><br><br><h2> 局限性 </h2><br> 用户可能希望在靠近总线的套接字上分配CPU，该总线连接到诸如加速器或高性能网卡之类的外部设备，以避免套接字之间的通信。  CPU管理器尚不支持这种类型的配置。 由于CPU Manager提供了最佳的插槽或物理核心CPU分配，因此它对极端情况敏感，并可能导致碎片。 尽管在某些情况下它是一种常用的做法，但CPU Manager并没有考虑<code>isolcpus</code> Linux内核的启动参数<i>（有关此参数的更多详细信息，请参见，例如， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">此处</a> - <b>大约翻译</b> ）</i> 。 <br><br><h2> 译者的PS </h2><br> 另请参阅我们的博客： <br><br><ul><li>  “ kubectl运行开始时，在Kubernetes中会发生什么？”： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">第1</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">部分</a>和<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">第2部分</a> ； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Kubernetes调度程序实际上是如何工作的？”</a>  “; </li><li>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Kubernetes：《炉边的生活》</a> ； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CRI-O-Docker的替代品，用于在Kubernetes中启动容器</a> ”； </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">我们在小型项目中使用Kubernetes的经验</a> ” <i>（视频报告，其中包括Kubernetes的技术设备介绍）；</i> </li><li>  “ <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">使用Kubernetes作为可负担的服务提供基础设施</a> 。” </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN418269/">https://habr.com/ru/post/zh-CN418269/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN418257/index.html">Github.com拒绝使用jQuery并切换到纯JavaScript</a></li>
+<li><a href="../zh-CN418261/index.html">自制电击枪手套-极客的武器</a></li>
+<li><a href="../zh-CN418263/index.html">俄罗斯科学家正在开发一种紧凑且便宜的MEG系统</a></li>
+<li><a href="../zh-CN418265/index.html">物理机和虚拟机之间的网络交互的组织</a></li>
+<li><a href="../zh-CN418267/index.html">8月IT活动摘要</a></li>
+<li><a href="../zh-CN418271/index.html">用分隔符分隔一行。 关于CONNECT BY的一些知识</a></li>
+<li><a href="../zh-CN418273/index.html">贝加尔湖T1平台的开发工具切换为俄罗斯发行版ALT</a></li>
+<li><a href="../zh-CN418275/index.html">3D打印课程。 从3Dtool打印薄壁模型</a></li>
+<li><a href="../zh-CN418277/index.html">影盒装置</a></li>
+<li><a href="../zh-CN418279/index.html">在Cisco ASA上重置密码，而不会导致活动/备用故障转移电路停机</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
