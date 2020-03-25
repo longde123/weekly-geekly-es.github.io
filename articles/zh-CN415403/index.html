@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎧 🏾 👈🏽 epoll和Windows IO完成端口：实际差异 🤰🏽 🚴🏼 🤣</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="引言 
+ 在本文中，我们将尝试了解epoll机制与实际的完成端口（Windows I / O完成端口或IOCP）有何不同。 对于设计高性能网络服务的系统架构师或将网络代码从Windows移植到Linux或反之亦然的程序员来说，这可能很有趣。 
+
+ 这两种技术对于处理大量网络连接都非常有效。 
+
+ 它...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>epoll和Windows IO完成端口：实际差异</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/infopulse/blog/415403/"><h3> 引言 </h3><br> 在本文中，我们将尝试了解epoll机制与实际的完成端口（Windows I / O完成端口或IOCP）有何不同。 对于设计高性能网络服务的系统架构师或将网络代码从Windows移植到Linux或反之亦然的程序员来说，这可能很有趣。 <br><br> 这两种技术对于处理大量网络连接都非常有效。 <br><br> 它们在以下方面与其他方法不同： <br><br><ul><li> 对观察到的描述符和事件类型的总数没有任何限制（系统资源总量除外） </li><li> 缩放效果很好-如果您已经在监视N个描述符，那么切换到监视N + 1将花费很少的时间和资源 </li><li> 使用线程池并行处理事件非常容易 </li><li> 使用单一网络连接毫无意义。 通过1000多个连接开始显示所有优势 </li></ul><br> 概括以上所有内容，这两种技术均旨在开发可处理来自客户端的许多传入连接的网络服务。 但是同时，它们之间也有很大的区别，在开发相同的服务时，了解它非常重要。 <br><br>  （更新：本文为<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">翻译</a> ） <br><br><a name="habracut"></a><br><h3> 通知类型 </h3><br>  epoll和IOCP之间的第一个也是最重要的区别是，您如何获得事件通知。 <br><br><ul><li>  epoll告诉您描述符何时准备好可以对其进行处理-“ <b>现在您可以开始读取数据了</b> ” </li><li> 当请求的操作完成时，IOCP会告诉您-“ <b>您要求读取数据并在此处读取</b> ” </li></ul><br> 使用epoll应用程序时： <br><br><ul><li> 决定要使用某些描述符（读，写或两者）执行的操作 </li><li> 使用epoll_ctl设置适当的掩码 </li><li> 调用epoll_wait，它将阻塞当前线程，直到发生至少一个预期事件（或超时到期） </li><li> 遍历接收到的事件，获取指向上下文的指针（来自data.ptr字段） </li><li> 根据事件的类型（读取，写入或同时执行两种操作）启动事件处理 </li><li> 操作完成后（应该立即发生），它继续等待数据的接收/发送 </li></ul><br> 使用IOCP应用程序时： <br><br><ul><li> 使用非空的OVERLAPPED参数为某些描述符启动某些操作（ReadFile或WriteFile）。 操作系统将执行此操作的要求添加到队列中的自身，然后被调用的函数立即（无需等待操作完成）返回。 </li><li> 调用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">GetQueuedCompletionStatus（）</a> ，它将阻塞当前线程，直到恰好先前添加的请求之一完成为止。 如果完成了几个操作，则只会选择其中一个。 </li><li> 它使用完成键和指向OVERLAPPED的指针来处理接收到的操作完成通知。 </li><li> 继续等待数据的接收/发送 </li></ul><br> 通知类型的差异使使用epoll模拟IOCP成为可能（并且非常琐碎）。 例如， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Wine</a>项目就是这样做的。 但是，做相反的事情并不是那么简单。 即使您成功，也可能会导致性能下降。 <br><br><h3> 资料可用性 </h3><br> 如果您打算读取数据，那么您的代码应该在打算读取数据的地方具有某种缓冲区。 如果您打算发送数据，则应该有一个准备发送数据的缓冲区。 <br><br><ul><li>  epoll完全不担心这些缓冲区的存在，也不以任何方式使用它们 </li><li>  IOCP需要这些缓冲区。 使用IOCP的全部要点是“从该套接字读取256个字节到此缓冲区中”的工作方式。 我们形成了这样一个请求，将其提供给操作系统，我们正在等待操作完成的通知（此时请勿触摸缓冲区！） </li></ul><br> 典型的网络服务与连接对象一起运行，该连接对象将包括用于读取/写入数据的描述符和关联的缓冲区。 通常，当关闭相应的插槽时，这些对象会被破坏。 这在使用IOCP时施加了一些限制。 <br><br>  IOCP的工作原理是，将用于读取和写入数据的请求添加到队列中，这些请求以队列的顺序（即稍后的某个时间）执行。 在这两种情况下，传输的缓冲区必须继续存在，直到完成所需的操作为止。 而且，在等待时甚至无法修改这些缓冲区中的数据。 这施加了重要的限制： <br><br><ul><li> 您不能将局部变量（放在堆栈上）用作缓冲区。 必须在完成读/写操作之前验证缓冲区，并在当前函数退出时破坏堆栈 </li><li> 您不能动态分配缓冲区（例如，事实证明您需要发送更多数据，并且想要增加缓冲区）。 您只能创建一个新的缓冲区和一个新的发送请求 </li><li> 如果编写类似代理的内容，则当读取和发送相同的数据时，将不得不为它们使用两个单独的缓冲区。 您不能要求操作系统在一个请求中读取缓冲区中的数据，而在另一个请求中将其发送到该位置 </li><li> 您需要仔细考虑连接管理器类将如何破坏每个特定的连接。 您应该完全保证在破坏连接时没有使用该连接缓冲区的单个请求来读取/写入数据 </li></ul><br>  IOCP操作还需要传递指向OVERLAPPED结构的指针，该结构还必须继续存在（并且不能重用），直到完成预期的操作为止。 这意味着，如果需要同时读取和写入数据，则无法继承OVERLAPPED结构（通常会想到这种想法）。 相反，您需要将两个OVERLAPPED结构存储在您自己的单独类中，将其中一个传递给读取请求，将另一个传递给写请求。 <br><br>  epoll不使用用户代码传递给它的任何缓冲区，因此所有这些问题都与它无关。 <br><br><h3> 更改等待条件 </h3><br> 对于epoll和IOCP，添加一种新型的预期事件（例如，我们正在等待机会从套接字读取数据，现在我们也希望能够发送它们）是可能的，而且非常简单。  epoll允许您更改期望事件的掩码（在任何时间，甚至从另一个线程更改），而IOCP则允许您启动另一个操作以等待新的事件类型。 <br><br> 但是，更改或删除预期事件是不同的。  epoll仍然允许您通过调用epoll_ctl（包括来自其他线程）来修改条件。  IOCP越来越难。 如果计划了I / O操作，则可以通过调用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">CancelIo（）</a>函数将其取消。 更糟糕的是，只有启动初始操作的同一线程才能调用此函数。 关于此限制，组织一个单独的控制流的所有想法都被打破了。 另外，即使在调用CancelIo（）之后，我们也无法确定操作是否会立即被取消（它可能已经在进行中，它使用OVERLAPPED结构和传递的缓冲区进行读/写）。 我们仍然必须等待操作完成（其结果将由GetOverlappedResult（）函数返回），然后才可以释放缓冲区。 <br><br>  IOCP的另一个问题是，一旦调度了要执行的操作，就不能再对其进行更改。 例如，您不能更改已调度的ReadFile请求，并说只想读取10个字节，而不是8192个字节。您需要取消当前操作并开始一个新操作。 对于epoll来说，这不是问题，当您开始等待时，它不知道在收到有关读取数据功能的通知时，您想读取多少数据。 <br><br><h3> 非阻塞连接 </h3><br> 网络服务的某些实现（相关服务，FTP，p2p）需要传出连接。  epoll和IOCP都支持非阻塞连接请求，但是方式不同。 <br><br> 使用epoll时，代码通常与select或poll相同。 您创建一个非阻塞套接字，为其调用connect（）并等待有关其可用性的通知。 <br><br> 使用IOCP时，您需要使用单独的ConnectEx函数，因为对connect（）的调用不接受OVERLAPPED结构，这意味着以后它无法生成有关套接字状态更改的通知。 因此，连接启动代码不仅会与使用epoll的代码不同，甚至会与使用select或poll的Windows代码不同。 但是，这些更改可以认为是最小的。 <br><br> 有趣的是，accept（）照常与IOCP一起使用。 有一个AcceptEx函数，但是它的作用与非阻塞连接完全无关。 这不是“非阻塞接受”，就像您可能会想起connect / ConnectEx。 <br><br><h3> 事件监控 </h3><br> 通常，在触发事件之后，其他数据很快就会到来。 例如，我们期望套接字的输入使用epoll或IOCP到达，我们得到了有关数据的前几个字节的事件，然后在读取它们的同时，又出现了另外一百个字节。 我可以在不重新启动事件监视的情况下阅读它们吗？ <br><br> 可以使用epoll。 您将获得“现在可以读取某些内容”事件-并且您读取了可以从套接字读取的所有内容（直到收到EAGAIN错误）。 发送数据也是如此-当您收到套接字已准备好发送数据的信号时，您可以向其中写入内容，直到写入函数返回EAGAIN。 <br><br> 使用IOCP，这将无法工作。 如果您要求套接字读取或发送10个字节的数据-则将读取/发送多少数据（即使可以完成更多操作）。 对于每个后续块，您需要使用ReadFile或WriteFile发出一个单独的请求，然后等待直到它执行为止。 这会造成更高的复杂性。 考虑以下示例： <br><br><ol><li> 套接字类通过调用ReadFile创建了读取数据的请求。 线程A和B通过调用GetOverlappedResult（）等待结果 </li><li> 读取操作完成后，线程A收到通知，并调用了套接字类方法来处理接收到的数据 </li><li> 套接字类认为此数据还不够，我们应该期待以下内容。 它发出另一个读取请求。 </li><li> 该请求将立即执行（数据已经到达，操作系统可以立即发送）。 流B接收通知，读取数据，并将其传递给套接字类。 </li><li> 目前，从流A和B调用了读取套接字类中的数据的功能，这可能导致数据损坏的风险（不使用同步对象），或者导致额外的暂停（使用同步对象时） </li></ol><br> 在这种情况下，使用同步对象通常很困难。 好吧，如果他一个人。 但是，如果我们有100,000个连接，并且每个连接都具有某种同步对象，则这可能会严重影响系统的资源。 并且，如果您仍然保留2个（如果分开处理读写请求）？ 更糟的是。 <br><br> 这里通常的解决方案是创建一个连接管理器类，该类将负责为该连接类调用ReadFile或WriteFile。 这样效果更好，但会使代码更复杂。 <br><br><h3> 结论 </h3><br>  epoll和IOCP均适用于（并在实践中使用）编写可处理大量连接的高性能网络服务。 这些技术本身在处理事件的方式上有所不同。 这些差异是如此之大，以至于几乎没有必要尝试以某种共同的基础来编写它们（相同代码的数量将是最小的）。 我曾几次尝试将两种方法都引入某种通用解决方案-每次与两个独立的实现相比，结果在复杂性，可读性和支持方面都更差。 每次都必须放弃获得的普遍结果。 <br><br> 当将代码从一个平台移植到另一个平台时，通常更容易将IOCP代码移植为使用epoll，反之亦然。 <br><br> 温馨提示： <br><br><ul><li> 如果您的任务是开发跨平台网络服务，则应从使用IOCP的Windows实施开始。 一切准备就绪并调试完毕后，添加一个简单的epoll后端。 </li><li> 您不应该尝试编写同时实现epoll和IOCP逻辑的通用类Connection和ConnectionMgr。 从代码体系结构的角度来看，它看起来很糟糕，并导致了一大堆包含不同逻辑的#ifdef。 更好地使基类并从它们继承单独的实现。 在基类中，可以保留一些常规方法或数据（如果有）。 </li><li> 密切监视Connection类（或任何您称呼该类的对象，它们将在其中存储用于接收/发送的数据的缓冲区）的生存期。 在使用其缓冲区进行计划的读/写操作之前，不应销毁它。 </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN415403/">https://habr.com/ru/post/zh-CN415403/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN415393/index.html">Kubernetes：炉膛的生活</a></li>
+<li><a href="../zh-CN415395/index.html">涟漪电视</a></li>
+<li><a href="../zh-CN415397/index.html">PICASO 3D参加2018年3D顶级博览会-新型3D打印机，新材料</a></li>
+<li><a href="../zh-CN415399/index.html">为什么免费的Fortnite DVD价格会涨到$ 450</a></li>
+<li><a href="../zh-CN415401/index.html">我们解决了一百万个打开标签或“帮助硬件生存”的问题</a></li>
+<li><a href="../zh-CN415405/index.html">富士通PRIMERGY RX2540 M4服务器审查和测试</a></li>
+<li><a href="../zh-CN415407/index.html">戈德维尔-除了笑话</a></li>
+<li><a href="../zh-CN415409/index.html">3Dtool Raise3D PRO2 3D打印机评论</a></li>
+<li><a href="../zh-CN415411/index.html">从悬浮的唱片到纸箱的声音-6种有趣的黑胶小工具</a></li>
+<li><a href="../zh-CN415413/index.html">跨功能，依赖性管理器，iOS和UI测试中的监视。 Avito iOS Summer Edition怎么样</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

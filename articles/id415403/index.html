@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>☝️ 👩🏼‍💼 🌀 epoll dan Windows IO Completion Ports: perbedaan praktis 🎶 👾 🕳️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Pendahuluan 
+ Pada artikel ini, kita akan mencoba memahami bagaimana mekanisme epoll berbeda dari port penyelesaian dalam praktiknya (Windows I / O Co...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>epoll dan Windows IO Completion Ports: perbedaan praktis</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/infopulse/blog/415403/"><h3>  Pendahuluan </h3><br>  Pada artikel ini, kita akan mencoba memahami bagaimana mekanisme epoll berbeda dari port penyelesaian dalam praktiknya (Windows I / O Completion Port atau IOCP).  Ini mungkin menarik untuk arsitek sistem yang mendesain layanan jaringan berkinerja tinggi atau pemrogram porting kode jaringan dari Windows ke Linux atau sebaliknya. <br><br>  Kedua teknologi ini sangat efektif untuk menangani sejumlah besar koneksi jaringan. <br><br>  Mereka berbeda dari metode lain dalam hal-hal berikut: <br><br><ul><li>  Tidak ada batasan (kecuali untuk total sumber daya sistem) pada jumlah total deskriptor yang diamati dan jenis acara </li><li>  Penskalaan berfungsi dengan baik - jika Anda sudah memantau penjelas N, maka beralih ke pemantauan N + 1 akan membutuhkan sedikit waktu dan sumber daya </li><li>  Cukup mudah untuk menggunakan kumpulan utas untuk memproses acara secara paralel </li><li>  Tidak ada gunanya menggunakan koneksi jaringan tunggal.  Semua manfaat mulai muncul dengan 1.000+ koneksi </li></ul><br>  Mengutip semua hal di atas, kedua teknologi ini dirancang untuk mengembangkan layanan jaringan yang memproses banyak koneksi masuk dari klien.  Tetapi pada saat yang sama, ada perbedaan yang signifikan antara mereka dan ketika mengembangkan layanan yang sama, penting untuk mengetahuinya. <br><br>  (Pembaruan: artikel ini adalah <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">terjemahan</a> ) <br><br><a name="habracut"></a><br><h3>  Jenis pemberitahuan </h3><br>  Perbedaan pertama dan paling penting antara epoll dan IOCP adalah bagaimana Anda diberitahu tentang suatu peristiwa. <br><br><ul><li>  epoll memberi tahu Anda ketika deskriptor siap untuk dapat melakukan sesuatu dengannya - " <b>sekarang Anda dapat mulai membaca data</b> " </li><li>  IOCP memberi tahu Anda ketika operasi yang diminta selesai - " <b>Anda diminta membaca data dan ini dia baca</b> " </li></ul><br>  Saat menggunakan aplikasi epoll: <br><br><ul><li>  Memutuskan operasi mana yang ingin dilakukan dengan beberapa deskriptor (baca, tulis, atau keduanya) </li><li>  Setel topeng yang sesuai menggunakan epoll_ctl </li><li>  Panggilan epoll_wait, yang memblokir utas saat ini hingga setidaknya satu peristiwa yang diharapkan terjadi (atau batas waktu habis) </li><li>  Iterate atas peristiwa yang diterima, mengambil pointer ke konteks (dari bidang data.ptr) </li><li>  Memulai pemrosesan peristiwa menurut jenisnya (baca, tulis, atau keduanya operasi) </li><li>  Setelah operasi selesai (apa yang harus terjadi segera), ia terus menunggu data diterima / dikirim </li></ul><br>  Saat menggunakan aplikasi IOCP: <br><br><ul><li>  Memulai beberapa operasi (ReadFile atau WriteFile) untuk beberapa deskriptor, menggunakan argumen OVERLAPPED yang tidak kosong.  Sistem operasi menambahkan persyaratan untuk melakukan operasi ini ke antriannya, dan fungsi yang dipanggil segera (tanpa menunggu operasi selesai) kembali. </li><li>  Panggilan <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">GetQueuedCompletionStatus ()</a> , yang memblokir utas saat ini sampai salah satu dari permintaan yang ditambahkan sebelumnya selesai.  Jika beberapa telah selesai, hanya satu yang akan dipilih. </li><li>  Ini memproses notifikasi yang diterima dari penyelesaian operasi menggunakan kunci penyelesaian dan pointer ke OVERLAPPED. </li><li>  Terus menunggu data diterima / dikirim </li></ul><br>  Perbedaan jenis pemberitahuan memungkinkan (dan sangat sepele) untuk meniru IOCP menggunakan epoll.  Misalnya, proyek <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">Wine</a> melakukan hal itu.  Namun, melakukan yang sebaliknya tidaklah sesederhana itu.  Bahkan jika Anda berhasil, kemungkinan akan mengakibatkan hilangnya kinerja. <br><br><h3>  Ketersediaan data </h3><br>  Jika Anda berencana untuk membaca data, maka kode Anda harus memiliki semacam buffer di mana Anda berencana untuk membacanya.  Jika Anda berencana untuk mengirim data, harus ada buffer dengan data yang siap dikirim. <br><br><ul><li>  epoll sama sekali tidak khawatir tentang keberadaan buffer ini dan tidak menggunakannya </li><li>  IOCP, buffer ini diperlukan.  Inti dari menggunakan IOCP adalah pekerjaan dengan gaya "baca saya 256 byte dari soket ini ke buffer ini".  Kami membentuk permintaan seperti itu, memberikannya ke OS, kami sedang menunggu pemberitahuan penyelesaian operasi (dan jangan menyentuh buffer saat ini!) </li></ul><br>  Layanan jaringan tipikal beroperasi dengan objek koneksi, yang akan mencakup deskriptor dan buffer terkait untuk membaca / menulis data.  Biasanya, benda-benda ini hancur ketika soket yang sesuai ditutup.  Dan ini memberlakukan beberapa batasan saat menggunakan IOCP. <br><br>  IOCP bekerja dengan menambahkan permintaan antrian untuk membaca dan menulis data, permintaan ini dieksekusi dalam urutan antrian (mis. Beberapa waktu kemudian).  Dalam kedua kasus, buffer yang ditransfer harus terus ada hingga selesainya operasi yang diperlukan.  Selain itu, seseorang bahkan tidak dapat memodifikasi data dalam buffer ini sambil menunggu.  Ini memberlakukan batasan penting: <br><br><ul><li>  Anda tidak dapat menggunakan variabel lokal (ditempatkan di tumpukan) sebagai buffer.  Buffer harus divalidasi sebelum operasi baca / tulis selesai, dan tumpukan dihancurkan ketika fungsi saat ini keluar </li><li>  Anda tidak dapat merealokasi buffer dengan cepat (misalnya, ternyata Anda perlu mengirim lebih banyak data dan Anda ingin menambah buffer).  Anda hanya dapat membuat buffer baru dan permintaan kirim baru </li><li>  Jika Anda menulis sesuatu seperti proxy, ketika data yang sama akan dibaca dan dikirim, Anda harus menggunakan dua buffer terpisah untuknya.  Anda tidak dapat meminta OS untuk membaca data dalam buffer dalam satu permintaan, dan dalam permintaan lain kirim data ini di sana </li><li>  Anda perlu berpikir hati-hati tentang bagaimana kelas manajer koneksi Anda akan menghancurkan setiap koneksi tertentu.  Anda harus memiliki jaminan penuh bahwa pada saat penghancuran koneksi tidak ada satu permintaan untuk membaca / menulis data menggunakan buffer dari koneksi ini. </li></ul><br>  Operasi IOCP juga mensyaratkan melewatkan pointer ke struktur OVERLAPPED, yang juga harus terus ada (dan tidak dapat digunakan kembali) sampai penyelesaian operasi yang diharapkan.  Ini berarti bahwa jika Anda perlu membaca dan menulis data pada saat yang sama, Anda tidak dapat mewarisi dari struktur OVERLAPPED (sebuah ide yang sering muncul di pikiran).  Sebagai gantinya, Anda perlu menyimpan dua struktur OVERLAPPED di kelas terpisah Anda sendiri, melewati salah satunya ke dalam permintaan baca dan yang lainnya ke dalam permintaan tulis. <br><br>  epoll tidak menggunakan buffer apa pun yang diteruskan dari kode pengguna, jadi semua masalah ini tidak ada hubungannya dengan itu. <br><br><h3>  Ubah kondisi tunggu </h3><br>  Menambahkan jenis baru dari acara yang diharapkan (misalnya, kami sedang menunggu kesempatan untuk membaca data dari soket, dan sekarang kami juga ingin dapat mengirimkannya) adalah mungkin dan cukup sederhana untuk epoll dan IOCP.  epoll memungkinkan Anda untuk mengubah topeng acara yang diharapkan (kapan saja, bahkan dari utas lainnya), dan IOCP memungkinkan Anda untuk memulai operasi lain untuk menunggu jenis acara baru. <br><br>  Namun mengubah atau menghapus acara yang diharapkan berbeda.  epoll masih memungkinkan Anda untuk mengubah kondisinya dengan memanggil epoll_ctl (termasuk dari utas lainnya).  IOCP semakin sulit.  Jika operasi I / O direncanakan, itu dapat dibatalkan dengan memanggil fungsi <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u=">CancelIo ()</a> .  Lebih buruk lagi, hanya utas yang sama yang memulai operasi awal yang dapat memanggil fungsi ini.  Semua ide untuk mengatur aliran kontrol terpisah rusak tentang batasan ini.  Selain itu, bahkan setelah memanggil CancelIo (), kami tidak dapat memastikan bahwa operasi akan segera dibatalkan (mungkin sudah dalam proses, ia menggunakan struktur OVERLAPPED dan buffer yang diteruskan untuk membaca / menulis).  Kita masih harus menunggu sampai operasi selesai (hasilnya akan dikembalikan oleh fungsi GetOverlappedResult ()) dan hanya setelah itu kita dapat membebaskan buffer. <br><br>  Masalah lain dengan IOCP adalah bahwa begitu suatu operasi telah dijadwalkan untuk dieksekusi, itu tidak lagi dapat diubah.  Misalnya, Anda tidak dapat mengubah permintaan ReadFile yang dijadwalkan dan mengatakan bahwa Anda ingin membaca hanya 10 byte, bukan 8192. Anda harus membatalkan operasi saat ini dan memulai yang baru.  Ini bukan masalah bagi epoll, yang ketika Anda mulai menunggu, tidak tahu berapa banyak data yang ingin Anda baca saat pemberitahuan tentang kemampuan membaca data datang. <br><br><h3>  Koneksi non-pemblokiran </h3><br>  Beberapa implementasi layanan jaringan (layanan terkait, FTP, p2p) memerlukan koneksi keluar.  Baik epoll dan IOCP mendukung permintaan koneksi non-blocking, tetapi dengan cara yang berbeda. <br><br>  Saat menggunakan epoll, kode ini umumnya sama dengan untuk pilih atau jajak pendapat.  Anda membuat soket yang tidak terblokir, panggil koneksi () untuknya dan tunggu pemberitahuan tentang ketersediaannya untuk ditulis. <br><br>  Saat menggunakan IOCP, Anda perlu menggunakan fungsi ConnectEx yang terpisah, karena panggilan untuk menyambung () tidak menerima struktur OVERLAPPED, yang berarti tidak dapat membuat pemberitahuan tentang perubahan kondisi soket nanti.  Jadi kode inisiasi koneksi tidak hanya akan berbeda dari kode menggunakan epoll, bahkan akan berbeda dari kode Windows menggunakan pilih atau polling.  Namun, perubahan bisa dianggap minimal. <br><br>  Menariknya, terima () bekerja dengan IOCP seperti biasa.  Ada fungsi AcceptEx, tetapi perannya sama sekali tidak terkait dengan koneksi yang tidak menghalangi.  Ini bukan "penerimaan non-pemblokiran", seperti yang mungkin Anda pikirkan secara analogi dengan connect / ConnectEx. <br><br><h3>  Pemantauan acara </h3><br>  Seringkali setelah memicu suatu peristiwa, data tambahan datang dengan sangat cepat.  Sebagai contoh, kami mengharapkan input dari soket tiba menggunakan epoll atau IOCP, kami mendapatkan acara tentang beberapa byte data pertama, dan di sana, saat kami membacanya, ratusan byte lainnya datang.  Bisakah saya membacanya tanpa memulai kembali pemantauan acara? <br><br>  Menggunakan epoll dimungkinkan.  Anda mendapatkan acara "sesuatu sekarang dapat dibaca" - dan Anda membaca semua yang dapat dibaca dari soket (sampai Anda mendapatkan kesalahan EAGAIN).  Hal yang sama dengan mengirim data - ketika Anda menerima sinyal bahwa soket siap untuk mengirim data, Anda dapat menulis sesuatu ke dalamnya sampai fungsi tulis mengembalikan EAGAIN. <br><br>  Dengan IOCP ini tidak akan berfungsi.  Jika Anda meminta soket untuk membaca atau mengirim 10 byte data - itu adalah berapa banyak yang akan dibaca / dikirim (bahkan jika lebih banyak sudah bisa dilakukan).  Untuk setiap blok berikutnya, Anda perlu membuat permintaan terpisah menggunakan ReadFile atau WriteFile, dan kemudian tunggu sampai dieksekusi.  Ini dapat menciptakan tingkat kerumitan tambahan.  Perhatikan contoh berikut: <br><br><ol><li>  Kelas soket membuat permintaan untuk membaca data dengan memanggil ReadFile.  Utas A dan B menunggu hasilnya dengan memanggil GetOverlappedResult () </li><li>  Operasi baca selesai, utas A menerima pemberitahuan dan memanggil metode kelas soket untuk memproses data yang diterima </li><li>  Kelas soket memutuskan bahwa data ini tidak cukup, kita harus mengharapkan yang berikut ini.  Ini menempatkan permintaan baca lainnya. </li><li>  Permintaan ini dieksekusi segera (data telah tiba, OS dapat segera mengirimnya).  Stream B menerima pemberitahuan, membaca data, dan meneruskannya ke kelas soket. </li><li>  Saat ini, fungsi membaca data dalam kelas soket dipanggil dari kedua aliran A dan B, yang mengarah pada risiko korupsi data (tanpa menggunakan objek sinkronisasi), atau ke jeda tambahan (saat menggunakan objek sinkronisasi) </li></ol><br>  Dengan objek sinkronisasi dalam hal ini umumnya sulit.  Nah, jika dia sendirian.  Tetapi jika kita memiliki 100.000 koneksi dan masing-masing dari mereka akan memiliki semacam objek sinkronisasi, ini dapat secara serius menekan sumber daya sistem.  Dan jika Anda masih menyimpan 2 (dalam kasus pemisahan permintaan pemrosesan untuk membaca dan menulis)?  Lebih buruk lagi. <br><br>  Solusi yang biasa di sini adalah membuat kelas manajer koneksi yang akan bertanggung jawab untuk memanggil ReadFile atau WriteFile untuk kelas koneksi.  Ini berfungsi lebih baik, tetapi membuat kode lebih kompleks. <br><br><h3>  Kesimpulan </h3><br>  Baik epoll dan IOCP cocok (dan digunakan dalam praktiknya) untuk menulis layanan jaringan berkinerja tinggi yang dapat menangani sejumlah besar koneksi.  Teknologi itu sendiri berbeda dalam cara mereka menangani acara.  Perbedaan-perbedaan ini sangat signifikan sehingga hampir tidak layak untuk mencoba menuliskannya pada beberapa basis umum (jumlah kode yang sama akan minimal).  Beberapa kali saya berusaha untuk membawa kedua pendekatan ke beberapa jenis solusi universal - dan setiap kali hasilnya lebih buruk dalam hal kompleksitas, keterbacaan dan dukungan dibandingkan dengan dua implementasi independen.  Hasil universal yang diperoleh harus diabaikan setiap kali. <br><br>  Saat porting kode dari satu platform ke platform lain, biasanya lebih mudah untuk porting kode IOCP untuk menggunakan epoll daripada sebaliknya. <br><br>  Kiat: <br><br><ul><li>  Jika tugas Anda adalah mengembangkan layanan jaringan lintas platform, Anda harus mulai dengan implementasi Windows menggunakan IOCP.  Setelah semuanya siap dan debugged - tambahkan trioll backend sepele. </li><li>  Anda sebaiknya tidak mencoba menulis kelas umum Connection dan ConnectionMgr yang mengimplementasikan logika epoll dan IOCP secara bersamaan.  Ini terlihat buruk dari sudut pandang arsitektur kode dan mengarah ke sekelompok semua jenis #ifdef dengan logika berbeda di dalamnya.  Lebih baik membuat kelas dasar dan mewarisi implementasi yang terpisah dari mereka.  Di kelas dasar, Anda dapat menyimpan beberapa metode atau data umum, jika ada. </li><li>  Pantau dengan cermat masa objek dari kelas Koneksi (atau apa pun yang Anda sebut kelas tempat buffer untuk data yang diterima / dikirim akan disimpan).  Tidak boleh dimusnahkan sampai operasi baca / tulis yang dijadwalkan menggunakan buffernya selesai. </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/id415403/">https://habr.com/ru/post/id415403/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id415393/index.html">Kubernetes: kehidupan perapian</a></li>
+<li><a href="../id415395/index.html">TV Riak</a></li>
+<li><a href="../id415397/index.html">PICASO 3D di Top 3D Expo 2018 - printer 3D baru, bahan baru</a></li>
+<li><a href="../id415399/index.html">Mengapa harga DVD Fortnite gratis naik menjadi $ 450</a></li>
+<li><a href="../id415401/index.html">Kami memecahkan masalah sejuta tab terbuka atau "membantu perangkat keras bertahan"</a></li>
+<li><a href="../id415405/index.html">Ulasan dan Uji Server Fujitsu PRIMERGY RX2540 M4</a></li>
+<li><a href="../id415407/index.html">Godville - kecuali untuk lelucon</a></li>
+<li><a href="../id415409/index.html">Ulasan Printer 3Dtool Raise3D PRO2 3D</a></li>
+<li><a href="../id415411/index.html">Dari melayang catatan ke suara dari kotak kardus - 6 gadget menarik untuk vinil</a></li>
+<li><a href="../id415413/index.html">Fungsionalitas silang, manajer dependensi, pemantauan dalam tes iOS dan UI. Bagaimana Avito iOS Summer Edition</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

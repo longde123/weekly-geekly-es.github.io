@@ -1,0 +1,117 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎚️ 👩🏾‍🤝‍👨🏿 ⏏️ Ports de finalisation epoll et Windows IO: la différence pratique 🥋 👩🏽‍🤝‍👨🏿 🕢</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Présentation 
+ Dans cet article, nous allons essayer de comprendre en quoi le mécanisme epoll diffère des ports d'achèvement dans la pratique (Windows...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Ports de finalisation epoll et Windows IO: la différence pratique</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/infopulse/blog/415403/"><h3>  Présentation </h3><br>  Dans cet article, nous allons essayer de comprendre en quoi le mécanisme epoll diffère des ports d'achèvement dans la pratique (Windows I / O Completion Port ou IOCP).  Cela peut être intéressant pour les architectes système qui conçoivent des services réseau hautes performances ou pour les programmeurs qui portent du code réseau de Windows vers Linux ou vice versa. <br><br>  Ces deux technologies sont très efficaces pour gérer un grand nombre de connexions réseau. <br><br>  Ils diffèrent des autres méthodes sur les points suivants: <br><br><ul><li>  Il n'y a aucune restriction (sauf pour les ressources système totales) sur le nombre total de descripteurs et de types d'événements observés </li><li>  La mise à l'échelle fonctionne plutôt bien - si vous surveillez déjà N descripteurs, le passage à la surveillance N + 1 prendra très peu de temps et de ressources </li><li>  Il est assez facile d'utiliser un pool de threads pour traiter des événements en parallèle </li><li>  Il est inutile d'utiliser des connexions réseau uniques.  Tous les avantages commencent à apparaître avec plus de 1000 connexions </li></ul><br>  Pour paraphraser tout ce qui précède, ces deux technologies sont conçues pour développer des services réseau qui traitent de nombreuses connexions entrantes des clients.  Mais en même temps, il y a une différence significative entre eux et lors du développement des mêmes services, il est important de le connaître. <br><br>  (Mise à jour: cet article est une <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">traduction</a> ) <br><br><a name="habracut"></a><br><h3>  Type de notifications </h3><br>  La première et la plus importante différence entre epoll et IOCP est la façon dont vous êtes informé d'un événement. <br><br><ul><li>  epoll vous indique quand le descripteur est prêt à pouvoir faire quelque chose avec lui - " <b>maintenant vous pouvez commencer à lire les données</b> " </li><li>  IOCP vous indique quand l'opération demandée est terminée - " <b>vous avez demandé à lire les données et ici elles sont lues</b> " </li></ul><br>  Lors de l'utilisation de l'application epoll: <br><br><ul><li>  Décide quelle opération il souhaite effectuer avec un certain descripteur (lecture, écriture ou les deux) </li><li>  Définit le masque approprié à l'aide d'epoll_ctl </li><li>  Appelle epoll_wait, qui bloque le thread actuel jusqu'à ce qu'au moins un événement attendu se produise (ou que le délai expire) </li><li>  Itère sur les événements reçus, prend un pointeur sur le contexte (depuis le champ data.ptr) </li><li>  Lance le traitement des événements en fonction de leur type (lecture, écriture ou les deux opérations) </li><li>  Une fois l'opération terminée (ce qui doit se produire immédiatement), elle continue d'attendre la réception / l'envoi des données </li></ul><br>  Lors de l'utilisation de l'application IOCP: <br><br><ul><li>  Lance une opération (ReadFile ou WriteFile) pour un descripteur, en utilisant l'argument OVERLAPPED non vide.  Le système d'exploitation ajoute l'exigence d'effectuer cette opération à lui-même dans la file d'attente, et la fonction appelée immédiatement (sans attendre la fin de l'opération) revient. </li><li>  Appelle <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">GetQueuedCompletionStatus ()</a> , qui bloque le thread actuel jusqu'à ce qu'une des requêtes précédemment ajoutées se termine.  Si plusieurs sont terminés, un seul d'entre eux sera sélectionné. </li><li>  Il traite la notification reçue de la fin de l'opération en utilisant la clé de fin et un pointeur sur OVERLAPPED. </li><li>  Continue d'attendre la réception / l'envoi des données </li></ul><br>  La différence dans le type de notifications permet (et assez trivial) d'émuler IOCP en utilisant epoll.  Par exemple, le projet <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">Wine</a> fait exactement cela.  Cependant, faire le contraire n'est pas si simple.  Même si vous réussissez, cela entraînera probablement une perte de performances. <br><br><h3>  Disponibilité des données </h3><br>  Si vous prévoyez de lire des données, votre code devrait avoir une sorte de tampon où vous prévoyez de les lire.  Si vous prévoyez d'envoyer des données, il devrait y avoir un tampon avec des données prêtes à être envoyées. <br><br><ul><li>  epoll ne s'inquiète pas du tout de la présence de ces tampons et ne les utilise en aucune façon </li><li>  IOCP ces tampons sont nécessaires.  L'intérêt de l'utilisation d'IOCP est le travail dans le style de "me lire 256 octets de cette socket dans ce tampon".  Nous avons formé une telle demande, l'avons remise à l'OS, nous attendons la notification de la fin de l'opération (et ne touchez pas au tampon pour le moment!) </li></ul><br>  Un service réseau typique fonctionne avec des objets de connexion, qui comprendront des descripteurs et des tampons associés pour lire / écrire des données.  En règle générale, ces objets sont détruits lorsque le socket correspondant est fermé.  Et cela impose certaines limitations lors de l'utilisation d'IOCP. <br><br>  IOCP fonctionne en ajoutant à la file d'attente des demandes de lecture et d'écriture de données, ces demandes sont exécutées dans l'ordre de la file d'attente (c'est-à-dire un peu plus tard).  Dans les deux cas, les tampons transférés doivent continuer d'exister jusqu'à la fin des opérations requises.  De plus, on ne peut même pas modifier les données de ces tampons en attendant.  Cela impose des limitations importantes: <br><br><ul><li>  Vous ne pouvez pas utiliser de variables locales (placées sur la pile) comme tampon.  Le tampon doit être validé avant la fin de l'opération de lecture / écriture et la pile est détruite lorsque la fonction actuelle se termine </li><li>  Vous ne pouvez pas réaffecter le tampon à la volée (par exemple, il s'est avéré que vous devez envoyer plus de données et que vous souhaitez augmenter le tampon).  Vous ne pouvez créer qu'un nouveau tampon et une nouvelle demande d'envoi </li><li>  Si vous écrivez quelque chose comme un proxy, lorsque les mêmes données seront lues et envoyées, vous devrez utiliser deux tampons distincts pour elles.  Vous ne pouvez pas demander au système d'exploitation de lire les données dans un tampon dans une demande, et dans une autre demande, envoyez ces données directement </li><li>  Vous devez réfléchir soigneusement à la façon dont votre classe de gestionnaire de connexions détruira chaque connexion particulière.  Vous devez avoir une garantie complète qu'au moment de la destruction de la connexion, il n'y a pas une seule demande de lecture / écriture de données à l'aide des tampons de cette connexion </li></ul><br>  Les opérations IOCP nécessitent également de passer un pointeur vers une structure OVERLAPPED, qui doit également continuer d'exister (et ne pas être réutilisée) jusqu'à la fin de l'opération attendue.  Cela signifie que si vous devez lire et écrire des données en même temps, vous ne pouvez pas hériter de la structure OVERLAPPED (une idée qui vient souvent à l'esprit).  Au lieu de cela, vous devez stocker les deux structures OVERLAPPED dans votre propre classe distincte, en passant l'une d'elles dans des demandes de lecture et l'autre dans des demandes d'écriture. <br><br>  epoll n'utilise pas de tampons qui lui sont passés depuis le code utilisateur, donc tous ces problèmes n'y sont pour rien. <br><br><h3>  Changer les conditions d'attente </h3><br>  L'ajout d'un nouveau type d'événements attendus (par exemple, nous attendions l'occasion de lire les données du socket, et maintenant nous voulions également pouvoir les envoyer) est possible et assez simple pour epoll et IOCP.  epoll vous permet de modifier le masque des événements attendus (à tout moment, même à partir d'un autre thread), et IOCP vous permet de démarrer une autre opération pour attendre un nouveau type d'événement. <br><br>  La modification ou la suppression des événements attendus est cependant différente.  epoll vous permet toujours de modifier la condition en appelant epoll_ctl (y compris à partir d'autres threads).  L'IOCP devient plus difficile.  Si une opération d'E / S était prévue, elle peut être annulée en appelant la fonction <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">CancelIo ()</a> .  Pire, seul le même thread qui a démarré l'opération initiale peut appeler cette fonction.  Toutes les idées d'organisation d'un flux de contrôle séparé sont brisées à propos de cette limitation.  De plus, même après avoir appelé CancelIo (), nous ne pouvons pas être sûrs que l'opération sera immédiatement annulée (elle peut déjà être en cours, elle utilise la structure OVERLAPPED et le tampon passé pour la lecture / écriture).  Nous devons encore attendre que l'opération soit terminée (son résultat sera retourné par la fonction GetOverlappedResult ()) et seulement après cela, nous pouvons libérer le tampon. <br><br>  Un autre problème avec IOCP est qu'une fois qu'une opération a été planifiée pour exécution, elle ne peut plus être modifiée.  Par exemple, vous ne pouvez pas modifier la demande ReadFile planifiée et dire que vous souhaitez lire uniquement 10 octets, pas 8192. Vous devez annuler l'opération en cours et en démarrer une nouvelle.  Ce n'est pas un problème pour epoll qui, lorsque vous commencez à attendre, n'a aucune idée de la quantité de données que vous souhaitez lire au moment de la notification de la capacité de lire les données. <br><br><h3>  Connexion non bloquante </h3><br>  Certaines implémentations de services réseau (services associés, FTP, p2p) nécessitent des connexions sortantes.  Epoll et IOCP prennent en charge une demande de connexion non bloquante, mais de différentes manières. <br><br>  Lorsque vous utilisez epoll, le code est généralement le même que pour select ou poll.  Vous créez un socket non bloquant, appelez connect () pour celui-ci et attendez une notification sur sa disponibilité pour l'écriture. <br><br>  Lorsque vous utilisez IOCP, vous devez utiliser la fonction ConnectEx distincte, car l'appel à connect () n'accepte pas la structure OVERLAPPED, ce qui signifie qu'il ne peut pas générer de notification sur le changement d'état du socket ultérieurement.  Ainsi, le code d'initiation de la connexion ne différera pas seulement du code utilisant epoll, il sera même différent du code Windows utilisant select ou poll.  Cependant, les changements peuvent être considérés comme minimes. <br><br>  Fait intéressant, accept () fonctionne avec IOCP comme d'habitude.  Il existe une fonction AcceptEx, mais son rôle n'est absolument pas lié à une connexion non bloquante.  Ce n'est pas une «acceptation non bloquante», comme vous pourriez le penser par analogie avec connect / ConnectEx. <br><br><h3>  Suivi des événements </h3><br>  Souvent, après le déclenchement d'un événement, des données supplémentaires arrivent très rapidement.  Par exemple, nous nous attendions à ce que l'entrée du socket arrive à l'aide d'epoll ou d'IOCP, nous avons eu un événement sur les premiers octets de données, et là, pendant que nous les lisions, une centaine d'autres octets sont arrivés.  Puis-je les lire sans redémarrer la surveillance des événements? <br><br>  L'utilisation d'epoll est possible.  Vous obtenez l'événement «quelque chose peut maintenant être lu» - et vous lisez tout ce qui peut être lu à partir du socket (jusqu'à ce que vous obteniez l'erreur EAGAIN).  La même chose avec l'envoi de données - lorsque vous recevez un signal indiquant que le socket est prêt à envoyer des données, vous pouvez y écrire quelque chose jusqu'à ce que la fonction d'écriture renvoie EAGAIN. <br><br>  Avec l'IOCP, cela ne fonctionnera pas.  Si vous avez demandé au socket de lire ou d'envoyer 10 octets de données - c'est combien seront lus / envoyés (même si plus pourrait déjà être fait).  Pour chaque bloc suivant, vous devez effectuer une demande distincte à l'aide de ReadFile ou WriteFile, puis attendez qu'il soit exécuté.  Cela peut créer un niveau de complexité supplémentaire.  Prenons l'exemple suivant: <br><br><ol><li>  La classe socket a créé une demande de lecture de données en appelant ReadFile.  Les threads A et B attendent le résultat en appelant GetOverlappedResult () </li><li>  L'opération de lecture est terminée, le thread A a reçu une notification et a appelé une méthode de classe socket pour traiter les données reçues </li><li>  La classe socket a décidé que ces données ne sont pas suffisantes, nous devons nous attendre à ce qui suit.  Il place une autre demande de lecture. </li><li>  Cette demande est exécutée immédiatement (les données sont déjà arrivées, le système d'exploitation peut les envoyer immédiatement).  Le flux B reçoit une notification, lit les données et les transmet à la classe de socket. </li><li>  À l'heure actuelle, la fonction de lecture des données dans la classe socket est appelée à la fois à partir des flux A et B, ce qui conduit soit au risque de corruption des données (sans utiliser des objets de synchronisation), soit à des pauses supplémentaires (lors de l'utilisation des objets de synchronisation) </li></ol><br>  Avec les objets de synchronisation dans ce cas, c'est généralement difficile.  Eh bien, s'il est seul.  Mais si nous avons 100 000 connexions et chacune d'elles aura une sorte d'objet de synchronisation, cela peut sérieusement affecter les ressources du système.  Et si vous en gardez toujours 2 (en cas de séparation du traitement des demandes de lecture et d'écriture)?  Pire encore. <br><br>  La solution habituelle ici consiste à créer une classe de gestionnaire de connexions qui sera chargée d'appeler ReadFile ou WriteFile pour la classe de connexion.  Cela fonctionne mieux, mais rend le code plus complexe. <br><br><h3>  Conclusions </h3><br>  Epoll et IOCP conviennent (et sont utilisés dans la pratique) pour écrire des services réseau hautes performances pouvant gérer un grand nombre de connexions.  Les technologies elles-mêmes diffèrent dans la façon dont elles gèrent les événements.  Ces différences sont si importantes qu'il ne vaut guère la peine d'essayer de les écrire sur une base commune (la quantité du même code sera minime).  Plusieurs fois, j'ai travaillé pour essayer d'apporter les deux approches à une sorte de solution universelle - et chaque fois le résultat était pire en termes de complexité, de lisibilité et de support par rapport à deux implémentations indépendantes.  Le résultat universel obtenu a dû être abandonné à chaque fois. <br><br>  Lors du portage de code d'une plateforme à une autre, il est généralement plus facile de porter le code IOCP pour utiliser epoll que l'inverse. <br><br>  Astuces: <br><br><ul><li>  Si votre tâche consiste à développer un service réseau multiplateforme, vous devez commencer par une implémentation Windows utilisant IOCP.  Une fois que tout est prêt et débogué - ajoutez un back-end epoll trivial. </li><li>  Vous ne devez pas essayer d'écrire les classes générales Connection et ConnectionMgr qui implémentent la logique epoll et IOCP en même temps.  Il semble mauvais du point de vue de l'architecture de code et conduit à un tas de toutes sortes de #ifdef avec une logique différente à l'intérieur.  Mieux vaut créer des classes de base et en hériter des implémentations distinctes.  Dans les classes de base, vous pouvez conserver certaines méthodes ou données générales, le cas échéant. </li><li>  Surveillez de près la durée de vie des objets de la classe Connection (ou tout ce que vous appelez la classe où les tampons pour les données reçues / envoyées seront stockés).  Il ne doit pas être détruit tant que les opérations de lecture / écriture planifiées à l'aide de ses tampons ne sont pas terminées. </li></ul></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/fr415403/">https://habr.com/ru/post/fr415403/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr415393/index.html">Kubernetes: la vie d'un foyer</a></li>
+<li><a href="../fr415395/index.html">Téléviseurs ondulés</a></li>
+<li><a href="../fr415397/index.html">PICASO 3D au Top 3D Expo 2018 - nouvelle imprimante 3D, nouveaux matériaux</a></li>
+<li><a href="../fr415399/index.html">Pourquoi les prix des DVD gratuits sur Fortnite atteignent-ils 450 $</a></li>
+<li><a href="../fr415401/index.html">Nous résolvons le problème d'un million d'onglets ouverts ou «aidons le matériel à survivre»</a></li>
+<li><a href="../fr415405/index.html">Examen et test du serveur Fujitsu PRIMERGY RX2540 M4</a></li>
+<li><a href="../fr415407/index.html">Godville - sauf pour les blagues</a></li>
+<li><a href="../fr415409/index.html">Revue de l'imprimante 3D 3Dtool Raise3D PRO2</a></li>
+<li><a href="../fr415411/index.html">De la lévitation de disques au son d'une boîte en carton - 6 gadgets intéressants pour le vinyle</a></li>
+<li><a href="../fr415413/index.html">Fonctionnalité croisée, gestionnaire de dépendances, surveillance dans les tests iOS et UI. Comment était l'édition Avito iOS Summer Edition</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
