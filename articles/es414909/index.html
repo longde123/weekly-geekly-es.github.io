@@ -1,0 +1,118 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-6"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-6');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😨 🌤️ 👨🏾‍💻 Historia de un único protocolo de enlace SSL 👨🏼‍🎓 🍃 🚟</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hola Habr! 
+
+ Recientemente, tuve que atornillar SSL con autenticación mutua al cliente web Spring Reactive. Parece un asunto simple, pero resultó en ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://weekly-geekly-es.github.io/index.html"></a>
+    <div class="page-header-text">Geekly articles weekly</div>
+  </header>
+  <section class="page js-page"><h1>Historia de un único protocolo de enlace SSL</h1><div class="post__body post__body_full"><div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/414909/">  Hola Habr! <br><br>  Recientemente, tuve que atornillar SSL con autenticación mutua al cliente web Spring Reactive.  Parece un asunto simple, pero resultó en un vagabundeo en las fuentes de JDK con un final inesperado.  Se adquirió experiencia para un artículo completo, que puede ser útil para los ingenieros en tareas cotidianas o en preparación para una entrevista. <br><br><div style="text-align:center;"><img src="https://habrastorage.org/webt/u7/k3/q8/u7k3q85jrbyr8hazrcevylms3ai.jpeg"></div><a name="habracut"></a><br><h2>  Declaración del problema. </h2><br>  <i>Hay un servicio REST en el lado del cliente que funciona a través de HTTPS.</i> <i><br></i>  <i>Debe acceder desde una aplicación Java cliente.</i> <br><br>  Lo primero que me dieron en esta búsqueda fueron 2 archivos con la extensión .pem: un certificado de cliente y una clave privada.  Verifiqué su rendimiento usando Postman: especifiqué las rutas a ellos en la configuración y, después de extraer una solicitud, me aseguré de que el servidor responde con 200 OK y un cuerpo de respuesta significativo.  Por separado, verifiqué que sin un certificado de cliente, el servidor devuelve un estado HTTP de 500 y un mensaje corto en el cuerpo de la respuesta de que se produjo una "excepción de seguridad" con un código específico. <br><br>  A continuación, debe configurar correctamente la aplicación Java del cliente. <br><br>  Para las solicitudes REST, utilicé Spring Reactive WebClient con E / S sin bloqueo. <br>  La documentación tiene <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">un ejemplo de</a> cómo se puede personalizar arrojándole un objeto SslContext, que solo almacena certificados y claves privadas. <br><br>  Mi configuración en una versión simplificada fue casi copiar y pegar de la documentación: <br><br><pre><code class="java hljs">SslContext sslContext = SslContextBuilder .forClient() .keyManager(…) <span class="hljs-comment"><span class="hljs-comment">/*  ,   .pem      (, , ). PEM      . /    openssl .     KeyManagerFactory. */</span></span> .build(); ClientHttpConnector connector = <span class="hljs-keyword"><span class="hljs-keyword">new</span></span> ReactorClientHttpConnector( builder -&gt; builder.sslContext(sslContext)); WebClient webClient = WebClient.builder() .clientConnector(connector).build();</code> </pre> <br>  Siguiendo el principio de TDD, también escribí una prueba que usa WebTestClient en lugar de WebClient, que muestra un montón de información de depuración.  La primera afirmación fue así: <br><br><pre> <code class="java hljs">webTestClient .post() .uri([  ]) .body(BodyInserters.fromObject([ ,   ,  ])) .exchange() .expectStatus().isOk()</code> </pre> <br>  Esta simple prueba no pasó inmediatamente: el servidor devolvió 500 con el mismo cuerpo que si Postman no especificara un certificado de cliente. <br><br>  Por separado, observo que durante la depuración, activé la opción "no verificar el certificado del servidor", es decir, pasé la instancia de InsecureTrustManagerFactory como TrustManager para SslContext.  Esta medida era redundante, pero excluía la mitad de las opciones con seguridad. <br><br>  La información de depuración en la prueba no arrojó luz sobre el problema, pero parecía que algo salió mal en la etapa de protocolo de enlace SSL, por lo que decidí comparar con más detalle cómo se produce la conexión en ambos casos: para Postman y para el cliente Java.  Todo esto se puede ver usando Wireshark: este es un analizador de tráfico de red tan popular.  Al mismo tiempo, vi cómo ocurre el protocolo de enlace SSL con la autenticación bidireccional, por así decirlo, en vivo (les gusta preguntar esto durante las entrevistas): <br><br><ul><li>  En primer lugar, el cliente envía un mensaje de <i>saludo de cliente</i> que contiene metainformación como la versión del protocolo y la lista de algoritmos de cifrado que admite </li><li>  En respuesta, el servidor envía inmediatamente un paquete de los siguientes mensajes: <i>Server Hello, Certificate, Server Key Exchange, Request Request, Server Hello Done Done</i> . <br>  <i>Server Hello</i> indica el algoritmo de cifrado seleccionado por el servidor (conjunto de cifrado).  Dentro del Certificado se encuentra el certificado del servidor.  <i>Server Key Exchange</i> lleva cierta información necesaria para el cifrado, dependiendo del algoritmo elegido (no estamos interesados ​​en los detalles ahora, por lo que asumimos que esta es solo una clave pública, ¡aunque es incorrecta!).  Además, en el caso de la autenticación bidireccional, en el mensaje <i>Solicitud de certificado</i> , el servidor solicita un certificado de cliente y explica qué formatos admite y en qué emisores confía. </li><li>  Una vez recibida esta información, el cliente verifica el certificado del servidor y envía su certificado, su "clave pública" y otra información en los siguientes mensajes: <i>Certificado, Intercambio de claves del cliente, Verificación del certificado</i> .  El último es el mensaje <i>ChangeCipherSpec</i> , que indica que todas las comunicaciones posteriores se realizarán en forma cifrada. </li><li>  Finalmente, después de todos estos cambios, el servidor verificará el certificado del cliente y, si todo está bien, dará una respuesta. </li></ul><br>  Después de quince minutos de permanecer en el tráfico, noté que el cliente Java, en respuesta a la <i>Solicitud de certificado</i> del servidor, por alguna razón no envía su certificado, a diferencia del cliente Postman.  Es decir, hay un mensaje de Certificado, pero está vacío. <br><br>  A continuación, primero tendría que mirar <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">la especificación del protocolo TLS</a> , que dice literalmente lo siguiente: <br><blockquote>  Si la lista de certificados_autoridades en el mensaje de solicitud de certificado no está vacía, una de las CA enumeradas DEBE emitir uno de los certificados de la cadena de certificados. </blockquote>  Estamos hablando de la lista de certificados_autoridades especificada en el mensaje de <i>Solicitud de Certificado</i> proveniente del servidor.  Uno de los emisores enumerados en esta lista debe firmar un certificado de cliente (al menos una de las cadenas).  A esto lo llamamos el <b>cheque X.</b> <br><br>  No conocía esta condición y la encontré cuando llegué a las profundidades del JDK en la depuración (lo tengo JDK9).  HttpClient de Netty, que subyace a Spring WebClient, usa SslEngine del JDK de forma predeterminada.  Alternativamente, puede cambiarlo al proveedor OpenSSL agregando las dependencias necesarias, pero finalmente no lo necesitaba. <br>  Entonces, establecí puntos de interrupción dentro de la clase sun.security.ssl.ClientHandshaker y en el controlador de mensajes serverHelloDone encontré una verificación X que no pasó: ninguno de los emisores en la cadena de certificados del cliente estaba en la lista de emisores en los que el servidor confía ( del mensaje de <i>solicitud de certificado</i> del servidor). <br><br>  Me dirigí al cliente para obtener un nuevo certificado, pero el cliente objetó que todo funcionaba bien para él y le entregó a Python un script, con el que generalmente verificaba la funcionalidad de los certificados.  El script no hizo más que enviar una solicitud HTTPS utilizando la biblioteca de solicitudes, y devolvió 200 OK.  Finalmente me sorprendí cuando el viejo rizo también devolvió 200 OK.  Inmediatamente me acordé de la broma: "Toda la compañía se sale del paso, un teniente da un paso en la pierna". <br><br>  Curl es, por supuesto, una utilidad de buena reputación, pero el estándar TLS tampoco es un pedazo de papel higiénico.  Sin saber qué más comprobar, subí sin rumbo deambulando por la documentación del rizo y en Github, donde encontré <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">un</a> error <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=">tan</a> famoso. <br><br>  El reportero describió exactamente la prueba X: en curl con el backend predeterminado (OpenSSL), no se ejecutó, a diferencia de curl con el backend GnuTLS.  No era demasiado vago, <i>recogí el</i> rizo de la fuente con la opción <i>--with-gnutls</i> , y envié una solicitud sufrida.  Y, finalmente, otro cliente, además del JDK, devolvió el estado HTTP 500 junto con la "excepción de seguridad". <br><br>  Escribí sobre esto al cliente en respuesta al argumento "Bueno, curl funciona", y recibí un nuevo certificado, regenerado y perfectamente instalado en el servidor.  Con él, mi configuración para WebClient funcionó bien.  Final feliz <br><br>  La epopeya SSL tardó más de dos semanas con toda la correspondencia (incluyó el estudio de registros detallados de Java, la elección del código de otro proyecto que funciona para el cliente y solo la atención). <br><br>  Lo que me desconcertó durante mucho tiempo, además de la diferencia en el comportamiento del cliente, fue que el servidor se configuró de tal manera que el certificado lo solicitó, pero no lo verificó.  Sin embargo, hay explicaciones para esto en la especificación: <br><blockquote>  Además, si algún aspecto de la cadena de certificados era inaceptable (por ejemplo, no estaba firmado por una CA reconocida y confiable), el servidor PUEDE a su discreción continuar con el apretón de manos (considerando que el cliente no está autenticado) o enviar una alerta fatal. </blockquote></div></div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/es414909/">https://habr.com/ru/post/es414909/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es414897/index.html">Acceso a datos en aplicaciones multiusuario</a></li>
+<li><a href="../es414899/index.html">Cómo recopilar análisis y no matar la productividad</a></li>
+<li><a href="../es414901/index.html">Dell y DROVA: cómo jugar juegos exigentes incluso en una computadora portátil débil</a></li>
+<li><a href="../es414905/index.html">Componentes web Parte 3: plantillas html e importaciones</a></li>
+<li><a href="../es414907/index.html">¿Qué conecta la teoría de números con la trayectoria de la luz?</a></li>
+<li><a href="../es414911/index.html">Ayuda Hall</a></li>
+<li><a href="../es414913/index.html">Hackathon como una cura para el aburrimiento creativo</a></li>
+<li><a href="../es414915/index.html">La vulnerabilidad en ICQ permitió unirse a absolutamente cualquier chat</a></li>
+<li><a href="../es414917/index.html">Descripción general de Microsoft Arc Mouse</a></li>
+<li><a href="../es414919/index.html">Cómo hacer las paces con el insomnio, o por qué Tolstoi se mantuvo de pie por la noche</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter57283870 = new Ya.Metrika({
+                  id:57283870,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/57283870" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-6', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Weekly-Geekly ES | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2019</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=9uU9J9pq8z7k8xEBHYSfs6DenIBAHs3vLIHcPIJW9d0&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
